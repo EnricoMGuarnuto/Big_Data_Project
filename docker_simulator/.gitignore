@@ -1,0 +1,3 @@
+# Dataset e file temporanei
+*.parquet
+*.csv
