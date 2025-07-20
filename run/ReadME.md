@@ -112,3 +112,34 @@ s3a://retail/cleansed/pos_transactions/
    ```
 
 ---
+
+
+
+example of pipeline:
+               +-------------------+
+               | External Sources  |
+               | - POS Terminals   |
+               | - Smart Shelves   |
+               | - Foot Sensors    |
+               +--------+----------+
+                        |
+                        v
+            [1] 🟢 Data Ingestion Layer (Kafka)
+                        |
+                        v
+         [2] 🟡 Raw Storage Layer (MinIO / HDFS / S3)
+                        |
+                        v
+        [3] 🧹 Cleansing & Preprocessing (Spark/Flink)
+                        |
+                        v
+      [4] 📊 Analytics & Forecasting (Spark ML / PyTorch)
+                        |
+                        v
+           [5] 🔴 Real-Time Alerting (Kafka/Flink)
+                        |
+                        v
+    [6] 🪄 Restocking Recommendations (Dashboard + API)
+                        |
+                        v
+        [7] 🧾 Serving Layer (PostgreSQL / Delta Lake)
