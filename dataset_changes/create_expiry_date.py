@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 ###### WAREHOUSE #######
 
 # Load your main dataset (update the path as needed)
-df = pd.read_csv('dataset_changes/store_inventory_final.csv')
+df = pd.read_csv('dataset_changes/warehouse_inventory_final.csv')
 
 # Define expiry ranges (in days from today) for each Item_Type
 expiry_ranges = {
