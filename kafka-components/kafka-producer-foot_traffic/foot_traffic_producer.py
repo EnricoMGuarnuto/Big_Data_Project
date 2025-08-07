@@ -67,9 +67,9 @@ def get_current_slot_index(now):
 def generate_trip_duration():
     r = random.random()
     if r < 0.35:
-        return 30
+        return random.randint(10, 29)
     elif r < 0.74:
-        return random.randint(31, 44)
+        return random.randint(30, 44)
     else:
         return random.randint(45, 75)
 
