@@ -101,5 +101,5 @@ while True:
     event = generate_event(now)
     if event:
         producer.send(TOPIC, value=event)
-        logging.info("Messaggio inviato al topic.")
+        logging.info(f"message sent: {event}")
     time.sleep(SLEEP)

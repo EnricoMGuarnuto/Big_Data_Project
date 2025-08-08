@@ -45,6 +45,14 @@ services:
       - 9001:9001
     volumes:
       - minio_data:/data
+
+    redis:
+      image: redis:7
+      ports:
+        - "6379:6379"
+      volumes:
+        - redis_data:/data
+
   
   # mlflow:
   #   image: ghcr.io/mlflow/mlflow:v2.11.3
@@ -93,6 +101,19 @@ services:
     volumes:
       - ./data:/data
 
+  discount-updater:
+    build:
+      context: ./kafka-components/discount-updater
+      dockerfile: ./Dockerfile
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DISCOUNT_UPDATE_INTERVAL=30
+    volumes:
+      - ./data:/data
+
   
   # kafka-consumer-shelf:
   #   build:
@@ -110,15 +131,22 @@ services:
   #   ports:
   #     - 8010:8000
 
-  # kafka-producer-pos:
-  #   build:
-  #     context: ./kafka-components/kafka-producer-pos
-  #     dockerfile: ./producer_pos/Dockerfile
-  #   depends_on:
-  #     - kafka
-  #   environment:
-  #     - SLEEP=0.2
-  #     - KAFKA_TOPIC=pos_transactions
+  kafka-producer-pos:
+    build:
+      context: ./kafka-components/kafka-producer-pos
+      dockerfile: ./Dockerfile
+    depends_on:
+      - kafka
+      - redis
+      - kafka-producer-traffic
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - FOOT_TOPIC=foot_traffic
+      - POS_TOPIC=pos_transactions
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./data:/data                                                                                                                                                                          
 
   # kafka-consumer-pos:
   #   build:
@@ -222,3 +250,4 @@ services:
 volumes:
   minio_data:
   postgres_data:
+  redis_data:
