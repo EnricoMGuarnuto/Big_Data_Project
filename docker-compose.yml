@@ -70,13 +70,13 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:6.2.1
+    platform: linux/amd64
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
 
-
-  # Kafka broker
   kafka:
     image: confluentinc/cp-kafka:6.2.1
+    platform: linux/amd64
     depends_on:
       - zookeeper
     ports:
@@ -91,7 +91,7 @@ services:
   # Kafka producers + kafka consumers
   kafka-producer-shelf:
     build:
-      context: ./Kafka-components/kafka-producer-shelf
+      context: ./kafka-components/kafka-producer-shelf
     environment:
       - KAFKA_BROKER=kafka:9092
       - KAFKA_TOPIC_FOOT=foot_traffic
@@ -110,7 +110,7 @@ services:
 
   kafka-producer-shelf-restock:
     build:
-      context: ./Kafka-components/kafka-producer-shelf-restock
+      context: ./kafka-components/kafka-producer-shelf-restock
     environment:
       - KAFKA_BROKER=kafka:9092
       - TOPIC_SHELF_EVENTS=shelf_events
@@ -135,7 +135,7 @@ services:
 
   kafka-consumer-shelf:
     build:
-      context: ./Kafka-components/kafka-consumer-shelf
+      context: ./kafka-components/kafka-consumer-shelf
     environment:
       - KAFKA_BROKER=kafka:9092
       - TOPIC_SHELF_EVENTS=shelf_events

@@ -1,188 +1,261 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+shelf_restock_producer.py
+
+Ascolta gli eventi di scaffale (pickup/putback/restock) e:
+- Mantiene lo stato di stock a scaffale su Redis (per item)
+- Quando stock <= soglia, schedula un restock (con lock TTL)
+- Esegue il restock in modalità FEFO prelevando lotti dal magazzino (warehouse)
+- Emette eventi su Kafka: warehouse_pick, restock, alerts (expiry / warehouse_restock_required)
+- Bootstrap iniziale da file Parquet su Redis
+- Idempotenza: deduplica event_id, operazioni critiche via pipeline atomiche
+- Expiry watcher: allerta lotti in scadenza
+- Dead-letter queue per eventi malformati
+"""
+
 import os
 import json
 import time
+import signal
+import logging
 import threading
+from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 
 import pandas as pd
 import redis
 from kafka import KafkaProducer, KafkaConsumer
-from kafka.errors import NoBrokersAvailable
+from kafka.errors import NoBrokersAvailable, KafkaError
 
 # ========================
-# ENV / Configuration
+# Config (env-first)
 # ========================
-KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
-TOPIC_SHELF_EVENTS = os.getenv("TOPIC_SHELF_EVENTS", "shelf_events")
-TOPIC_WAREHOUSE_EVENTS = os.getenv("TOPIC_WAREHOUSE_EVENTS", "warehouse_events")
-TOPIC_ALERTS = os.getenv("TOPIC_ALERTS", "alerts")
+KAFKA_BROKER              = os.getenv("KAFKA_BROKER", "kafka:9092")
+TOPIC_SHELF_EVENTS        = os.getenv("TOPIC_SHELF_EVENTS", "shelf_events")
+TOPIC_WAREHOUSE_EVENTS    = os.getenv("TOPIC_WAREHOUSE_EVENTS", "warehouse_events")
+TOPIC_ALERTS              = os.getenv("TOPIC_ALERTS", "alerts")
+TOPIC_DLQ                 = os.getenv("TOPIC_DLQ", "dlq_events")  # dead-letter
 
-# When shelf stock <= threshold, schedule a restock after RESTOCK_DELAY_SEC
-RESTOCK_THRESHOLD   = int(os.getenv("RESTOCK_THRESHOLD", "10"))
-RESTOCK_DELAY_SEC   = int(os.getenv("RESTOCK_DELAY_SEC", "60"))   # e.g. 1800 (=30 min) in prod
-RESTOCK_MAX_CHUNK   = int(os.getenv("RESTOCK_MAX_CHUNK", "100000"))  # optional cap per restock action
+GROUP_ID                  = os.getenv("GROUP_ID", "shelf-restock-producer")
 
-# Expiry alerts (optional, sent on TOPIC_ALERTS)
-EXPIRY_ALERT_DAYS   = int(os.getenv("EXPIRY_ALERT_DAYS", "3"))
-EXPIRY_POLL_SEC     = int(os.getenv("EXPIRY_POLL_SEC", "15"))
+# restock
+RESTOCK_THRESHOLD         = int(os.getenv("RESTOCK_THRESHOLD", "10"))
+RESTOCK_DELAY_SEC         = int(os.getenv("RESTOCK_DELAY_SEC", "60"))
+RESTOCK_MAX_CHUNK         = int(os.getenv("RESTOCK_MAX_CHUNK", "100000"))
 
-# Data sources (read once at bootstrap)
-STORE_PARQUET       = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
-WH_BATCHES_PARQUET  = os.getenv("WH_BATCHES_PARQUET", "/data/warehouse_batches.parquet")
-STORE_BATCHES_PARQUET = os.getenv("STORE_BATCHES_PARQUET", "/data/store_batches.parquet")
+# expiry
+EXPIRY_ALERT_DAYS         = int(os.getenv("EXPIRY_ALERT_DAYS", "3"))
+EXPIRY_POLL_SEC           = int(os.getenv("EXPIRY_POLL_SEC", "15"))
 
-# Redis
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_DB   = int(os.getenv("REDIS_DB", "0"))
+# bootstrap files
+STORE_PARQUET             = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
+WH_BATCHES_PARQUET        = os.getenv("WH_BATCHES_PARQUET", "/data/warehouse_batches.parquet")
+STORE_BATCHES_PARQUET     = os.getenv("STORE_BATCHES_PARQUET", "/data/store_batches.parquet")
+
+# redis
+REDIS_HOST                = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT                = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB                  = int(os.getenv("REDIS_DB", "0"))
+
+# idempotenza
+DEDUPE_TTL_SEC            = int(os.getenv("DEDUPE_TTL_SEC", "3600"))  # conserva gli event_id per 1h
+
+# metrics (facoltative via log)
+ENABLE_METRICS            = os.getenv("ENABLE_METRICS", "false").lower() in ("1","true","yes")
+
+# logging
+LOG_LEVEL                 = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format='[%(asctime)s] %(levelname)s %(message)s'
+)
+log = logging.getLogger("shelf_restock_producer")
 
 # ========================
 # Helpers
 # ========================
+_shutdown = threading.Event()
+
 def epoch(dt: datetime) -> int:
     return int(dt.timestamp())
 
 def parse_dt(s: str) -> datetime:
     return pd.to_datetime(s).to_pydatetime()
 
+def now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+def graceful_shutdown(signum, frame):
+    log.info(f"Shutdown signal {signum} received, closing…")
+    _shutdown.set()
+
+signal.signal(signal.SIGINT, graceful_shutdown)
+signal.signal(signal.SIGTERM, graceful_shutdown)
+
 # ========================
 # Kafka
 # ========================
-def build_producer():
+def build_producer() -> KafkaProducer:
     last_err = None
     for attempt in range(1, 7):
         try:
-            return KafkaProducer(
+            prod = KafkaProducer(
                 bootstrap_servers=KAFKA_BROKER,
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                linger_ms=5,
                 acks="all",
                 retries=10,
+                linger_ms=10,
+                batch_size=16384,
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
             )
+            log.info("KafkaProducer connected.")
+            return prod
         except NoBrokersAvailable as e:
             last_err = e
-            print(f"[restock-producer] Kafka not available (attempt {attempt}/6). Retrying in 3s…")
+            log.warning(f"Kafka not available (attempt {attempt}/6). Retrying in 3s…")
             time.sleep(3)
     raise RuntimeError(f"Could not connect to Kafka: {last_err}")
 
-producer = build_producer()
+def build_consumer() -> KafkaConsumer:
+    cons = KafkaConsumer(
+        TOPIC_SHELF_EVENTS,
+        bootstrap_servers=KAFKA_BROKER,
+        group_id=GROUP_ID,
+        auto_offset_reset="latest",
+        enable_auto_commit=True,
+        max_poll_interval_ms=300000,
+        value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    )
+    log.info(f"KafkaConsumer subscribed to {TOPIC_SHELF_EVENTS}")
+    return cons
 
-consumer = KafkaConsumer(
-    TOPIC_SHELF_EVENTS,
-    bootstrap_servers=KAFKA_BROKER,
-    auto_offset_reset="latest",
-    enable_auto_commit=True,
-    group_id=os.getenv("GROUP_ID", "shelf-restock-producer"),
-    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-)
+producer = build_producer()
+consumer = build_consumer()
+
+def send(topic: str, event: Dict[str, Any]):
+    try:
+        producer.send(topic, value=event)
+        if ENABLE_METRICS:
+            log.info(json.dumps({"metric":"kafka_send_ok","topic":topic,"etype":event.get("event_type")}))
+    except KafkaError as e:
+        log.error(f"Kafka send error to {topic}: {e}")
+        if topic != TOPIC_DLQ:
+            # Fallback DLQ
+            try:
+                producer.send(TOPIC_DLQ, value={"source_topic": topic, "payload": event, "error": str(e), "ts": now_iso()})
+            except Exception as e2:
+                log.error(f"DLQ send failed: {e2}")
 
 # ========================
-# Redis (state)
+# Redis
 # ========================
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
+# Keyspace (schema):
+# stock:<item_id>          -> int current shelf stock
+# initial:<item_id>        -> int target shelf stock
+# batch:<batch_id>         -> hash { item_id, expiry_ts, qty_wh, qty_store }
+# wh:<item_id>             -> ZSET (score=expiry_ts, member=batch_id)
+# store:<item_id>          -> ZSET (score=expiry_ts, member=batch_id)
+# expiry:index             -> ZSET (score=expiry_ts, member=batch_id)
+# dedupe:event             -> SET of event_id with TTL (via SETEX)
+# bootstrap:done           -> "1"
+# alerted:batches          -> SET of batches already alerted
+# restock:lock:<item_id>   -> "1" (TTL = RESTOCK_DELAY_SEC)
+
 def bootstrap_if_empty():
-    """
-    Initialize Redis state from parquet files (one-time).
-    Keys used:
-      stock:<item_id>   -> current shelf stock
-      initial:<item_id> -> target shelf stock (refill goal)
-      batch:<batch_id>  -> {item_id, expiry_ts, qty_wh, qty_store}
-      wh:<item_id>      -> ZSET (score=expiry_ts, member=batch_id)
-      store:<item_id>   -> ZSET (score=expiry_ts, member=batch_id)
-      expiry:index      -> ZSET of all batches by expiry
-    """
     if r.get("bootstrap:done"):
-        print("[restock-producer] Redis already bootstrapped.")
+        log.info("Redis already bootstrapped.")
         return
 
-    print("[restock-producer] Bootstrapping Redis from parquet…")
+    log.info("Bootstrapping Redis from parquet…")
 
-    # Store inventory -> stock + initial
+    # Store inventory
     store_df = pd.read_parquet(STORE_PARQUET)
     req_cols = {"Item_Identifier", "current_stock", "initial_stock"}
-    if not req_cols.issubset(store_df.columns):
-        raise ValueError(f"{STORE_PARQUET} missing columns: {req_cols - set(store_df.columns)}")
+    missing = req_cols - set(store_df.columns)
+    if missing:
+        raise ValueError(f"{STORE_PARQUET} missing columns: {missing}")
 
+    pipe = r.pipeline()
     for _, row in store_df.iterrows():
-        item = row["Item_Identifier"]
-        r.set(f"stock:{item}", int(row["current_stock"]))
-        r.set(f"initial:{item}", int(row["initial_stock"]))
+        item = str(row["Item_Identifier"])
+        pipe.set(f"stock:{item}", int(row["current_stock"]))
+        pipe.set(f"initial:{item}", int(row["initial_stock"]))
+    pipe.execute()
 
     # Warehouse batches
     wh = pd.read_parquet(WH_BATCHES_PARQUET)
     req_cols_wh = {"Batch_ID", "Item_Identifier", "Expiry_Date", "Batch_Quantity"}
-    if not req_cols_wh.issubset(wh.columns):
-        raise ValueError(f"{WH_BATCHES_PARQUET} missing columns: {req_cols_wh - set(wh.columns)}")
+    missing = req_cols_wh - set(wh.columns)
+    if missing:
+        raise ValueError(f"{WH_BATCHES_PARQUET} missing columns: {missing}")
 
+    pipe = r.pipeline()
     for _, row in wh.iterrows():
         bid   = str(row["Batch_ID"])
-        item  = row["Item_Identifier"]
+        item  = str(row["Item_Identifier"])
         exp   = epoch(parse_dt(str(row["Expiry_Date"])))
         qty   = int(row["Batch_Quantity"])
-
-        r.hset(f"batch:{bid}", mapping={
+        pipe.hset(f"batch:{bid}", mapping={
             "item_id": item,
             "expiry_ts": exp,
             "qty_wh": qty,
             "qty_store": 0
         })
-        r.zadd(f"wh:{item}", {bid: exp})
-        r.zadd("expiry:index", {bid: exp})
+        pipe.zadd(f"wh:{item}", {bid: exp})
+        pipe.zadd("expiry:index", {bid: exp})
+    pipe.execute()
 
-    # Store batches initial (if present)
+    # Store batches (se presenti)
     if os.path.exists(STORE_BATCHES_PARQUET):
         sb = pd.read_parquet(STORE_BATCHES_PARQUET)
         if {"Batch_ID", "Item_Identifier", "Expiry_Date", "Batch_Quantity"}.issubset(sb.columns):
+            pipe = r.pipeline()
             for _, row in sb.iterrows():
                 bid   = str(row["Batch_ID"])
-                item  = row["Item_Identifier"]
+                item  = str(row["Item_Identifier"])
                 exp   = epoch(parse_dt(str(row["Expiry_Date"])))
                 qty   = int(row["Batch_Quantity"])
 
                 if r.exists(f"batch:{bid}"):
-                    r.hincrby(f"batch:{bid}", "qty_store", qty)
+                    pipe.hincrby(f"batch:{bid}", "qty_store", qty)
                 else:
-                    r.hset(f"batch:{bid}", mapping={
-                        "item_id": item,
-                        "expiry_ts": exp,
-                        "qty_wh": 0,
-                        "qty_store": qty
+                    pipe.hset(f"batch:{bid}", mapping={
+                        "item_id": item, "expiry_ts": exp,
+                        "qty_wh": 0, "qty_store": qty
                     })
-                    r.zadd("expiry:index", {bid: exp})
-                r.zadd(f"store:{item}", {bid: exp})
+                    pipe.zadd("expiry:index", {bid: exp})
+                pipe.zadd(f"store:{item}", {bid: exp})
+            pipe.execute()
 
     r.set("bootstrap:done", "1")
-    print("[restock-producer] Bootstrap done.")
+    log.info("Bootstrap done.")
 
 # ========================
-# Restock logic
+# Restock core
 # ========================
 def schedule_restock(item_id: str):
-    """
-    Set a TTL lock to avoid multiple schedules, emit an alert, and run perform_restock after delay.
-    """
+    """ Imposta lock con TTL per evitare multi-scheduling e avvia timer """
     lock_key = f"restock:lock:{item_id}"
     if r.setnx(lock_key, "1"):
         r.expire(lock_key, RESTOCK_DELAY_SEC)
-        # notify alert channel that a restock is planned
-        producer.send(TOPIC_ALERTS, {
+        send(TOPIC_ALERTS, {
             "event_type": "shelf_restock_alert",
             "item_id": item_id,
             "threshold": RESTOCK_THRESHOLD,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_iso()
         })
-        print(f"[restock-producer] Restock scheduled for {item_id} in {RESTOCK_DELAY_SEC}s")
+        log.info(f"Restock scheduled for {item_id} in {RESTOCK_DELAY_SEC}s")
         threading.Timer(RESTOCK_DELAY_SEC, perform_restock, args=(item_id,)).start()
 
-# restock. Obiettivo: rifornire fino a initial_stock, prelevando dal warehouse i lotti con scadenza più vicina, anche multi-lotto se serve.
 def perform_restock(item_id: str):
     """
-    Refill shelf up to initial stock, pulling from warehouse batches in expiry order.
-    Emits:
-      - warehouse_events: warehouse_pick per batch used
-      - shelf_events:     restock per batch moved to shelf
-      - alerts:           warehouse_restock_required if warehouse supply is insufficient
+    Obiettivo: portare lo scaffale a initial_stock.
+    - Si prendono lotti dal warehouse in ordine di scadenza (FEFO).
+    - Emette eventi warehouse_pick e restock per i movimenti.
+    - Se insufficiente, emette alert warehouse_restock_required.
     """
     try:
         current = int(r.get(f"stock:{item_id}") or 0)
@@ -191,32 +264,30 @@ def perform_restock(item_id: str):
         current, initial = 0, 0
 
     needed = max(0, initial - current)
-    if needed == 0:  #  it means already at initial stock
-        print(f"[restock-producer] {item_id}: at/above initial ({current}/{initial}). No action.")
+    if needed == 0:
+        log.info(f"{item_id}: at/above initial ({current}/{initial}). No action.")
         return
 
-    # optional cap to avoid giant single moves
     needed = min(needed, RESTOCK_MAX_CHUNK)
 
     wh_key = f"wh:{item_id}"
-    batch_ids = r.zrange(wh_key, 0, -1)  # all batches by earliest expiry first
+    batch_ids = r.zrange(wh_key, 0, -1)  # earliest expiry first
     if not batch_ids:
-        # no batches at all
-        producer.send(TOPIC_ALERTS, {
+        send(TOPIC_ALERTS, {
             "event_type": "warehouse_restock_required",
             "item_id": item_id,
             "missing_quantity": needed,
             "reason": "no_warehouse_batches",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_iso(),
         })
-        print(f"[restock-producer] {item_id}: no warehouse batches; alert emitted.")
+        log.warning(f"{item_id}: no warehouse batches; alert emitted.")
         return
 
     moved_total = 0
-    now_iso = datetime.utcnow().isoformat()
+    ts = now_iso()
 
     for bid in batch_ids:
-        if needed <= 0:  # already filled the shelf
+        if needed <= 0:
             break
 
         bkey = f"batch:{bid}"
@@ -231,60 +302,52 @@ def perform_restock(item_id: str):
 
         move = min(qty_wh, needed)
 
-        # Transfer from warehouse -> store for that batch
         pipe = r.pipeline()
         pipe.hincrby(bkey, "qty_wh", -move)
         pipe.hincrby(bkey, "qty_store", move)
         pipe.execute()
 
-        # index batch on store:<item_id>
         r.zadd(f"store:{item_id}", {bid: exp_ts})
-
-        # increment shelf counter
         r.incrby(f"stock:{item_id}", move)
 
-        # events
-        producer.send(TOPIC_WAREHOUSE_EVENTS, {
+        send(TOPIC_WAREHOUSE_EVENTS, {
             "event_type": "warehouse_pick",
             "item_id": item_id,
             "batch_id": bid,
             "quantity_picked": move,
-            "timestamp": now_iso
+            "timestamp": ts
         })
-        producer.send(TOPIC_SHELF_EVENTS, {
+        send(TOPIC_SHELF_EVENTS, {
             "event_type": "restock",
             "item_id": item_id,
             "batch_id": bid,
             "quantity": move,
-            "timestamp": now_iso
+            "timestamp": ts
         })
 
         moved_total += move
         needed -= move
 
-    if needed > 0:  # still missing some stok, it means warehouse was insufficient
-        producer.send(TOPIC_ALERTS, {
+    if needed > 0:
+        send(TOPIC_ALERTS, {
             "event_type": "warehouse_restock_required",
             "item_id": item_id,
             "missing_quantity": needed,
             "reason": "insufficient_warehouse_stock",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_iso(),
         })
-        print(f"[restock-producer] {item_id}: partial refill (+{moved_total}); missing {needed}. Alert emitted.")
+        log.warning(f"{item_id}: partial refill (+{moved_total}); missing {needed}. Alert emitted.")
     else:
-        print(f"[restock-producer] {item_id}: fully refilled to initial (+{moved_total}).")
+        log.info(f"{item_id}: fully refilled to initial (+{moved_total}).")
 
 # ========================
-# Expiry watcher (optional)
+# Expiry watcher
 # ========================
-# This periodically checks for batches that are about to expire and emits alerts.
-
 def expiry_watcher():
-    while True:
+    while not _shutdown.is_set():
         horizon = epoch(datetime.utcnow() + timedelta(days=EXPIRY_ALERT_DAYS))
         due = r.zrangebyscore("expiry:index", 0, horizon)
         for bid in due:
-            # emit alert once per batch
             if r.sadd("alerted:batches", bid):
                 b = r.hgetall(f"batch:{bid}")
                 if not b:
@@ -292,7 +355,7 @@ def expiry_watcher():
                 total_qty = int(b.get("qty_wh", 0)) + int(b.get("qty_store", 0))
                 if total_qty <= 0:
                     continue
-                producer.send(TOPIC_ALERTS, {
+                send(TOPIC_ALERTS, {
                     "event_type": "expiry_alert",
                     "batch_id": bid,
                     "item_id": b.get("item_id"),
@@ -300,36 +363,103 @@ def expiry_watcher():
                     "qty_wh": int(b.get("qty_wh", 0)),
                     "qty_store": int(b.get("qty_store", 0)),
                     "days_threshold": EXPIRY_ALERT_DAYS,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": now_iso()
                 })
-                print(f"[restock-producer] Expiry alert emitted for batch {bid}")
-        time.sleep(EXPIRY_POLL_SEC)
+                log.info(f"Expiry alert emitted for batch {bid}")
+        _shutdown.wait(EXPIRY_POLL_SEC)
 
 # ========================
-# Main loop: react to pickup/putback
+# Idempotenza
 # ========================
+def dedupe_event(event: Dict[str, Any]) -> bool:
+    """
+    Ritorna True se nuovo, False se già visto.
+    Usa event_id se presente, altrimenti costruisce fingerprint semplice.
+    """
+    event_id = event.get("event_id")
+    if not event_id:
+        # hash minimale: etype|item|ts
+        event_id = f"{event.get('event_type')}|{event.get('item_id')}|{event.get('timestamp')}"
+    # SETNX con TTL via SET + NX + EX
+    ok = r.set(f"dedupe:{event_id}", "1", ex=DEDUPE_TTL_SEC, nx=True)
+    return bool(ok)
+
+# ========================
+# Event loop
+# ========================
+def handle_shelf_event(evt: Dict[str, Any]):
+    etype = evt.get("event_type")
+    item_id = evt.get("item_id")
+
+    if not item_id or not etype:
+        send(TOPIC_DLQ, {"reason":"missing_fields","payload":evt,"ts":now_iso()})
+        log.warning(f"DLQ: missing fields in event {evt}")
+        return
+
+    if not dedupe_event(evt):
+        # duplicato → ignora
+        return
+
+    if etype == "pickup":
+        try:
+            newv = r.decr(f"stock:{item_id}")
+        except Exception:
+            newv = int(r.get(f"stock:{item_id}") or 0) - 1
+            r.set(f"stock:{item_id}", newv)
+
+        if newv <= RESTOCK_THRESHOLD:
+            schedule_restock(item_id)
+
+    elif etype == "putback":
+        r.incr(f"stock:{item_id}")
+        # nessuna azione speciale
+
+    elif etype == "restock":
+        # potremmo riceverlo da altre sorgenti → best-effort: allineiamo stock se presente "quantity"
+        qty = evt.get("quantity")
+        if isinstance(qty, int) and qty > 0:
+            r.incrby(f"stock:{item_id}", qty)
+
+    else:
+        # eventi non noti → DLQ
+        send(TOPIC_DLQ, {"reason":"unknown_event_type","payload":evt,"ts":now_iso()})
+        log.warning(f"DLQ: unknown event type {etype}")
+
 def main():
     bootstrap_if_empty()
+    # watcher scadenze
     threading.Thread(target=expiry_watcher, daemon=True).start()
 
-    print("[restock-producer] Listening to shelf_events (pickup/putback)…")
-    for msg in consumer:
-        evt = msg.value
-        etype = evt.get("event_type")
-        item_id = evt.get("item_id")
-        if not item_id:
-            continue
+    log.info("Listening to shelf_events (pickup/putback/restock)…")
+    while not _shutdown.is_set():
+        for msg in consumer:
+            if _shutdown.is_set():
+                break
+            try:
+                evt = msg.value
+            except Exception as e:
+                send(TOPIC_DLQ, {"reason":"json_deser_error","error":str(e),"ts":now_iso()})
+                continue
+            try:
+                handle_shelf_event(evt)
+            except Exception as e:
+                send(TOPIC_DLQ, {"reason":"handler_exception","error":str(e),"payload":evt,"ts":now_iso()})
+                log.exception("Error handling event")
 
-        if etype == "pickup":
-            newv = r.decr(f"stock:{item_id}")
-            if newv <= RESTOCK_THRESHOLD:
-                schedule_restock(item_id)    # Quando scatta il timer del restock, verrà chiamata perform_restock() che fa il lavoro grosso (lotto per lotto, fino all’initial_stock).
-
-        elif etype == "putback":
-            r.incr(f"stock:{item_id}")
-            # no special scheduling on putback
-
-        # 'restock' events from other sources are ignored here
+    log.info("Flushing producer and closing…")
+    try:
+        producer.flush(5)
+    except Exception:
+        pass
+    try:
+        producer.close(5)
+    except Exception:
+        pass
+    try:
+        consumer.close()
+    except Exception:
+        pass
+    log.info("Bye.")
 
 if __name__ == "__main__":
     main()

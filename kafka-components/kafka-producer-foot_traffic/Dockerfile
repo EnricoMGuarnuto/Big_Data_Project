@@ -1,6 +1,16 @@
 FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
-COPY ../../requirements.txt .
+
+# dipendenze
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-CMD ["python", "foot_traffic_producer.py"]
+
+# codice
 COPY . .
+
+# avvio
+CMD ["python", "-u", "foot_traffic_producer.py"]
