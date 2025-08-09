@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS shelf_events (
 
 CREATE TABLE IF NOT EXISTS sales_history (
     sale_id SERIAL PRIMARY KEY,
-    quantity INT,
+    -- shelf_id (id del prodotto)
+    quantity INT, --(della shelf)
+    -- sconto del shelf_id (forse 15, 20, 25, 30)
     sale_time TIMESTAMP
 );
 -- Ogni volta che viene effettuata una vendita, registra qui.

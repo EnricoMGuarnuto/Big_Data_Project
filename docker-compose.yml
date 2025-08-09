@@ -46,12 +46,12 @@ services:
     volumes:
       - minio_data:/data
 
-    redis:
-      image: redis:7
-      ports:
-        - "6379:6379"
-      volumes:
-        - redis_data:/data
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
 
   
   # mlflow:
@@ -91,19 +91,65 @@ services:
   # Kafka producers + kafka consumers
   kafka-producer-shelf:
     build:
-      context: ./kafka-components/kafka-producer-shelf
-      dockerfile: ./Dockerfile
+      context: ./Kafka-components/kafka-producer-shelf
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC_FOOT=foot_traffic
+      - KAFKA_TOPIC_SHELF=shelf_events
+      - SHELF_SLEEP_BASE=1.0
+      - SHELF_SLEEP_MIN=0.15
+      - PICKUP_BASE_P=0.70
+      - PICKUP_BUMP=0.20
+      - PUTBACK_P=0.10
+      - ALPHA_RATE=0.08
+      - TRAFFIC_WINDOW_MIN=5
     depends_on:
       - kafka
-    environment: 
-      - SLEEP=0.3
-      - KAFKA_TOPIC=shelf_sensors
+    volumes:
+      - ./data:/data
+
+  kafka-producer-shelf-restock:
+    build:
+      context: ./Kafka-components/kafka-producer-shelf-restock
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - TOPIC_SHELF_EVENTS=shelf_events
+      - TOPIC_WAREHOUSE_EVENTS=warehouse_events
+      - TOPIC_ALERTS=alerts
+      - RESTOCK_THRESHOLD=10
+      - RESTOCK_DELAY_SEC=60
+      - RESTOCK_MAX_CHUNK=100000
+      - EXPIRY_ALERT_DAYS=3
+      - EXPIRY_POLL_SEC=15
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - STORE_PARQUET=/data/store_inventory_final.parquet
+      - WH_BATCHES_PARQUET=/data/warehouse_batches.parquet
+      - STORE_BATCHES_PARQUET=/data/store_batches.parquet
+    depends_on:
+      - kafka
+      - redis
+    volumes:
+      - ./data:/data
+
+  kafka-consumer-shelf:
+    build:
+      context: ./Kafka-components/kafka-consumer-shelf
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - TOPIC_SHELF_EVENTS=shelf_events
+      - TOPIC_WAREHOUSE_EVENTS=warehouse_events
+      - WH_BATCHES_PARQUET=/data/warehouse_batches.parquet
+      - OUT_DIR=/data/materialized
+    depends_on:
+      - kafka
     volumes:
       - ./data:/data
 
   discount-updater:
     build:
-      context: ./kafka-components/discount-updater
+      context: ./kafka-components/kafka-discount_updater
       dockerfile: ./Dockerfile
     depends_on:
       - redis
@@ -113,23 +159,6 @@ services:
       - DISCOUNT_UPDATE_INTERVAL=30
     volumes:
       - ./data:/data
-
-  
-  # kafka-consumer-shelf:
-  #   build:
-  #     context: ./kafka-components/kafka-consumer-shelf
-  #     dockerfile: ./Dockerfile
-  #   depends_on:
-  #     - kafka
-  #     - kafka-producer-shelf
-  #     - minio
-  #   environment:
-  #     - MINIO_ENDPOINT=minio:9000
-  #     - MINIO_ACCESS_KEY=minio
-  #     - MINIO_SECRET_KEY=minio123
-  #     - MINIO_PREFIX=raw/shelf_sensors
-  #   ports:
-  #     - 8010:8000
 
   kafka-producer-pos:
     build:
@@ -174,21 +203,21 @@ services:
       - SLEEP=0.3
       - KAFKA_TOPIC=foot_traffic
   
-  kafka-consumer-traffic:
-    build:
-      context: ./kafka-components/kafka-consumer-foot_traffic
-      dockerfile: ./Dockerfile
-    depends_on:
-      - kafka
-      - kafka-producer-traffic
-      - minio
-    environment:
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minio
-      - MINIO_SECRET_KEY=minio123
-      - MINIO_PREFIX=raw/foot_traffic
-    ports:
-      - 8012:8000
+  # kafka-consumer-traffic:
+  #   build:
+  #     context: ./kafka-components/kafka-consumer-foot_traffic
+  #     dockerfile: ./Dockerfile
+  #   depends_on:
+  #     - kafka
+  #     - kafka-producer-traffic
+  #     - minio
+  #   environment:
+  #     - MINIO_ENDPOINT=minio:9000
+  #     - MINIO_ACCESS_KEY=minio
+  #     - MINIO_SECRET_KEY=minio123
+  #     - MINIO_PREFIX=raw/foot_traffic
+  #   ports:
+  #     - 8012:8000
 
   spark:
       image: bitnami/spark:3.4

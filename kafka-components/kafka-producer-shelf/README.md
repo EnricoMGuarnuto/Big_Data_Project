@@ -1,22 +1,29 @@
-# Kafka Producer - Shelf Sensors
+# Kafka Producer — Shelf Sensors
 
-This Kafka Producer simulates smart shelf sensors detecting when customers pick up or put back items in-store.
+Simulates smart-shelf activity driven by real foot-traffic:
+- Consumes `foot_traffic` to compute a rolling events/min traffic level.
+- Emits `pickup` / `putback` events to `shelf_events`.
+- Adjusts event frequency and pickup probability based on traffic.
 
-## Events Produced:
-- `pickup`: A product is taken from the shelf.
-- `putback`: A product is returned to the shelf.
+## Topics
+- In: `foot_traffic`
+- Out: `shelf_events`
 
-## Dataset:
-- Reads `/data/store_inventory_final.parquet` to get current stock and item weights.
-- Simulates adjustments in `current_stock` as items are picked/put back.
+## Environment
+- `KAFKA_BROKER` (default `kafka:9092`)
+- `KAFKA_TOPIC_FOOT` (default `foot_traffic`)
+- `KAFKA_TOPIC_SHELF` (default `shelf_events`)
+- `SHELF_SLEEP_BASE` (default `1.0`)
+- `SHELF_SLEEP_MIN` (default `0.15`)
+- `PICKUP_BASE_P` (default `0.70`)
+- `PICKUP_BUMP` (default `0.20`)
+- `PUTBACK_P` (default `0.10`)
+- `ALPHA_RATE` (default `0.08`)
+- `TRAFFIC_WINDOW_MIN` (default `5`)
 
-## Kafka Topic:
-- Default topic: `shelf_events`
+## Volumes
+Mount inventory parquet:
+- Host `./data` → Container `/data`
 
-## Environment Variables:
-- `KAFKA_BROKER` (default: kafka:9092)
-- `KAFKA_TOPIC` (default: shelf_events)
-- `SLEEP`: interval in seconds between events (default: 2)
-
-## Run inside Docker:
-Make sure `/data` volume is mounted with the inventory parquet file.
+## Run (Compose)
+Service should set env vars above and mount `./data:/data`.
