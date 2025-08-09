@@ -1,51 +1,108 @@
 import os
 import json
 import pandas as pd
+from pathlib import Path
 from kafka import KafkaConsumer
 
-# Configuration
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
-TOPIC = os.getenv("KAFKA_TOPIC", "shelf_events")
+TOPIC_SHELF = os.getenv("TOPIC_SHELF_EVENTS", "shelf_events")
+TOPIC_WH = os.getenv("TOPIC_WAREHOUSE_EVENTS", "warehouse_events")
 
-# Kafka Consumer
+# input bootstrap parquet (to get batch meta when needed)
+WAREHOUSE_BOOTSTRAP = os.getenv("WH_BATCHES_PARQUET", "/data/warehouse_batches.parquet")
+
+# materialized outputs (do NOT overwrite base parquet)
+OUT_DIR = Path(os.getenv("OUT_DIR", "/data/materialized"))
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+STORE_OUT = OUT_DIR / "store_batches_state.parquet"
+WH_OUT = OUT_DIR / "warehouse_batches_state.parquet"
+
+# Load bootstrap warehouse meta (Batch_ID, Item_Identifier, Expiry_Date)
+wh_boot = pd.read_parquet(WAREHOUSE_BOOTSTRAP)[["Batch_ID","Item_Identifier","Expiry_Date"]].drop_duplicates()
+
+# Initialize state files if missing
+if STORE_OUT.exists():
+    store_state = pd.read_parquet(STORE_OUT)
+else:
+    store_state = pd.DataFrame(columns=["Batch_ID","Item_Identifier","Expiry_Date","Batch_Quantity"])
+
+if WH_OUT.exists():
+    wh_state = pd.read_parquet(WH_OUT)
+    # ensure consistent dtypes
+    if "Batch_Quantity" not in wh_state.columns:
+        wh_state["Batch_Quantity"] = 0
+else:
+    # start from bootstrap quantities = 0 (we’ll only reflect picks here)
+    wh_state = wh_boot.merge(
+        pd.DataFrame(columns=["Batch_ID","Batch_Quantity"]),
+        on="Batch_ID", how="left"
+    )
+    wh_state["Batch_Quantity"] = 0
+
 consumer = KafkaConsumer(
-    TOPIC,
+    TOPIC_SHELF, TOPIC_WH,
     bootstrap_servers=KAFKA_BROKER,
-    auto_offset_reset='earliest',
+    auto_offset_reset="earliest",
     enable_auto_commit=True,
-    value_deserializer=lambda m: json.loads(m.decode('utf-8'))
+    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+    group_id=os.getenv("GROUP_ID","shelf-consumer-materializer")
 )
 
-print(f"Consumer listening on topic: {TOPIC}")
+print(f"[shelf-consumer] Listening on: {TOPIC_SHELF}, {TOPIC_WH}")
 
-# Load batches datasets
-store_batches = pd.read_parquet("/data/store_batches.parquet")
-warehouse_batches = pd.read_parquet("/data/warehouse_batches.parquet")
+def upsert_store_batch(batch_id: str, item_id: str, qty: int):
+    global store_state
+    # find batch meta
+    meta = wh_boot[wh_boot["Batch_ID"] == batch_id]
+    if meta.empty:
+        # batch not in bootstrap (shouldn’t happen in this toy flow), skip
+        return
+    expiry = meta.iloc[0]["Expiry_Date"]
+    item_meta = meta.iloc[0]["Item_Identifier"]
+
+    if (store_state["Batch_ID"] == batch_id).any():
+        store_state.loc[store_state["Batch_ID"] == batch_id, "Batch_Quantity"] += qty
+    else:
+        new_row = pd.DataFrame([{
+            "Batch_ID": batch_id,
+            "Item_Identifier": item_meta,
+            "Expiry_Date": expiry,
+            "Batch_Quantity": qty
+        }])
+        store_state = pd.concat([store_state, new_row], ignore_index=True)
+
+def dec_wh_batch(batch_id: str, qty: int):
+    global wh_state
+    if (wh_state["Batch_ID"] == batch_id).any():
+        wh_state.loc[wh_state["Batch_ID"] == batch_id, "Batch_Quantity"] -= qty
+    else:
+        # initialize record with negative picked qty (we only track deltas here)
+        meta = wh_boot[wh_boot["Batch_ID"] == batch_id]
+        if meta.empty:
+            return
+        new_row = meta.copy()
+        new_row["Batch_Quantity"] = -qty
+        wh_state = pd.concat([wh_state, new_row], ignore_index=True)
 
 for message in consumer:
-    event = message.value
-    print(f"Received message: {event}")
+    evt = message.value
+    etype = evt.get("event_type")
 
-    if event.get("event_type") == "restock":
-        batch_id = event["batch_id"]
-        quantity = event["quantity"]
+    if etype == "restock":
+        batch_id = evt.get("batch_id")
+        item_id = evt.get("item_id")
+        qty = int(evt.get("quantity", 0))
+        if batch_id and qty > 0:
+            upsert_store_batch(batch_id, item_id, qty)
+            store_state.to_parquet(STORE_OUT, index=False)
+            print(f"[shelf-consumer] store batch {batch_id} +{qty}")
 
-        # Check if batch_id exists in store_batches
-        if batch_id in store_batches["Batch_ID"].values:
-            # Batch already exists → just increment quantity
-            store_batches.loc[store_batches["Batch_ID"] == batch_id, "Batch_Quantity"] += quantity
-            print(f"Updated existing batch {batch_id} with +{quantity} units.")
-        else:
-            # Batch not in store_batches → add it from warehouse_batches
-            batch_row = warehouse_batches[warehouse_batches["Batch_ID"] == batch_id]
+    elif etype == "warehouse_pick":
+        batch_id = evt.get("batch_id")
+        qty = int(evt.get("quantity_picked", 0))
+        if batch_id and qty > 0:
+            dec_wh_batch(batch_id, qty)
+            wh_state.to_parquet(WH_OUT, index=False)
+            print(f"[shelf-consumer] warehouse batch {batch_id} -{qty}")
 
-            if not batch_row.empty:
-                new_entry = batch_row.copy()
-                new_entry["Batch_Quantity"] = quantity  # Only add what's being taken for shelves
-                store_batches = pd.concat([store_batches, new_entry], ignore_index=True)
-                print(f"Added new batch {batch_id} to store_batches with {quantity} units.")
-            else:
-                print(f"Error: Batch {batch_id} not found in warehouse_batches.")
-
-        # Save updated batches (overwrite for simplicity)
-        store_batches.to_parquet("/data/store_batches.parquet", index=False)
+    # ignore pickup/putback here (they're sensor-level events)

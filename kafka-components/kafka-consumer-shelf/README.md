@@ -1,20 +1,19 @@
-# Kafka Consumer - Shelf Batches Updater
+# Kafka Consumer — Shelf Materializer
 
-This Kafka Consumer listens to `restock` events and updates the in-store batches accordingly.
+Listens to:
+- `shelf_events` (`restock` events)
+- `warehouse_events` (`warehouse_pick` events)
 
-## Functionality:
-- If a batch already exists in `store_batches`, it updates the quantity.
-- If the batch does not exist, it adds the batch from `warehouse_batches`.
+Maintains **materialized parquet snapshots** (so base parquet remains unchanged):
+- `/data/materialized/store_batches_state.parquet`
+- `/data/materialized/warehouse_batches_state.parquet`
 
-## Dataset:
-- Reads `/data/store_batches.parquet` and `/data/warehouse_batches.parquet`.
+## Environment
+- `KAFKA_BROKER` (default `kafka:9092`)
+- `TOPIC_SHELF_EVENTS` (default `shelf_events`)
+- `TOPIC_WAREHOUSE_EVENTS` (default `warehouse_events`)
+- `WH_BATCHES_PARQUET` (default `/data/warehouse_batches.parquet`)
+- `OUT_DIR` (default `/data/materialized`)
 
-## Kafka Topic:
-- Default topic: `shelf_events`
-
-## Environment Variables:
-- `KAFKA_BROKER` (default: kafka:9092)
-- `KAFKA_TOPIC` (default: shelf_events)
-
-## Run inside Docker:
-Ensure `/data` is mounted with both store_batches and warehouse_batches parquet files.
+## Volumes
+- Host `./data` → Container `/data`
