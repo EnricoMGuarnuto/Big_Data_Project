@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS products_instore (
-    shelf_id SERIAL PRIMARY KEY,
+    shelf_id VARCHAR(5),
     item_weight FLOAT,
     shelf_weight FLOAT,
     visibility FLOAT,
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS products_instore (
 
 
 CREATE TABLE IF NOT EXISTS products_warehouse (
-    shelf_id SERIAL PRIMARY KEY,
+    shelf_id VARCHAR(5),
     item_weight FLOAT,
     visibility FLOAT,
     category TEXT,
@@ -20,30 +20,46 @@ CREATE TABLE IF NOT EXISTS products_warehouse (
     current_stock INT
 );
 
--- CREATE TABLE IF NOT EXISTS batch (
---     batch_id SERIAL PRIMARY KEY, 
---     product_id INT,
---     quantity_instore INT,
---     quantity_warehouse INT,
---     expiry_date DATE, -- data di scadenza del lotto
---     received_date DATE
--- );
-
-CREATE TABLE store_batches (
-    product_id INT,
-    batch_id serial primary key,
-    quantity INT,
+-- Tabelle per la gestione dei lotti (batches) in store e warehouse
+CREATE TABLE IF NOT EXISTS staging_batches (
+    shelf_id VARCHAR(5),
+    batch_code VARCHAR(30),
+    received_date DATE,
     expiry_date DATE,
-    received_date DATE
+    quantity INT,
+    location TEXT -- 'instore' or 'warehouse'
 );
 
-CREATE TABLE warehouse_batches (
-    product_id INT,
-    batch_id serial primary key,
-    quantity INT,
-    expiry_date DATE,
-    received_date DATE
+CREATE TABLE IF NOT EXISTS items (
+  item_id bigserial primary key,
+  shelf_id  VARCHAR(5) not null unique
 );
+
+create table if not exists locations (
+  location_id      serial primary key,
+  location    text not null unique
+);
+
+create table if not exists batches (
+  batch_id             bigserial primary key,
+  item_id              bigint not null references items(item_id),
+  batch_code           varchar(30)   not null  -- Batch_ID del CSV
+  received_date        date   not null,
+  expiry_date          date,
+  constraint uq_batches unique (item_id, batch_code)
+);
+
+-- create index if not exists idx_batches_expiry on batches(expiry_date);
+
+create table if not exists batch_inventory (
+  batch_id     bigint not null references batches(batch_id) on delete cascade,
+  location_id  int    not null references locations(location_id),
+  quantity     int    not null,
+  constraint pk_batch_inventory primary key (batch_id, location_id),
+  constraint chk_qty_nonneg check (quantity >= 0)
+);
+-- create index if not exists idx_batch_inventory_loc on batch_inventory(location_id);
+
 
 '''
 -- Tabella di domanda prevista per prodotto (popolata da Spark/ML periodicamente)
@@ -78,7 +94,7 @@ CREATE TABLE IF NOT EXISTS shelf_events (
 -- Ogni volta che il sensore registra una variazione di peso generi un record qui.
 -- Il consumer aggiornerà lo status in base a quanto succede dopo (acquisto o restituzione).
 
-create table receipts (
+CREATE TABLE IF NOT EXISTS receipts (
   receipt_id        bigserial primary key,
   business_date     date not null,                         -- data fiscale
   opened_at         timestamptz not null default now(),
@@ -92,7 +108,7 @@ create table receipts (
 );
 -- Ogni volta che viene effettuata una vendita, registra qui.
 
-create table receipt_lines (
+CREATE TABLE IF NOT EXISTS receipt_lines (
   receipt_line_id   bigserial primary key,
   receipt_id        bigint not null references receipts(receipt_id) on delete cascade,
   product_id        bigint not null references products_instore(shelf_id), 
@@ -109,7 +125,9 @@ create table receipt_lines (
   constraint chk_prices_nonneg check (unit_price >= 0 and line_discount >= 0)
 );
 
-create index idx_lines_receipt on receipt_lines(receipt_id);
+-- create index idx_lines_receipt on receipt_lines(receipt_id);
+
+
 
 COPY products_instore(product_id,item_weight, visibility, category, item_mrp, initial_stock, current_stock) 
 FROM '/data/store_inventory_final.csv'
@@ -121,12 +139,12 @@ FROM '/data/warehouse_inventory_final.csv'
 DELIMITER ','
 CSV HEADER;
 
-COPY store_batches
+COPY staging_batches(shelf_id, batch_code, received_date, expiry_date, quantity, location)
 FROM '/data/store_batches.csv'
 DELIMITER ','
 CSV HEADER;
 
-COPY warehouse_batches
+COPY staging_batches(shelf_id, batch_code, received_date, expiry_date, quantity, location)
 FROM '/data/warehouse_batches.csv'
 DELIMITER ','
 CSV HEADER;
