@@ -6,7 +6,7 @@ from datetime import datetime
 from uuid import uuid4
 
 # Load dataset
-df = pd.read_csv('store_inventory.csv') 
+df = pd.read_csv('dataset_changes/store_inventory.csv') 
 
 # Remove the 'Others' category ---
 df = df[df['Item_Type'] != 'Others']
@@ -221,6 +221,24 @@ df['time_stamp'] = current_timestamp
 
 
 
+### change names of the columns
+df.rename(columns={
+    'Item_Identifier': 'shelf_id',
+    'Item_Type': 'item_category',
+    'Item_Weight': 'item_weight',
+    'Item_Visibility': 'item_visibility',
+}, inplace=True)
+
+### add shelf_weight column
+df['shelf_weight'] = df['item_weight'] * df['current_stock']
+#change position
+df = df[['shelf_id', 'item_category', 'item_weight', 'shelf_weight', 'item_visibility', 'initial_stock', 'current_stock', 'time_stamp']]
+
+
+
+
+
+
 
 
 
@@ -238,4 +256,4 @@ df['time_stamp'] = current_timestamp
 
 
 # Save dataset 
-df.to_csv('dataset_changes/store_inventory_final.csv', index=False)
+df.to_csv('store_inventory_final.csv', index=False)

@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS staging_batches (
     expiry_date DATE,
     quantity INT,
     location TEXT -- 'instore' or 'warehouse'
+    constraint chk_location_type CHECK (location IN ('instore', 'warehouse')) -- contraint per limitare i valori
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -38,7 +39,14 @@ CREATE TABLE IF NOT EXISTS items (
 create table if not exists locations (
   location_id      serial primary key,
   location    text not null unique
+  constraint chk_location_type CHECK (location IN ('instore', 'warehouse'))
 );
+
+CREATE TABLE IF NOT EXISTS categories (
+  category_id SERIAL PRIMARY KEY,
+  category_name TEXT NOT NULL UNIQUE
+);
+
 
 create table if not exists batches (
   batch_id             bigserial primary key,
@@ -47,6 +55,8 @@ create table if not exists batches (
   received_date        date   not null,
   expiry_date          date,
   constraint uq_batches unique (item_id, batch_code)
+  constraint chk_expiry_after_received CHECK (expiry_date IS NULL OR expiry_date >= received_date)
+
 );
 
 -- create index if not exists idx_batches_expiry on batches(expiry_date);
@@ -75,7 +85,8 @@ CREATE TABLE IF NOT EXISTS forecast_demand (
 
 CREATE TABLE IF NOT EXISTS refill_history (
     refill_id SERIAL PRIMARY KEY,
-    shelf_id INT,
+    item_id BIGINT NOT NULL REFERENCES items(item_id),
+    shelf_id VARCHAR(5) NOT NULL,
     refill_time TIMESTAMP DEFAULT NOW(),
     quantity INT
 );
@@ -83,13 +94,12 @@ CREATE TABLE IF NOT EXISTS refill_history (
 
 CREATE TABLE IF NOT EXISTS shelf_events (
     event_id SERIAL PRIMARY KEY,
-    shelf_id INT,
+    item_id BIGINT NOT NULL REFERENCES items(item_id),
+    shelf_id VARCHAR(5) NOT NULL,
     event_type TEXT, -- "pickup (item preso da shelf)", "rimesso giù (item rimesso a posto)", "restock (item rifornito)"
     weight_change FLOAT, -- variazione di peso (positivo o negativo)
     event_time TIMESTAMP
-    --da togliere:
-    --status_event TEXT DEFAULT 'pending', -- "pending", "confirmed", "returned", "expired"
-    --stock_updated BOOL DEFAULT FALSE -- per evitare doppio decremento dello stock
+    constraint chk_event_type CHECK (event_type IN ('pickup', 'putback', 'restock'));
 );
 -- Ogni volta che il sensore registra una variazione di peso generi un record qui.
 -- Il consumer aggiornerà lo status in base a quanto succede dopo (acquisto o restituzione).
@@ -111,8 +121,9 @@ CREATE TABLE IF NOT EXISTS receipts (
 CREATE TABLE IF NOT EXISTS receipt_lines (
   receipt_line_id   bigserial primary key,
   receipt_id        bigint not null references receipts(receipt_id) on delete cascade,
-  product_id        bigint not null references products_instore(shelf_id), 
-  batch_id          text not null references batch(batch_id),                        
+  product_id        bigint not null references items(item_id),
+  batch_id          bigint not null references batches(batch_id) 
+  shelf_id          VARCHAR(5) not null,                   -- shelf_id del prodotto                        
   unit_price        numeric(12,4) not null,                  -- prezzo lordo unitario
   line_discount     numeric(12,2) not null default 0,        -- sconto riga (+ = sconto)
   tax_code          text not null default 'IVA',
