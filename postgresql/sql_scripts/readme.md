@@ -5,7 +5,6 @@
 line_discount     numeric(12,2) not null default 0,        -- sconto riga (+ = sconto)
 come si acquisisce questo line_discount? dalla tabella di enrico???????
 3. register_id: immaginiamo di avere 5 casse, per esempio. forse il register id va messo già nelle pos_transaction producer.
-4. Da modificare batch_id e Item_id di store_batches e warehouse_batches per fare batch_id uguale tra loro e Item_id con gli stessi dello store/warehouse inventory
 
 ## Spiegazione nuove tabelle batches:
 
