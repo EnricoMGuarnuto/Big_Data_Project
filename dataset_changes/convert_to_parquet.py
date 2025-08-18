@@ -1,13 +1,14 @@
 import pandas as pd
 
 # Lista dei file CSV
-csv_files = [
-    'dataset_changes/store_inventory_final.csv',
-    'dataset_changes/warehouse_inventory_final.csv',
-    'dataset_changes/warehouse_batches.csv',
-    'dataset_changes/store_batches.csv'
-]
+# csv_files = [
+#    'dataset_changes/store_inventory_final.csv',
+#    'dataset_changes/warehouse_inventory_final.csv',
+#    'dataset_changes/warehouse_batches.csv',
+#    'dataset_changes/store_batches.csv'
+#]
 
+csv_files= ['store_inventory_final.csv']
 # Convertili tutti
 for file in csv_files:
     df = pd.read_csv(file)
