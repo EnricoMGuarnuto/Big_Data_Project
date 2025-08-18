@@ -107,32 +107,7 @@ services:
       - kafka
     volumes:
       - ./data:/data
-
-  kafka-producer-shelf-restock:
-    build:
-      context: ./kafka-components/kafka-producer-shelf-restock
-    environment:
-      - KAFKA_BROKER=kafka:9092
-      - TOPIC_SHELF_EVENTS=shelf_events
-      - TOPIC_WAREHOUSE_EVENTS=warehouse_events
-      - TOPIC_ALERTS=alerts
-      - RESTOCK_THRESHOLD=10
-      - RESTOCK_DELAY_SEC=60
-      - RESTOCK_MAX_CHUNK=100000
-      - EXPIRY_ALERT_DAYS=3
-      - EXPIRY_POLL_SEC=15
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_DB=0
-      - STORE_PARQUET=/data/store_inventory_final.parquet
-      - WH_BATCHES_PARQUET=/data/warehouse_batches.parquet
-      - STORE_BATCHES_PARQUET=/data/store_batches.parquet
-    depends_on:
-      - kafka
-      - redis
-    volumes:
-      - ./data:/data
-
+      
   kafka-consumer-shelf:
     build:
       context: ./kafka-components/kafka-consumer-shelf
