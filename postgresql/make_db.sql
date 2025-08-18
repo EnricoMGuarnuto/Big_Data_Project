@@ -16,6 +16,15 @@ CREATE TABLE IF NOT EXISTS items (
   category_id INT NOT NULL REFERENCES categories(category_id)
 );
 
+-- Accumula l’effetto netto dei sensori (pickup/putback) non ancora consolidato dal POS
+CREATE TABLE IF NOT EXISTS sensor_balance (
+  item_id       bigint      NOT NULL,
+  location_id   int         NOT NULL,
+  pending_delta int         NOT NULL DEFAULT 0,   -- pickup<0, putback>0
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (item_id, location_id)
+);
+
 -- main inventory table
 CREATE TABLE IF NOT EXISTS product_inventory (
   item_id BIGINT NOT NULL REFERENCES items(item_id),
