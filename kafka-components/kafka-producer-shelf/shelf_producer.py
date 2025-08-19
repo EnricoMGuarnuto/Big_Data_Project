@@ -3,13 +3,15 @@ import json
 import time
 import random
 import threading
-from datetime import datetime, timedelta
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import redis
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
+
+BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 
 # ========================
 # Config
@@ -27,7 +29,7 @@ REDIS_DB = int(os.getenv("REDIS_DB", 0))
 # ========================
 # Stato
 # ========================
-active_customers = {}  # customer_id -> exit_time
+active_customers = {}
 scheduled_actions = defaultdict(list)
 lock = threading.Lock()
 
@@ -37,7 +39,7 @@ lock = threading.Lock()
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
 def now_utc():
-    return datetime.utcnow()
+    return datetime.utcnow().replace(tzinfo=timezone.utc)
 
 def sample_num_actions():
     r = random.random()
@@ -115,20 +117,19 @@ def reap_inactive():
 # ========================
 def main():
     df = pd.read_parquet(STORE_PARQUET)
-    required_cols = {"Item_Identifier", "Item_Weight", "Item_Visibility"}
+    required_cols = {"shelf_id", "item_weight", "item_visibility"}
     if not required_cols.issubset(df.columns):
         raise ValueError(f"Parquet must contain columns: {required_cols}")
 
-    # Caricamento sconti da Redis
     def get_discount(item_id):
         try:
             d = float(r.get(f"discount:{item_id}") or 0.0)
-            return max(0.0, min(d, 0.95))  # clamp tra 0 e 0.95
+            return max(0.0, min(d, 0.95))
         except Exception:
             return 0.0
 
-    df["discount"] = df["Item_Identifier"].map(get_discount)
-    df["pick_score"] = df["Item_Visibility"] * (1 + df["discount"])
+    df["discount"] = df["shelf_id"].map(get_discount)
+    df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
     pick_weights = df["pick_score"].tolist()
 
     rng = random.Random()
@@ -152,12 +153,11 @@ def main():
 
                     idx = rng.choices(range(len(df)), weights=pick_weights, k=1)[0]
                     row = df.iloc[idx]
-                    item_id = row["Item_Identifier"]
-                    item_weight = float(row["Item_Weight"])
+                    item_id = row["shelf_id"]
+                    item_weight = float(row["item_weight"])
                     quantity = rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
                     total_weight = round(item_weight * quantity, 3)
 
-                    # Evento simulativo
                     sim_event = {
                         "event_type": action_type,
                         "customer_id": customer_id,
@@ -169,7 +169,6 @@ def main():
                     producer.send(TOPIC_SHELF, value=sim_event)
                     print(f"[shelf] Sent {action_type.upper()}: {sim_event}")
 
-                    # Evento realistico
                     weight_event = {
                         "event_type": "weight_change",
                         "customer_id": customer_id,
@@ -181,7 +180,7 @@ def main():
                     print(f"[shelf] Sent WEIGHT_CHANGE: {weight_event}")
 
                     executed = True
-                    break  # 1 azione per ciclo
+                    break
 
         if not executed:
             time.sleep(SLEEP_SEC)

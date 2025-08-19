@@ -1,108 +1,81 @@
-import os
-import json
-import pandas as pd
-from pathlib import Path
+import os, json, time, uuid
+from datetime import datetime
 from kafka import KafkaConsumer
+import psycopg2
+import psycopg2.extras
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
-TOPIC_SHELF = os.getenv("TOPIC_SHELF_EVENTS", "shelf_events")
-TOPIC_WH = os.getenv("TOPIC_WAREHOUSE_EVENTS", "warehouse_events")
+TOPIC = os.getenv("TOPIC_SHELF", "shelf_events")
+GROUP_ID = os.getenv("GROUP_ID", "db-shelf-consumer")
 
-# input bootstrap parquet (to get batch meta when needed)
-WAREHOUSE_BOOTSTRAP = os.getenv("WH_BATCHES_PARQUET", "/data/warehouse_batches.parquet")
+PG_HOST = os.getenv("PG_HOST", "postgres")
+PG_PORT = int(os.getenv("PG_PORT", "5432"))
+PG_DB   = os.getenv("PG_DB", "retaildb")
+PG_USER = os.getenv("PG_USER", "retail")
+PG_PASS = os.getenv("PG_PASS", "retailpass")
 
-# materialized outputs (do NOT overwrite base parquet)
-OUT_DIR = Path(os.getenv("OUT_DIR", "/data/materialized"))
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-STORE_OUT = OUT_DIR / "store_batches_state.parquet"
-WH_OUT = OUT_DIR / "warehouse_batches_state.parquet"
-
-# Load bootstrap warehouse meta (Batch_ID, Item_Identifier, Expiry_Date)
-wh_boot = pd.read_parquet(WAREHOUSE_BOOTSTRAP)[["Batch_ID","Item_Identifier","Expiry_Date"]].drop_duplicates()
-
-# Initialize state files if missing
-if STORE_OUT.exists():
-    store_state = pd.read_parquet(STORE_OUT)
-else:
-    store_state = pd.DataFrame(columns=["Batch_ID","Item_Identifier","Expiry_Date","Batch_Quantity"])
-
-if WH_OUT.exists():
-    wh_state = pd.read_parquet(WH_OUT)
-    # ensure consistent dtypes
-    if "Batch_Quantity" not in wh_state.columns:
-        wh_state["Batch_Quantity"] = 0
-else:
-    # start from bootstrap quantities = 0 (we’ll only reflect picks here)
-    wh_state = wh_boot.merge(
-        pd.DataFrame(columns=["Batch_ID","Batch_Quantity"]),
-        on="Batch_ID", how="left"
+def pg_connect():
+    conn = psycopg2.connect(
+        host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASS
     )
-    wh_state["Batch_Quantity"] = 0
+    conn.autocommit = True
+    return conn
 
-consumer = KafkaConsumer(
-    TOPIC_SHELF, TOPIC_WH,
-    bootstrap_servers=KAFKA_BROKER,
-    auto_offset_reset="earliest",
-    enable_auto_commit=True,
-    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    group_id=os.getenv("GROUP_ID","shelf-consumer-materializer")
-)
+def to_ts(s: str):
+    return datetime.fromisoformat(s.replace("Z",""))
 
-print(f"[shelf-consumer] Listening on: {TOPIC_SHELF}, {TOPIC_WH}")
+def main():
+    consumer = KafkaConsumer(
+        TOPIC,
+        bootstrap_servers=KAFKA_BROKER,
+        group_id=GROUP_ID,
+        value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+        auto_offset_reset="earliest",
+        enable_auto_commit=True
+    )
+    conn = pg_connect()
+    cur  = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-def upsert_store_batch(batch_id: str, item_id: str, qty: int):
-    global store_state
-    # find batch meta
-    meta = wh_boot[wh_boot["Batch_ID"] == batch_id]
-    if meta.empty:
-        # batch not in bootstrap (shouldn’t happen in this toy flow), skip
-        return
-    expiry = meta.iloc[0]["Expiry_Date"]
-    item_meta = meta.iloc[0]["Item_Identifier"]
+    print(f"[shelf-db] Listening on topic '{TOPIC}'")
+    for msg in consumer:
+        evt = msg.value or {}
+        etype = evt.get("event_type")
+        customer_id = evt.get("customer_id")
+        shelf_id = evt.get("item_id") or evt.get("shelf_id")  # producer usa item_id= shelf_id
+        ts_str = evt.get("timestamp")
+        if not ts_str or not shelf_id:
+            continue
+        event_ts = to_ts(ts_str)
+        event_id = f"sw-{uuid.uuid4()}"
 
-    if (store_state["Batch_ID"] == batch_id).any():
-        store_state.loc[store_state["Batch_ID"] == batch_id, "Batch_Quantity"] += qty
-    else:
-        new_row = pd.DataFrame([{
-            "Batch_ID": batch_id,
-            "Item_Identifier": item_meta,
-            "Expiry_Date": expiry,
-            "Batch_Quantity": qty
-        }])
-        store_state = pd.concat([store_state, new_row], ignore_index=True)
+        # Log in stream_events (idempotenza a livello di event_id generato qui)
+        try:
+            cur.execute(
+                "INSERT INTO stream_events(event_id,source,event_ts,payload) VALUES (%s,%s,%s,%s)",
+                (event_id, "shelf.sensors", event_ts, json.dumps(evt))
+            )
+        except Exception:
+            # già inserito? poco male
+            pass
 
-def dec_wh_batch(batch_id: str, qty: int):
-    global wh_state
-    if (wh_state["Batch_ID"] == batch_id).any():
-        wh_state.loc[wh_state["Batch_ID"] == batch_id, "Batch_Quantity"] -= qty
-    else:
-        # initialize record with negative picked qty (we only track deltas here)
-        meta = wh_boot[wh_boot["Batch_ID"] == batch_id]
-        if meta.empty:
-            return
-        new_row = meta.copy()
-        new_row["Batch_Quantity"] = -qty
-        wh_state = pd.concat([wh_state, new_row], ignore_index=True)
+        if etype == "weight_change":
+            delta = float(evt.get("delta_weight", 0))
+            # chiama la funzione dominio (usa peso unitario da product_inventory instore)
+            try:
+                cur.execute(
+                    "SELECT apply_shelf_weight_event(%s,%s,%s,%s,%s,%s::jsonb,%s)",
+                    (event_id, event_ts, shelf_id, delta, False, json.dumps({"customer_id":customer_id}), 0.25)
+                )
+            except Exception as e:
+                print(f"[shelf-db] ERROR apply_shelf_weight_event: {e}")
+        else:
+            # eventi 'pickup/putback' simulativi: li ignoriamo per lo stock DB, ma restano loggati
+            pass
 
-for message in consumer:
-    evt = message.value
-    etype = evt.get("event_type")
-
-    if etype == "restock":
-        batch_id = evt.get("batch_id")
-        item_id = evt.get("item_id")
-        qty = int(evt.get("quantity", 0))
-        if batch_id and qty > 0:
-            upsert_store_batch(batch_id, item_id, qty)
-            store_state.to_parquet(STORE_OUT, index=False)
-            print(f"[shelf-consumer] store batch {batch_id} +{qty}")
-
-    elif etype == "warehouse_pick":
-        batch_id = evt.get("batch_id")
-        qty = int(evt.get("quantity_picked", 0))
-        if batch_id and qty > 0:
-            dec_wh_batch(batch_id, qty)
-            wh_state.to_parquet(WH_OUT, index=False)
-            print(f"[shelf-consumer] warehouse batch {batch_id} -{qty}")
-
-    # ignore pickup/putback here (they're sensor-level events)
+if __name__ == "__main__":
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"[shelf-db] fatal error, retrying in 5s: {e}")
+            time.sleep(5)

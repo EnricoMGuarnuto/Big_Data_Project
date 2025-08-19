@@ -1,2 +1,2 @@
 kafka-python
-pandas
+pandas==1.5.3

@@ -1,4 +1,4 @@
-pandas
+pandas==1.5.3
 redis
 kafka-python
-pyarrow
+pyarrow==14.0.2

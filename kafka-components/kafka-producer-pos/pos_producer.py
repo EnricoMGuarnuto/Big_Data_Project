@@ -12,6 +12,8 @@ import redis
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable
 
+BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+
 # ========================
 # ENV / Config
 # ========================
@@ -36,22 +38,22 @@ REDIS_DB   = int(os.getenv("REDIS_DB", 0))
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 
 # Safety: guard-rail su sessioni troppo lunghe
-MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))  # 3h
+MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
 
 # ========================
 # Helpers
 # ========================
 def load_price_map_from_store(path: str) -> Dict[str, float]:
-    """Legge il parquet di inventario e costruisce la mappa Item_Identifier -> price."""
+    """Legge il parquet di inventario e costruisce la mappa shelf_id -> price."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"Store parquet non trovato: {path}")
     df = pd.read_parquet(path)
-    req = {"Item_Identifier", "price"}
+    req = {"shelf_id", "price"}
     missing = req - set(df.columns)
     if missing:
         raise ValueError(f"{path} manca le colonne {missing} (serve 'price').")
-    df = df.dropna(subset=["Item_Identifier", "price"])
-    return df.set_index("Item_Identifier")["price"].astype(float).to_dict()
+    df = df.dropna(subset=["shelf_id", "price"])
+    return df.set_index("shelf_id")["price"].astype(float).to_dict()
 
 def now_utc() -> datetime:
     return datetime.utcnow()
@@ -59,19 +61,15 @@ def now_utc() -> datetime:
 # ========================
 # Stato applicativo
 # ========================
-# carrelli[customer_id][item_id] = qty
 carts: DefaultDict[str, DefaultDict[str, int]] = defaultdict(lambda: defaultdict(int))
 carts_lock = threading.Lock()
 
-# timers[customer_id] = threading.Timer(...)
 timers: Dict[str, threading.Timer] = {}
 timers_lock = threading.Lock()
 
-# memorizziamo anche l'entry_time per guard-rail
 entries: Dict[str, datetime] = {}
 entries_lock = threading.Lock()
 
-# Prezzi e Redis
 try:
     price_by_item = load_price_map_from_store(STORE_PARQUET)
     print(f"[pos] Prezzi caricati da {STORE_PARQUET}, {len(price_by_item)} articoli trovati.")
@@ -109,7 +107,6 @@ producer = build_producer()
 # Checkout
 # ========================
 def _price_for(item_id: str) -> float:
-    # 1) parquet (preferito); 2) fallback Redis; 3) default 5.0
     p = price_by_item.get(item_id)
     if p is None:
         try:
@@ -126,7 +123,6 @@ def _discount_for(item_id: str) -> float:
     return max(0.0, min(d, 0.95))
 
 def emit_pos_transaction(customer_id: str, timestamp: datetime):
-    # snapshot del carrello
     with carts_lock:
         items_map = dict(carts.get(customer_id, {}))
 
@@ -163,7 +159,6 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
     producer.send(POS_TOPIC, value=transaction)
     print(f"[pos] POS transaction emitted: {transaction}")
 
-    # pulizia stato
     with carts_lock:
         carts.pop(customer_id, None)
     with timers_lock:
@@ -220,7 +215,7 @@ def shelf_consumer_loop():
         if etype not in ("pickup", "putback") or not customer_id or not item_id:
             continue
 
-        qty = evt.get("quantity", 1)  # fallback a 1 se non presente (per compatibilità)
+        qty = evt.get("quantity", 1)
         with carts_lock:
             if etype == "pickup":
                 carts[customer_id][item_id] += int(qty)

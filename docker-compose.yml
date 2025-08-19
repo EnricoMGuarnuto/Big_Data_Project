@@ -1,40 +1,42 @@
+version: '3.8'
+
 services:
   postgres:
-    build:
-        context: ./postgresql
-    restart: no
-    shm_size: 128mb
+    image: postgres:16-alpine
     environment:
-      POSTGRES_USER: retail
-      POSTGRES_PASSWORD: retailpass
-      POSTGRES_DB: retaildb
-    ports: 
-      - 5432:5432
-  
-  db-bootstrapper:
-    build: ./postgresql
-    depends_on:
-      - postgres
-    environment:
-      POSTGRES_DB: retaildb
-      POSTGRES_USER: retail
-      POSTGRES_PASSWORD: retailpass
-      PGDATA: /var/lib/postgresql/inventory
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data/inventory
+      - postgres_data:/var/lib/postgresql/data/pgdata
+      - ./data:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h localhost || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
 
   db-sql-jobs:
-    build: ./postgresql/sql_scripts
+    image: postgres:16-alpine
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
-      DB_NAME: retaildb
-      DB_USER: retail
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_PASSWORD: retailpass
-  
-  minio:    
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+    volumes:
+      - ./postgresql/sql:/sql:ro
+      - ./data:/data:ro
+    entrypoint: ["sh", "-c",
+      "psql postgresql://$DB_USER:$DB_PASSWORD@postgres:5432/$DB_NAME -v ON_ERROR_STOP=1 -f /sql/make_db.sql &&
+       psql postgresql://$DB_USER:$DB_PASSWORD@postgres:5432/$DB_NAME -v ON_ERROR_STOP=1 -f /sql/db_management.sql"]
+    restart: 'no'
+
+  minio:
     image: minio/minio
     command: server /data --console-address ":9001"
     environment:
@@ -53,21 +55,6 @@ services:
     volumes:
       - redis_data:/data
 
-  
-  # mlflow:
-  #   image: ghcr.io/mlflow/mlflow:v2.11.3
-  #   environment:
-  #     AWS_ACCESS_KEY_ID: minio
-  #     AWS_SECRET_ACCESS_KEY: minio123
-  #     MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-  #   command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root s3://mlflow/
-  #   ports:
-  #     - "5000:5000"
-  #   depends_on:
-  #     - minio
-  #   volumes:
-  #     - ./mlflow:/mlflow
-
   zookeeper:
     image: confluentinc/cp-zookeeper:6.2.1
     platform: linux/amd64
@@ -84,172 +71,113 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-  
-  # Kafka producers + kafka consumers
-  kafka-producer-shelf:
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+
+  kafka-producer-foot-traffic:
     build:
-      context: ./kafka-components/kafka-producer-shelf
+      context: ./kafka-components/kafka-producer-foot_traffic
+      dockerfile: Dockerfile
     environment:
       - KAFKA_BROKER=kafka:9092
-      - KAFKA_TOPIC_FOOT=foot_traffic
-      - KAFKA_TOPIC_SHELF=shelf_events
-      - SHELF_SLEEP_BASE=1.0
-      - SHELF_SLEEP_MIN=0.15
-      - PICKUP_BASE_P=0.70
-      - PICKUP_BUMP=0.20
-      - PUTBACK_P=0.10
-      - ALPHA_RATE=0.08
-      - TRAFFIC_WINDOW_MIN=5
-    depends_on:
-      - kafka
-    volumes:
-      - ./data:/data
-      
-  kafka-consumer-shelf:
-    build:
-      context: ./kafka-components/kafka-consumer-shelf
-    environment:
-      - KAFKA_BROKER=kafka:9092
-      - TOPIC_SHELF_EVENTS=shelf_events
-      - TOPIC_WAREHOUSE_EVENTS=warehouse_events
-      - WH_BATCHES_PARQUET=/data/warehouse_batches.parquet
-      - OUT_DIR=/data/materialized
+      - KAFKA_TOPIC=foot_traffic
+      - SLEEP=0.3
     depends_on:
       - kafka
     volumes:
       - ./data:/data
 
-  discount-updater:
+  kafka-producer-shelf:
     build:
-      context: ./kafka-components/kafka-discount_updater
-      dockerfile: ./Dockerfile
-    depends_on:
-      - redis
+      context: ./kafka-components/kafka-producer-shelf
+      dockerfile: Dockerfile
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DISCOUNT_UPDATE_INTERVAL=30
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC_FOOT=foot_traffic
+      - KAFKA_TOPIC_SHELF=shelf_events
+    depends_on:
+      - kafka
+      - redis
     volumes:
       - ./data:/data
 
   kafka-producer-pos:
     build:
       context: ./kafka-components/kafka-producer-pos
-      dockerfile: ./Dockerfile
-    depends_on:
-      - kafka
-      - redis
-      - kafka-producer-traffic
+      dockerfile: Dockerfile
     environment:
       - KAFKA_BROKER=kafka:9092
       - FOOT_TOPIC=foot_traffic
       - POS_TOPIC=pos_transactions
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-    volumes:
-      - ./data:/data                                                                                                                                                                          
-
-  # kafka-consumer-pos:
-  #   build:
-  #     context: ./kafka-components/kafka-consumer-pos
-  #     dockerfile: .consumer_pos/Dockerfile
-  #   depends_on:
-  #     - kafka
-  #     - kafka-producer-pos
-  #     - minio
-  #   environment:
-  #     - MINIO_ENDPOINT=minio:9000
-  #     - MINIO_ACCESS_KEY=minio
-  #     - MINIO_SECRET_KEY=minio123
-  #     - MINIO_PREFIX=raw/pos_transactions
-  #   ports:
-  #     - 8011:8000
-
-  kafka-producer-traffic:
-    build:
-      context: ./kafka-components/kafka-producer-foot_traffic
-      dockerfile: ./Dockerfile
     depends_on:
       - kafka
+      - redis
+      - kafka-producer-foot-traffic
+    volumes:
+      - ./data:/data
+
+  kafka-consumer-shelf:
+    build:
+      context: ./kafka-components/kafka-consumer-shelf
+    depends_on:
+      - kafka
+      - postgres
     environment:
-      - SLEEP=0.3
-      - KAFKA_TOPIC=foot_traffic
-  
-  # kafka-consumer-traffic:
-  #   build:
-  #     context: ./kafka-components/kafka-consumer-foot_traffic
-  #     dockerfile: ./Dockerfile
-  #   depends_on:
-  #     - kafka
-  #     - kafka-producer-traffic
-  #     - minio
-  #   environment:
-  #     - MINIO_ENDPOINT=minio:9000
-  #     - MINIO_ACCESS_KEY=minio
-  #     - MINIO_SECRET_KEY=minio123
-  #     - MINIO_PREFIX=raw/foot_traffic
-  #   ports:
-  #     - 8012:8000
+      - KAFKA_BROKER=kafka:9092
+      - TOPIC_SHELF=shelf_events
+      - GROUP_ID=db-shelf-consumer
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+
+  kafka-consumer-pos:
+    build:
+      context: ./kafka-components/kafka-consumer-pos
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - POS_TOPIC=pos_transactions
+      - GROUP_ID=db-pos-consumer
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
 
   spark:
-      image: bitnami/spark:3.4
-      environment:
-        SPARK_MODE: master
-      ports:
-        - 7077:7077
-        - 8080:8080
-      volumes:
-        - ./spark-components:/app
-      depends_on:
-        - kafka
-        - minio
-        - postgres
-
-  # fastapi-service:
-  #   build: ./fastapi-service
-  #   ports:
-  #     - 8000:8000
-  #   environment:
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minio
-  #     MINIO_SECRET_KEY: minio123
-  #     POSTGRES_HOST: postgres
-  #     POSTGRES_DB: retaildb
-  #     POSTGRES_USER: retail
-  #     POSTGRES_PASSWORD: retailpass
-  #     MLFLOW_TRACKING_URI: http://mlflow:5000
-  #   depends_on:
-  #     - minio
-  #     - postgres
-  #     - mlflow
-  
-  # streamlit-dashboard:
-  #   build: ./streamlit-dashboard
-  #   ports:
-  #     - 8501:8501
-  #   environment:
-  #     POSTGRES_HOST: postgres
-  #     POSTGRES_DB: retaildb
-  #     POSTGRES_USER: retail
-  #     POSTGRES_PASSWORD: retailpass
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minio
-  #     MINIO_SECRET_KEY: minio123
-  #   depends_on:
-  #     - minio
-  #     - postgres
-  #     - fastapi-service
-  
-  # ml-model:
-  #   build: ./ml-model
-  #   depends_on:
-  #     - minio
-  #     - mlflow
-  #     - spark
-  #     - postgres
+    build:
+      context: ./spark-components
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PG_HOST=postgres
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+    volumes:
+      - ./spark-components:/app
+      - ./spark-checkpoints:/chk
+    depends_on:
+      - kafka
+      - postgres
+    ports:
+      - "4040:4040"
+    command: >
+      spark-submit
+        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,org.postgresql:postgresql:42.7.3
+        --conf spark.sql.shuffle.partitions=2
+        /app/streaming_supervisor.py
 
 volumes:
   minio_data:

@@ -18,15 +18,14 @@ TOPIC = os.getenv("KAFKA_TOPIC", "foot_traffic")
 
 # Tick loop (ridotto se TIME_SCALE > 1)
 SLEEP = float(os.getenv("SLEEP", 0.5))
-TIME_SCALE = float(os.getenv("TIME_SCALE", 1.0))  # 1.0 = realtime; >1 loop più frequente
+TIME_SCALE = float(os.getenv("TIME_SCALE", 1.0))
 
 # Totali giornalieri
 DEFAULT_DAILY_CUSTOMERS = int(os.getenv("DEFAULT_DAILY_CUSTOMERS", 100))
 BASE_DAILY_CUSTOMERS = int(os.getenv("BASE_DAILY_CUSTOMERS", DEFAULT_DAILY_CUSTOMERS))
-DAILY_CUSTOMERS = os.getenv("DAILY_CUSTOMERS")  # forza totale fisso, se impostato
+DAILY_CUSTOMERS = os.getenv("DAILY_CUSTOMERS")
 
 # Variabilità giornaliera (per non avere sempre gli stessi totali)
-# Esempio: 0.10 -> ±10% intorno alla media. Metti 0 o DISABLE_DAILY_VARIATION=1 per disattivare.
 DAILY_VARIATION_PCT = float(os.getenv("DAILY_VARIATION_PCT", 0.10))
 DISABLE_DAILY_VARIATION = os.getenv("DISABLE_DAILY_VARIATION", "0") in ("1", "true", "True")
 
@@ -98,7 +97,6 @@ AVG_DAY_WEIGHT = sum(DAY_WEIGHTS_SUM) / len(DAY_WEIGHTS_SUM)
 def parse_hhmm(s: str) -> dtime:
     return datetime.strptime(s, "%H:%M").time()
 
-# Pre-calcolo slot come dtime e conserviamo le stringhe per labeling
 TIME_SLOTS_STR = time_slots
 TIME_SLOTS = [(parse_hhmm(s), parse_hhmm(e)) for (s, e) in TIME_SLOTS_STR]
 
@@ -111,12 +109,11 @@ def slot_bounds(day: date, slot_idx: int):
 def get_slot_index_for(dt: datetime):
     t = dt.time()
     for i, (s, e) in enumerate(TIME_SLOTS):
-        if s <= t <= e:  # intervalli chiusi; vanno bene perché non si sovrappongono
+        if s <= t <= e:
             return i
     return None
 
 def largest_remainder_allocation(total: int, weights: list[int]) -> list[int]:
-    """Normalizza weights, fa floor e redistribuisce il resto a chi ha remainder maggiore."""
     n = len(weights)
     if total <= 0 or n == 0:
         return [0]*n
@@ -137,7 +134,6 @@ def largest_remainder_allocation(total: int, weights: list[int]) -> list[int]:
     return floors
 
 def uniform_times_in_slot(start_dt: datetime, end_dt: datetime, count: int, now_cut: datetime | None = None):
-    """Crea 'count' timestamp uniformi nello slot [start, end], filtrando quelli < now_cut (se passato)."""
     if count <= 0:
         return []
     s = start_dt if (now_cut is None or start_dt >= now_cut) else now_cut
@@ -151,7 +147,6 @@ def uniform_times_in_slot(start_dt: datetime, end_dt: datetime, count: int, now_
     return ts
 
 def generate_trip_duration():
-    """Durata visita in minuti: 35% 10–29; 39% 30–44; 26% 45–75."""
     r = random.random()
     if r < 0.35:
         return random.randint(10, 29)
@@ -161,8 +156,6 @@ def generate_trip_duration():
         return random.randint(45, 75)
 
 def decide_daily_total(weekday_idx: int) -> int:
-    """Decide il totale clienti per il giorno: fisso (se DAILY_CUSTOMERS), altrimenti
-    scala su popolarità del giorno + variabilità casuale opzionale."""
     if DAILY_CUSTOMERS:
         try:
             v = int(DAILY_CUSTOMERS)
@@ -178,7 +171,6 @@ def decide_daily_total(weekday_idx: int) -> int:
     if DISABLE_DAILY_VARIATION or DAILY_VARIATION_PCT <= 0:
         return max(1, round(mean_total))
 
-    # variazione uniforme ±p%
     lo = 1.0 - DAILY_VARIATION_PCT
     hi = 1.0 + DAILY_VARIATION_PCT
     noise_factor = random.uniform(lo, hi)
@@ -198,9 +190,6 @@ def build_producer():
                 linger_ms=50,
                 compression_type='gzip',
                 max_in_flight_requests_per_connection=1,
-                # opzionali per tempi prevedibili:
-                # request_timeout_ms=20000,
-                # delivery_timeout_ms=120000,
             )
             log.info("Connesso a Kafka.")
             break
@@ -233,29 +222,23 @@ def build_event(entry_time: datetime):
     }, cid
 
 def now_utc():
-    # Clock reale (gli orari evento restano nel mondo reale).
     return datetime.utcnow().replace(tzinfo=timezone.utc)
 
 class DayPlan:
-    """Piano 'da adesso in poi' per una giornata: ripartisce i clienti sugli slot rimanenti
-    e genera timestamp uniformi all’interno degli slot."""
     def __init__(self, day: date, weekday_idx: int, total_customers: int, now: datetime | None = None):
         self.day = day
         self.weekday_idx = weekday_idx
         self.total_customers = total_customers
         self.schedule = SCHEDULE_BY_IDX[weekday_idx]
 
-        # Conteggi interi per slot secondo i pesi relativi
         base_counts = largest_remainder_allocation(total_customers, self.schedule)
 
-        # Se è il piano per "oggi" e abbiamo un now, tagliamo gli slot passati e riduciamo quello corrente
         self.slot_counts = base_counts[:]
         if now is not None and now.date() == day:
             curr_idx = get_slot_index_for(now)
             for idx in range(len(self.slot_counts)):
                 s, e = slot_bounds(day, idx)
                 if curr_idx is None:
-                    # fuori da tutti gli slot (non succede con questa griglia), manteniamo i conteggi
                     continue
                 if idx < curr_idx:
                     self.slot_counts[idx] = 0
@@ -264,22 +247,19 @@ class DayPlan:
                     rem = max(0.0, (e - now).total_seconds())
                     frac = rem / full if full > 0 else 0.0
                     self.slot_counts[idx] = int(round(self.slot_counts[idx] * frac))
-                # idx > curr_idx: lasciamo invariato
 
-        # Genera i timestamp entry_time per la parte rimanente della giornata
         self.events = []
         for idx, cnt in enumerate(self.slot_counts):
             s, e = slot_bounds(day, idx)
             cutoff = None
             if now is not None and now.date() == day and s <= now <= e:
-                cutoff = now  # genera solo da "ora" a fine slot
+                cutoff = now
             self.events.extend(uniform_times_in_slot(s, e, cnt, now_cut=cutoff))
 
         self.events.sort()
         self._cursor = 0
 
     def next_ready(self, now: datetime):
-        """Ritorna il prossimo entry_time <= now e avanza il cursore; None se nulla è pronto."""
         if self._cursor >= len(self.events):
             return None
         if self.events[self._cursor] <= now:
@@ -291,9 +271,6 @@ class DayPlan:
     def remaining_today(self):
         return len(self.events) - self._cursor
 
-# ============================================================
-# Main loop
-# ============================================================
 def main():
     producer = build_producer()
 
@@ -308,8 +285,6 @@ def main():
     try:
         while not stop:
             now = now_utc()
-
-            # Cambio giorno ⇒ nuovo piano a partire dall'inizio del nuovo giorno
             if now.date() != current_day:
                 current_day = now.date()
                 weekday_idx = now.weekday()
@@ -317,7 +292,6 @@ def main():
                 log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Nuovo piano. Totale (da ora in poi): "
                          f"{sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
 
-            # Rilascia tutti gli eventi maturi fino a now
             while True:
                 ts = plan.next_ready(now)
                 if ts is None:
@@ -326,7 +300,6 @@ def main():
                 producer.send(TOPIC, key=cid, value=event)
                 log.info(f"message sent: {event}")
 
-            # sleep (scalato): accelera la frequenza del polling
             time.sleep(max(0.02, SLEEP / max(1.0, TIME_SCALE)))
     finally:
         log.info("Flush & close producer...")
