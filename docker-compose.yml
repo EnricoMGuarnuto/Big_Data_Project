@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -16,20 +18,8 @@ services:
       interval: 3s
       timeout: 5s
       retries: 20
-  refill-manager:
-    build:
-      context: ./refill_manager
-    depends_on:
-      - postgres
-      - kafka
-    environment:
-      - PG_HOST=postgres
-      - PG_PORT=5432
-      - PG_DB=retaildb
-      - PG_USER=retail
-      - PG_PASS=retailpass
-      - KAFKA_BROKER=kafka:9092
-      - TOPIC_SHELF=shelf_events
+
+  # ⚠️ Optional: SQL scripts per inizializzazione tabelle
   db-sql-jobs:
     image: postgres:16-alpine
     depends_on:
@@ -47,6 +37,13 @@ services:
        psql postgresql://$DB_USER:$DB_PASSWORD@postgres:5432/$DB_NAME -v ON_ERROR_STOP=1 -f /sql/db_management.sql"]
     restart: 'no'
 
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
   minio:
     image: minio/minio
     command: server /data --console-address ":9001"
@@ -58,13 +55,6 @@ services:
       - 9001:9001
     volumes:
       - minio_data:/data
-
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
 
   zookeeper:
     image: confluentinc/cp-zookeeper:6.2.1
@@ -84,12 +74,7 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
-      KAFKA_LOG_RETENTION_HOURS: 168
-      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
 
   kafka-producer-foot-traffic:
     build:
@@ -113,6 +98,8 @@ services:
       - KAFKA_BROKER=kafka:9092
       - KAFKA_TOPIC_FOOT=foot_traffic
       - KAFKA_TOPIC_SHELF=shelf_events
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     depends_on:
       - kafka
       - redis
@@ -132,41 +119,22 @@ services:
     depends_on:
       - kafka
       - redis
-      - kafka-producer-foot-traffic
     volumes:
       - ./data:/data
 
-  kafka-consumer-shelf:
+  kafka-producer-discount:
     build:
-      context: ./kafka-components/kafka-consumer-shelf
-    depends_on:
-      - kafka
-      - postgres
+      context: ./kafka-components/kafka-producer-discount
+      dockerfile: Dockerfile
     environment:
       - KAFKA_BROKER=kafka:9092
-      - TOPIC_SHELF=shelf_events
-      - GROUP_ID=db-shelf-consumer
-      - PG_HOST=postgres
-      - PG_PORT=5432
-      - PG_DB=retaildb
-      - PG_USER=retail
-      - PG_PASS=retailpass
-
-  kafka-consumer-pos:
-    build:
-      context: ./kafka-components/kafka-consumer-pos
+      - DISCOUNT_TOPIC=weekly_discounts
+      - INVENTORY_FILE=/data/store_inventory_final.parquet
+      - DISCOUNT_JSON_FILE=/data/current_discounts.json
     depends_on:
       - kafka
-      - postgres
-    environment:
-      - KAFKA_BROKER=kafka:9092
-      - POS_TOPIC=pos_transactions
-      - GROUP_ID=db-pos-consumer
-      - PG_HOST=postgres
-      - PG_PORT=5432
-      - PG_DB=retaildb
-      - PG_USER=retail
-      - PG_PASS=retailpass
+    volumes:
+      - ./data:/data
 
   spark:
     build:
@@ -178,7 +146,7 @@ services:
       - PG_USER=retail
       - PG_PASS=retailpass
     volumes:
-      - ./spark-components:/app
+      - ./test_spark:/test_spark
       - ./spark-checkpoints:/chk
     depends_on:
       - kafka
@@ -189,9 +157,59 @@ services:
       spark-submit
         --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,org.postgresql:postgresql:42.7.3
         --conf spark.sql.shuffle.partitions=2
-        /app/streaming_supervisor.py
+        /test_spark/spark_foot_traffic_ingest.py
+
+
+  # 🔸 COMMENTATO ma conservato
+  # refill-manager:
+  #   build:
+  #     context: ./refill_manager
+  #   depends_on:
+  #     - postgres
+  #     - kafka
+  #   environment:
+  #     - PG_HOST=postgres
+  #     - PG_PORT=5432
+  #     - PG_DB=retaildb
+  #     - PG_USER=retail
+  #     - PG_PASS=retailpass
+  #     - KAFKA_BROKER=kafka:9092
+  #     - TOPIC_SHELF=shelf_events
+
+  # 🔸 VECCHI consumer DB (usali solo se servono)
+  # kafka-consumer-shelf:
+  #   build:
+  #     context: ./kafka-components/kafka-consumer-shelf
+  #   depends_on:
+  #     - kafka
+  #     - postgres
+  #   environment:
+  #     - KAFKA_BROKER=kafka:9092
+  #     - TOPIC_SHELF=shelf_events
+  #     - GROUP_ID=db-shelf-consumer
+  #     - PG_HOST=postgres
+  #     - PG_PORT=5432
+  #     - PG_DB=retaildb
+  #     - PG_USER=retail
+  #     - PG_PASS=retailpass
+
+  # kafka-consumer-pos:
+  #   build:
+  #     context: ./kafka-components/kafka-consumer-pos
+  #   depends_on:
+  #     - kafka
+  #     - postgres
+  #   environment:
+  #     - KAFKA_BROKER=kafka:9092
+  #     - POS_TOPIC=pos_transactions
+  #     - GROUP_ID=db-pos-consumer
+  #     - PG_HOST=postgres
+  #     - PG_PORT=5432
+  #     - PG_DB=retaildb
+  #     - PG_USER=retail
+  #     - PG_PASS=retailpass
 
 volumes:
-  minio_data:
   postgres_data:
   redis_data:
+  minio_data:
