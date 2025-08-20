@@ -6,5 +6,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 # Copio tutto il contesto: evita “file not found” quando rinomini file
-COPY . .
+COPY shelf_consumer.py .
 CMD ["python", "shelf_consumer.py"]

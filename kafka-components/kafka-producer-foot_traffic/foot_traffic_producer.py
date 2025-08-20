@@ -5,6 +5,7 @@ import random
 import json
 import logging
 import signal
+from typing import List,Optional
 from datetime import datetime, timedelta, date, time as dtime, timezone
 
 from kafka import KafkaProducer
@@ -113,7 +114,7 @@ def get_slot_index_for(dt: datetime):
             return i
     return None
 
-def largest_remainder_allocation(total: int, weights: list[int]) -> list[int]:
+def largest_remainder_allocation(total: int, weights: List[int]) -> List[int]:
     n = len(weights)
     if total <= 0 or n == 0:
         return [0]*n
@@ -133,7 +134,7 @@ def largest_remainder_allocation(total: int, weights: list[int]) -> list[int]:
         floors[order[i]] += 1
     return floors
 
-def uniform_times_in_slot(start_dt: datetime, end_dt: datetime, count: int, now_cut: datetime | None = None):
+def uniform_times_in_slot(start_dt: datetime, end_dt: datetime, count: int, now_cut: Optional[datetime] = None):
     if count <= 0:
         return []
     s = start_dt if (now_cut is None or start_dt >= now_cut) else now_cut
@@ -225,7 +226,7 @@ def now_utc():
     return datetime.utcnow().replace(tzinfo=timezone.utc)
 
 class DayPlan:
-    def __init__(self, day: date, weekday_idx: int, total_customers: int, now: datetime | None = None):
+    def __init__(self, day: date, weekday_idx: int, total_customers: int, now: Optional[datetime] = None):
         self.day = day
         self.weekday_idx = weekday_idx
         self.total_customers = total_customers

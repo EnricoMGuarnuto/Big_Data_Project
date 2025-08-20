@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Dict, DefaultDict
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import pandas as pd
 import redis
@@ -56,7 +57,7 @@ def load_price_map_from_store(path: str) -> Dict[str, float]:
     return df.set_index("shelf_id")["price"].astype(float).to_dict()
 
 def now_utc() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 # ========================
 # Stato applicativo
@@ -251,7 +252,7 @@ def foot_consumer_loop():
 def janitor_loop():
     while True:
         time.sleep(30)
-        now = now_utc()
+        now = datetime.now(timezone.utc)
         stale = []
         with entries_lock:
             for cid, ent in list(entries.items()):

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -18,7 +16,20 @@ services:
       interval: 3s
       timeout: 5s
       retries: 20
-
+  refill-manager:
+    build:
+      context: ./refill_manager
+    depends_on:
+      - postgres
+      - kafka
+    environment:
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - KAFKA_BROKER=kafka:9092
+      - TOPIC_SHELF=shelf_events
   db-sql-jobs:
     image: postgres:16-alpine
     depends_on:
@@ -88,6 +99,7 @@ services:
       - KAFKA_BROKER=kafka:9092
       - KAFKA_TOPIC=foot_traffic
       - SLEEP=0.3
+      - TIME_SCALE=60
     depends_on:
       - kafka
     volumes:
