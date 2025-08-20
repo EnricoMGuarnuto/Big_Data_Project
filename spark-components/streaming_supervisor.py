@@ -86,6 +86,18 @@ foot_schema = T.StructType([
     T.StructField("time_slot", T.StringType()),
 ])
 
+discount_schema = T.StructType([
+    T.StructField("event_type", T.StringType()),
+    T.StructField("week", T.StringType()),
+    T.StructField("discounts", T.ArrayType(
+        T.StructType([
+            T.StructField("item_id", T.StringType()),
+            T.StructField("discount", T.DoubleType())
+        ])
+    )),
+    T.StructField("created_at", T.StringType())
+])
+
 # -------------------------
 # SINK: JDBC (utility)
 # -------------------------
@@ -280,6 +292,55 @@ pos_q = (
              .start()
 )
 
+
+def process_discount_batch(df, batch_id):
+    if df.count() == 0:
+        return
+
+    df_raw = df.withColumn("payload", F.to_json(F.struct(df.columns))) \
+               .withColumn("source", F.lit("discount.updater")) \
+               .withColumn("event_id", F.format_string("spark-discount-%s-%s", F.col("partition"), F.col("offset"))) \
+               .withColumn("event_ts", F.col("created_at")) \
+               .withColumn("ingest_ts", F.current_timestamp()) \
+               .select("event_id", "source", "event_ts", "payload", "ingest_ts")
+
+    write_to_pg(df_raw, "stream_events")
+
+    df_exploded = df.withColumn("item", F.explode("discounts")) \
+                    .select(
+                        F.col("item.item_id").alias("item_id"),
+                        F.col("week"),
+                        F.col("item.discount"),
+                        F.col("created_at").alias("inserted_at")
+                    )
+
+    write_to_pg(df_exploded, "weekly_discounts")
+
+
+# -------------------------
+# discounts
+# -------------------------
+
+raw_discounts = (
+    spark.readStream.format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BROKER)
+        .option("subscribe", "weekly_discounts")
+        .option("startingOffsets", STARTING_OFFSETS)
+        .option("failOnDataLoss", "false")
+        .load()
+)
+
+discounts = (
+    raw_discounts
+      .select(
+          F.col("partition"),
+          F.col("offset"),
+          F.from_json(F.col("value").cast("string"), discount_schema).alias("j")
+      )
+      .select("partition", "offset", "j.*")
+      .filter(F.col("event_type") == "weekly_discount")
+)
+
 # -------------------------
 # (Optional) foot_traffic only log
 # -------------------------
@@ -319,6 +380,18 @@ if TOPIC_FOOT:
             .trigger(processingTime="5 seconds")
             .start()
     )
+
+# -------------------------
+# Avvia la query per i weekly discounts
+# -------------------------
+discounts_q = (
+    discounts.writeStream
+        .foreachBatch(process_discount_batch)
+        .option("checkpointLocation", f"{CHK_DIR}/discounts")
+        .trigger(processingTime="10 seconds")
+        .start()
+)
+
 
 # -------------------------
 # await
