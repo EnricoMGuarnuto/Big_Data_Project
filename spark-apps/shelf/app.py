@@ -26,43 +26,44 @@ shelf_schema = StructType([
 ])
 
 # ===== Kafka → raw
-raw_df = (
+parsed_df = (
     spark.readStream.format("kafka")
          .option("kafka.bootstrap.servers", KAFKA_SERVERS)
          .option("subscribe", TOPIC_SHELF)
          .option("startingOffsets", "latest")
          .load()
          .withColumn("value_str", col("value").cast("string"))
+         .select(from_json(col("value_str"), shelf_schema).alias("data"))
+         .select("data.*")
+         .withColumn("shelf_id", coalesce(col("shelf_id"), col("item_id")))
+         .withColumn("event_id", when(col("event_id").isNull(), expr("uuid()")).otherwise(col("event_id")))
+         .withColumn("event_time", to_timestamp("timestamp"))
+         .withColumn("dt", to_date("timestamp"))
 )
 
-# ===== Bronze su MinIO
+
+
+# ===== Filtro: tieni solo weight_change
+filtered_df = parsed_df.filter(col("event_type") == "weight_change")
+
+# ===== Bronze su MinIO (solo weight_change)
 bronze_q = (
-    raw_df.writeStream
-          .format("parquet")
-          .option("path", f"{MINIO_URL}/bronze/shelf_events")
-          .option("checkpointLocation", "/chk/shelf_events/bronze")  # checkpoint locale nel container
-          .start()
+    filtered_df.writeStream
+               .format("parquet")
+               .option("path", f"{MINIO_URL}/bronze/shelf_events")
+               .option("checkpointLocation", "/chk/shelf_events/bronze")
+               .start()
 )
 
-# ===== Parse → normalizza
-parsed_df = (
-    raw_df
-      .select(from_json(col("value_str"), shelf_schema).alias("data"))
-      .select("data.*")
-      .withColumn("shelf_id", coalesce(col("shelf_id"), col("item_id")))
-      .withColumn("event_id", when(col("event_id").isNull(), expr("uuid()")).otherwise(col("event_id")))
-      .withColumn("event_time", to_timestamp("timestamp"))
-      .withColumn("dt", to_date("timestamp"))
-)
 
-# ===== Silver su MinIO
+# ===== Silver su MinIO (solo weight_change)
 silver_q = (
-    parsed_df.writeStream
-             .format("parquet")
-             .option("path", f"{MINIO_URL}/silver/shelf_events")
-             .option("checkpointLocation", "/chk/shelf_events/silver")
-             .partitionBy("dt")
-             .start()
+    filtered_df.writeStream
+               .format("parquet")
+               .option("path", f"{MINIO_URL}/silver/shelf_events")
+               .option("checkpointLocation", "/chk/shelf_events/silver")
+               .partitionBy("dt")
+               .start()
 )
 
 # ===== Sink → Postgres SOLO weight_change
