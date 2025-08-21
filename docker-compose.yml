@@ -59,6 +59,13 @@ services:
     volumes:
       - minio_data:/data
 
+  minio-init:
+    build:
+      context: ./minio
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "/init.sh"]
+
   redis:
     image: redis:7
     ports:
@@ -190,7 +197,15 @@ services:
         --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,org.postgresql:postgresql:42.7.3
         --conf spark.sql.shuffle.partitions=2
         /app/streaming_supervisor.py
-
+  alert-center:
+    build:
+      context: ./alert-center
+    depends_on:
+      - postgres
+    ports:
+      - "5050:5000"
+    environment:
+      - FLASK_ENV=development
 volumes:
   minio_data:
   postgres_data:
