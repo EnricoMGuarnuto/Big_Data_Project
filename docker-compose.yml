@@ -131,7 +131,7 @@ services:
 
   kafka-producer-discount:
     build:
-      context: ./kafka-components/kafka-producer-discount
+      context: ./kafka-components/kafka-discount_updater_producer
       dockerfile: Dockerfile
     environment:
       - KAFKA_BROKER=kafka:9092
@@ -143,28 +143,32 @@ services:
     volumes:
       - ./data:/data
 
-  spark:
+
+  spark-shelf:
     build:
-      context: ./spark-components
+      context: ./spark-apps/shelf
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_SHELF=shelf_events
       - PG_HOST=postgres
+      - PG_PORT=5432
       - PG_DB=retaildb
       - PG_USER=retail
       - PG_PASS=retailpass
-    volumes:
-      - ./test_spark:/test_spark
-      - ./spark-checkpoints:/chk
+      # credenziali MinIO
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - AWS_REGION=us-east-1
     depends_on:
       - kafka
       - postgres
-    ports:
-      - "4040:4040"
-    command: >
-      spark-submit
-        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,org.postgresql:postgresql:42.7.3
-        --conf spark.sql.shuffle.partitions=2
-        /app/streaming_supervisor.py
+      - minio
+    volumes:
+      - ./spark-checkpoints:/chk
+
+
+
+
   alert-center:
     build:
       context: ./alert-center

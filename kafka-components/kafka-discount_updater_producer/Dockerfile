@@ -17,7 +17,7 @@ COPY crontab.txt .
 RUN chmod +x discount_updater_producer.py
 
 # Register the crontab
-RUN crontab crontab.txt
+RUN echo "" >> crontab.txt && crontab crontab.txt
 
 # Create data dir if it doesn't exist
 RUN mkdir -p /data
