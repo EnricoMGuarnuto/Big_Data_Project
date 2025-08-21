@@ -1,0 +1,1 @@
+0 10 * * 1 python /app/discount_updater_producer.py >> /var/log/cron.log 2>&1
