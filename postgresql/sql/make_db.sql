@@ -149,6 +149,65 @@ CREATE TABLE IF NOT EXISTS inventory_thresholds (
   UNIQUE(scope, item_id, category_id, location_id)
 );
 
+-- ---------- historical weekly discounts ----------
+CREATE TABLE IF NOT EXISTS discount_history (
+  item_id     BIGINT NOT NULL REFERENCES items(item_id),
+  week        TEXT   NOT NULL,               -- esempio: '2025-W34'
+  discount    NUMERIC(5,4) NOT NULL,         -- esempio: 0.15
+  created_at  TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (item_id, week)
+);
+
+-- =====================================================================
+-- ML Dataset - Previsione refill warehouse
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS ml_refill_dataset (
+  item_id           BIGINT NOT NULL REFERENCES items(item_id),
+  location_id       INT    NOT NULL REFERENCES locations(location_id),
+  business_date     DATE   NOT NULL,
+
+  -- Calendario
+  weekday           TEXT   NOT NULL,
+  is_weekend        BOOLEAN NOT NULL,
+  is_holiday        BOOLEAN DEFAULT FALSE,
+
+  -- Stock e vendite
+  current_stock     INT,
+  sold_qty          INT,
+  refill_qty        INT,
+  rolling_avg_7d    NUMERIC,
+
+  -- Prezzi e sconti
+  mean_price        NUMERIC(10,4),
+  discount_applied  BOOLEAN DEFAULT FALSE,
+  discount_rate     NUMERIC(5,4),
+
+  -- Audit
+  created_at        TIMESTAMPTZ DEFAULT now(),
+
+  PRIMARY KEY (item_id, location_id, business_date)
+);
+
+-- =====================================================================
+-- DIMENSIONE DATE - Calendar table per ML / analisi
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS dim_date (
+  date             DATE PRIMARY KEY,
+  year             INT NOT NULL,
+  month            INT NOT NULL,
+  month_name       TEXT NOT NULL,
+  day              INT NOT NULL,
+  weekday          TEXT NOT NULL,
+  weekday_index    INT NOT NULL,
+  is_weekend       BOOLEAN NOT NULL,
+  is_holiday       BOOLEAN DEFAULT FALSE,
+  week_of_year     INT NOT NULL,
+  quarter          INT NOT NULL,
+  season           TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_items_shelf    ON items(shelf_id);
 CREATE INDEX IF NOT EXISTS idx_pi_item_loc    ON product_inventory(item_id, location_id);
 CREATE INDEX IF NOT EXISTS idx_batches_item   ON batches(item_id);
