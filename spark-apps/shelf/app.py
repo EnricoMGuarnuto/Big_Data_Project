@@ -77,6 +77,7 @@ def write_to_pg(batch_df, batch_id):
             .select("event_id","event_time","shelf_id","delta_weight")
             .collect())
 
+
     import psycopg2
     from psycopg2.extras import execute_batch
     conn = psycopg2.connect(
@@ -101,5 +102,15 @@ def write_to_pg(batch_df, batch_id):
         raise
     finally:
         conn.close()
+
+
+
+    # ===== Postgres sink query
+pg_q = (
+    filtered_df.writeStream
+            .foreachBatch(write_to_pg)
+            .option("checkpointLocation", "/chk/shelf_events/postgres")
+            .start()
+)
 
 spark.streams.awaitAnyTermination()
