@@ -193,7 +193,85 @@ END$$;
    DOMAIN FUNCTIONS
    ===================== */
 
--- Vendita POS (instore): scala stock ufficiale + FEFO; compensa shadow sensori
+CREATE OR REPLACE FUNCTION apply_pos_transaction(
+    p_transaction JSONB
+) RETURNS VOID AS $$
+DECLARE
+    v_receipt_id BIGINT;
+    v_total_net NUMERIC(12,2) := 0;
+    v_total_tax NUMERIC(12,2) := 0;
+    v_total_gross NUMERIC(12,2) := 0;
+    v_business_date DATE;
+    v_item JSONB;
+    v_unit_price NUMERIC(12,4);
+    v_discount NUMERIC(12,4);
+    v_qty INT;
+    v_total_line NUMERIC(14,4);
+BEGIN
+    -- business_date con fallback a oggi
+    v_business_date := COALESCE(
+        (p_transaction->>'timestamp')::timestamptz::date,
+        CURRENT_DATE
+    );
+
+    -- Inserisci/aggiorna header receipt
+    INSERT INTO receipts(transaction_id, customer_id, business_date, closed_at, status)
+    VALUES (
+        p_transaction->>'transaction_id',
+        p_transaction->>'customer_id',
+        v_business_date,
+        (p_transaction->>'timestamp')::timestamptz,
+        'CLOSED'
+    )
+    ON CONFLICT (transaction_id) DO UPDATE
+      SET customer_id   = EXCLUDED.customer_id,
+          business_date = EXCLUDED.business_date,
+          closed_at     = EXCLUDED.closed_at,
+          status        = 'CLOSED'
+    RETURNING receipt_id INTO v_receipt_id;
+
+    -- cancella righe vecchie (idempotenza)
+    DELETE FROM receipt_lines WHERE receipt_id = v_receipt_id;
+
+    -- loop sugli items
+    FOR v_item IN SELECT jsonb_array_elements(p_transaction->'items')
+    LOOP
+        v_qty        := COALESCE((v_item->>'quantity')::int,0);
+        v_unit_price := COALESCE((v_item->>'unit_price')::numeric,0);
+        v_discount   := COALESCE((v_item->>'discount')::numeric,0);
+        v_total_line := COALESCE((v_item->>'total_price')::numeric, v_qty*(v_unit_price-v_discount));
+
+        -- inserisci riga
+        INSERT INTO receipt_lines(
+            receipt_id, shelf_id, quantity,
+            unit_price, discount, total_price
+        )
+        VALUES (
+            v_receipt_id,
+            v_item->>'item_id',
+            v_qty,
+            v_unit_price,
+            v_discount,
+            v_total_line
+        );
+
+        -- aggiorna totali
+        v_total_net   := v_total_net + (v_qty * (v_unit_price - v_discount));
+        v_total_gross := v_total_gross + v_total_line;
+    END LOOP;
+
+    -- supponiamo IVA = 22%
+    v_total_tax := v_total_gross - v_total_net;
+
+    -- aggiorna header
+    UPDATE receipts
+    SET total_net   = v_total_net,
+        total_tax   = v_total_tax,
+        total_gross = v_total_gross
+    WHERE receipt_id = v_receipt_id;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION apply_sale_event(
   p_event_id TEXT,
   p_event_ts TIMESTAMPTZ,
@@ -210,28 +288,38 @@ DECLARE
   v_prev_live INT; 
   v_new_live  INT;
 BEGIN
-  IF EXISTS (SELECT 1 FROM inventory_ledger WHERE event_id = p_event_id) THEN RETURN; END IF;
+  -- idempotenza: se già presente, esci
+  IF EXISTS (SELECT 1 FROM inventory_ledger WHERE event_id = p_event_id) THEN
+    RETURN;
+  END IF;
 
+  -- trova item
   SELECT item_id INTO v_item_id FROM items WHERE shelf_id = p_shelf_id;
-  IF v_item_id IS NULL THEN RAISE EXCEPTION 'Unknown shelf_id %', p_shelf_id; END IF;
+  IF v_item_id IS NULL THEN
+    RAISE EXCEPTION 'Unknown shelf_id %', p_shelf_id;
+  END IF;
 
   PERFORM _ensure_pi_row(v_item_id, v_loc_id);
 
-  -- 1) Stock ufficiale aggregato
+  -- 1) scala stock ufficiale
   UPDATE product_inventory
      SET current_stock = current_stock - p_qty
    WHERE item_id = v_item_id AND location_id = v_loc_id;
 
   -- 2) Lotti FEFO (instore)
   v_left := _fefo_decrement(v_item_id, v_loc_id, p_qty, p_event_id, p_event_ts, 'sale', p_meta);
+
+  -- se avanzano quantità non coperte → log overdraw (idempotente)
   IF v_left > 0 THEN
     INSERT INTO inventory_ledger(event_id,event_ts,item_id,location_id,delta_qty,reason,meta)
     VALUES (p_event_id||'-over', p_event_ts, v_item_id, v_loc_id, -v_left, 'sale_overdraw',
-            jsonb_build_object('missing_qty',v_left)::jsonb || COALESCE(p_meta,'{}'::jsonb));
+            jsonb_build_object('missing_qty',v_left)::jsonb || COALESCE(p_meta,'{}'::jsonb))
+    ON CONFLICT (event_id) DO NOTHING;
   END IF;
 
-  -- 3) Compensazione LIVE: riduci pickups pendenti fino a p_qty
+  -- 3) Compensazione LIVE
   v_prev_live := _get_live_on_hand(v_item_id, v_loc_id);
+
   SELECT COALESCE(pending_delta,0) INTO v_pending
   FROM sensor_balance
   WHERE item_id=v_item_id AND location_id=v_loc_id;
@@ -242,7 +330,9 @@ BEGIN
 
   v_new_live := _get_live_on_hand(v_item_id, v_loc_id);
   PERFORM _evaluate_low_stock_live(v_item_id, v_loc_id, v_prev_live, v_new_live);
-END$$;
+END;
+$$;
+
 
 -- Ricezione lotto a warehouse
 CREATE OR REPLACE FUNCTION apply_receipt_event(

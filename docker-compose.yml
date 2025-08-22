@@ -122,6 +122,7 @@ services:
       - KAFKA_BROKER=kafka:9092
       - FOOT_TOPIC=foot_traffic
       - POS_TOPIC=pos_transactions
+      - SHELF_TOPIC=shelf_events
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
@@ -156,7 +157,6 @@ services:
       - PG_DB=retaildb
       - PG_USER=retail
       - PG_PASS=retailpass
-      # credenziali MinIO
       - AWS_ACCESS_KEY_ID=minio
       - AWS_SECRET_ACCESS_KEY=minio123
       - AWS_REGION=us-east-1
@@ -169,7 +169,28 @@ services:
     volumes:
       - ./spark-checkpoints:/chk
 
-
+  spark-pos:
+    build:
+      context: ./spark-apps/pos
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - POS_TOPIC=pos_transactions
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - AWS_REGION=us-east-1
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+    ports:
+      - "4041:4040" # UI Spark di questo container (per non confliggere con spark-shelf 4040)
+    volumes:
+      - ./spark-checkpoints:/chk
 
 
   alert-center:
@@ -181,6 +202,23 @@ services:
       - "5050:5000"
     environment:
       - FLASK_ENV=development
+
+  #streamlit:
+    #build:
+      #context: ./dashboard
+    #environment:
+      #PG_HOST: postgres
+      #PG_PORT: 5432
+      #PG_DB: retaildb
+      #PG_USER: retail
+      #PG_PASS: retailpass
+      #TZ: Europe/Rome
+    #ports:
+      #- "8501:8501"
+    #depends_on:
+      #- postgres
+    #restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:

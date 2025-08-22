@@ -4,7 +4,14 @@ from pyspark.sql.functions import col, from_json, to_timestamp, to_date, coalesc
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 
 # Spark
-spark = (SparkSession.builder.appName("shelf-events-pipeline").getOrCreate())
+spark = (SparkSession.builder.appName("shelf-events-pipeline")
+         .config("spark.sql.streaming.metadata.compression", "false")
+         .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+         .config("spark.sql.parquet.output.committer.class", "org.apache.parquet.hadoop.ParquetOutputCommitter")
+         .config("spark.hadoop.fs.s3a.committer.name", "directory")
+         .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+         .getOrCreate()
+)
 spark.sparkContext.setLogLevel("WARN")
 
 # Env
@@ -31,6 +38,7 @@ parsed_df = (
          .option("kafka.bootstrap.servers", KAFKA_SERVERS)
          .option("subscribe", TOPIC_SHELF)
          .option("startingOffsets", "latest")
+         .option("failOnDataLoss", "false")
          .load()
          .withColumn("value_str", col("value").cast("string"))
          .select(from_json(col("value_str"), shelf_schema).alias("data"))
@@ -52,6 +60,7 @@ bronze_q = (
                .format("parquet")
                .option("path", f"{MINIO_URL}/bronze/shelf_events")
                .option("checkpointLocation", "/chk/shelf_events/bronze")
+                .partitionBy("dt")
                .start()
 )
 
@@ -75,7 +84,7 @@ def write_to_pg(batch_df, batch_id):
             .filter(col("event_type") == "weight_change")
             .filter(col("delta_weight").isNotNull())
             .select("event_id","event_time","shelf_id","delta_weight")
-            .collect())
+            .toLocalIterator())
 
 
     import psycopg2

@@ -10,6 +10,7 @@ from collections import defaultdict
 import pandas as pd
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable
+from kafka.admin import KafkaAdminClient, NewTopic
 
 # ========================
 # ENV / Config
@@ -28,7 +29,31 @@ DISCOUNT_JSON_FILE = os.getenv("DISCOUNT_JSON_FILE", "/data/current_discounts.js
 
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
+def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
+    last = None
+    for i in range(1, attempts+1):
+        try:
+            admin = KafkaAdminClient(bootstrap_servers=bootstrap, client_id="pos-init")
+            if topic not in admin.list_topics():
+                admin.create_topics([NewTopic(name=topic, num_partitions=partitions, replication_factor=rf)])
+                print(f"[pos] ✅ creato topic {topic}")
+            else:
+                print(f"[pos] topic {topic} già esistente")
+            admin.close()
+            return
+        except NoBrokersAvailable as e:
+            last = e
+            print(f"[pos] Kafka non pronto per create-topic (tentativo {i}/{attempts}). Retry in {sleep_s}s…")
+            time.sleep(sleep_s)
+        except Exception as e:
+            print(f"[pos] ⚠️ topic check/create fallito: {e}")
+            return
+    print(f"[pos] ⚠️ impossibile creare/verificare topic {topic}: {last}")
 
+# Assicurati che i topic esistano PRIMA di creare il producer
+ensure_topic(POS_TOPIC,   KAFKA_BROKER)
+ensure_topic(SHELF_TOPIC, KAFKA_BROKER)
+ensure_topic(FOOT_TOPIC,  KAFKA_BROKER)
 # ========================
 # Helpers
 # ========================

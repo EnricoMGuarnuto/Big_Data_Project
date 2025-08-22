@@ -4,4 +4,4 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY pos_producer.py .
 VOLUME ["/data"]
-CMD ["python", "pos_producer.py"]
+CMD ["python","-u", "pos_producer.py"]
