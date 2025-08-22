@@ -203,21 +203,21 @@ services:
     environment:
       - FLASK_ENV=development
 
-  #streamlit:
-    #build:
-      #context: ./dashboard
-    #environment:
-      #PG_HOST: postgres
-      #PG_PORT: 5432
-      #PG_DB: retaildb
-      #PG_USER: retail
-      #PG_PASS: retailpass
-      #TZ: Europe/Rome
-    #ports:
-      #- "8501:8501"
-    #depends_on:
-      #- postgres
-    #restart: unless-stopped
+  streamlit:
+    build:
+      context: ./dashboard
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DB: retaildb
+      PG_USER: retail
+      PG_PASS: retailpass
+      TZ: Europe/Rome
+    ports:
+      - "8501:8501"
+    depends_on:
+      - postgres
+    restart: unless-stopped
 
 volumes:
   postgres_data:

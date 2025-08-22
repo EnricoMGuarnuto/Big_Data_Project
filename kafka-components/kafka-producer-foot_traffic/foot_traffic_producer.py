@@ -22,7 +22,7 @@ SLEEP = float(os.getenv("SLEEP", 0.5))
 TIME_SCALE = float(os.getenv("TIME_SCALE", 1.0))
 
 # Totali giornalieri
-DEFAULT_DAILY_CUSTOMERS = int(os.getenv("DEFAULT_DAILY_CUSTOMERS", 100))
+DEFAULT_DAILY_CUSTOMERS = int(os.getenv("DEFAULT_DAILY_CUSTOMERS", 1000))
 BASE_DAILY_CUSTOMERS = int(os.getenv("BASE_DAILY_CUSTOMERS", DEFAULT_DAILY_CUSTOMERS))
 DAILY_CUSTOMERS = os.getenv("DAILY_CUSTOMERS")
 
@@ -301,7 +301,7 @@ def main():
                 producer.send(TOPIC, key=cid, value=event)
                 log.info(f"message sent: {event}")
 
-            time.sleep(max(0.02, SLEEP / max(1.0, TIME_SCALE)))
+            time.sleep(max(600, SLEEP / max(1.0, TIME_SCALE)))
     finally:
         log.info("Flush & close producer...")
         try:

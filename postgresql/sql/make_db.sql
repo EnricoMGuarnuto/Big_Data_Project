@@ -95,14 +95,6 @@ CREATE TABLE IF NOT EXISTS receipt_lines (
   total_price     NUMERIC(14,4) NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS stream_events (
-  event_id  TEXT PRIMARY KEY,
-  source    TEXT        NOT NULL,
-  event_ts  TIMESTAMPTZ NOT NULL,
-  payload   JSONB       NOT NULL,
-  ingest_ts TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_stream_events_source_ts ON stream_events(source, event_ts);
 
 CREATE TABLE IF NOT EXISTS inventory_ledger (
   ledger_id   BIGSERIAL PRIMARY KEY,
@@ -157,6 +149,12 @@ CREATE TABLE IF NOT EXISTS discount_history (
   created_at  TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (item_id, week)
 );
+
+CREATE TABLE shelf_status (
+    shelf_id TEXT PRIMARY KEY,
+    status TEXT
+);
+
 
 -- =====================================================================
 -- ML Dataset - Previsione refill warehouse
@@ -429,6 +427,42 @@ SELECT 'item', pi.item_id, pi.location_id,
 FROM product_inventory pi
 JOIN locations l ON l.location_id = pi.location_id
 ON CONFLICT (scope, item_id, category_id, location_id) DO NOTHING;
+
+-- aggiorna shelf_status in base alle soglie definite
+INSERT INTO shelf_status (shelf_id, status)
+SELECT 
+    i.shelf_id,
+    CASE
+      WHEN pi.current_stock <= 0 THEN 'critical'
+      WHEN pi.current_stock <= COALESCE(thr.low_thr, 0) THEN 'critical'
+      WHEN pi.current_stock <= COALESCE(thr.low_thr, 0) + 2 THEN 'near'
+      ELSE 'ok'
+    END AS status
+FROM product_inventory pi
+JOIN items i ON i.item_id = pi.item_id
+JOIN categories c ON c.category_id = i.category_id
+LEFT JOIN LATERAL (
+    SELECT COALESCE(
+        (SELECT low_stock_threshold 
+           FROM inventory_thresholds t 
+           WHERE t.scope='item' AND t.item_id=pi.item_id AND (t.location_id=pi.location_id OR t.location_id IS NULL)
+           ORDER BY t.location_id NULLS LAST LIMIT 1),
+        (SELECT low_stock_threshold 
+           FROM inventory_thresholds t 
+           WHERE t.scope='category' AND t.category_id=c.category_id AND (t.location_id=pi.location_id OR t.location_id IS NULL)
+           ORDER BY t.location_id NULLS LAST LIMIT 1),
+        (SELECT low_stock_threshold 
+           FROM inventory_thresholds t 
+           WHERE t.scope='global' AND (t.location_id=pi.location_id OR t.location_id IS NULL)
+           ORDER BY t.location_id NULLS LAST LIMIT 1),
+        0
+    ) AS low_thr
+) thr ON TRUE
+JOIN locations l ON l.location_id = pi.location_id
+WHERE l.location='instore'
+ON CONFLICT (shelf_id) 
+DO UPDATE SET status = EXCLUDED.status;
+
 
 ANALYZE;
 COMMIT;
