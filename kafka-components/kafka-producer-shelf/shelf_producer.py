@@ -7,9 +7,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
-import redis
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
+
+# customer_id -> item_id -> {"quantity": int, "weight": float}
+customer_carts = defaultdict(lambda: defaultdict(lambda: {"quantity": 0, "weight": 0.0}))
+
 
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 
@@ -22,9 +25,8 @@ TOPIC_FOOT = os.getenv("KAFKA_TOPIC_FOOT", "foot_traffic")
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 SLEEP_SEC = float(os.getenv("SHELF_SLEEP", 1.0))
 PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_DB = int(os.getenv("REDIS_DB", 0))
+
+DISCOUNT_JSON_FILE = os.getenv("DISCOUNT_JSON_FILE", "/data/current_discounts.json")
 
 # ========================
 # Stato
@@ -34,9 +36,8 @@ scheduled_actions = defaultdict(list)
 lock = threading.Lock()
 
 # ========================
-# Redis e utils
+# utils
 # ========================
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
 def now_utc():
     return datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -63,6 +64,14 @@ def generate_scheduled_actions(entry, exit):
     ])
     return [(ts, "pickup" if random.random() > PUTBACK_PROB else "putback") for ts in timestamps]
 
+def load_discounts_from_file(path: str) -> dict:
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return {item["item_id"]: float(item["discount"]) for item in data}
+    except Exception as e:
+        print(f"[shelf] ERRORE leggendo sconti da {path}: {e}")
+        return {}
 # ========================
 # Kafka
 # ========================
@@ -110,6 +119,7 @@ def reap_inactive():
             for cid in expired:
                 active_customers.pop(cid, None)
                 scheduled_actions.pop(cid, None)
+                customer_carts.pop(cid, None)
         time.sleep(5)
 
 # ========================
@@ -120,15 +130,10 @@ def main():
     required_cols = {"shelf_id", "item_weight", "item_visibility"}
     if not required_cols.issubset(df.columns):
         raise ValueError(f"Parquet must contain columns: {required_cols}")
+     
+    discounts_by_item = load_discounts_from_file(DISCOUNT_JSON_FILE)
 
-    def get_discount(item_id):
-        try:
-            d = float(r.get(f"discount:{item_id}") or 0.0)
-            return max(0.0, min(d, 0.95))
-        except Exception:
-            return 0.0
-
-    df["discount"] = df["shelf_id"].map(get_discount)
+    df["discount"] = df["shelf_id"].map(lambda sid: max(0.0, min(discounts_by_item.get(sid, 0.0), 0.95)))
     df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
     pick_weights = df["pick_score"].tolist()
 
@@ -151,10 +156,30 @@ def main():
                 if ts <= now:
                     actions.pop(0)
 
-                    idx = rng.choices(range(len(df)), weights=pick_weights, k=1)[0]
-                    row = df.iloc[idx]
-                    item_id = row["shelf_id"]
-                    item_weight = float(row["item_weight"])
+                    if action_type == "pickup":
+                        idx = rng.choices(range(len(df)), weights=pick_weights, k=1)[0]
+                        row = df.iloc[idx]
+                        item_id = row["shelf_id"]
+                        item_weight = float(row["item_weight"])
+
+                        quantity = rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
+                        customer_carts[customer_id][item_id]["quantity"] += quantity
+                        customer_carts[customer_id][item_id]["weight"] = item_weight
+
+                    elif action_type == "putback":
+                        available_items = [(iid, data) for iid, data in customer_carts[customer_id].items() if data["quantity"] > 0]
+                        if not available_items:
+                            continue  # niente da rimettere
+
+                        item_id, data = rng.choice(available_items)
+                        item_weight = data["weight"]
+                        max_quantity = data["quantity"]
+
+                        quantity = rng.randint(1, max_quantity)
+                        customer_carts[customer_id][item_id]["quantity"] -= quantity
+                    else:
+                        continue  # azione sconosciuta
+
                     quantity = rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
                     total_weight = round(item_weight * quantity, 3)
 
@@ -178,6 +203,7 @@ def main():
                     }
                     producer.send(TOPIC_SHELF, value=weight_event)
                     print(f"[shelf] Sent WEIGHT_CHANGE: {weight_event}")
+
 
                     executed = True
                     break

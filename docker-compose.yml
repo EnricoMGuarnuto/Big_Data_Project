@@ -106,11 +106,8 @@ services:
       - KAFKA_BROKER=kafka:9092
       - KAFKA_TOPIC_FOOT=foot_traffic
       - KAFKA_TOPIC_SHELF=shelf_events
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
     depends_on:
       - kafka
-      - redis
     volumes:
       - ./data:/data
 
