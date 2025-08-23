@@ -1,32 +1,42 @@
 FROM bitnami/spark:3.4.1
 
-
 # Serve root per installare pacchetti e jar
 USER root
 
-
 RUN apt-get update \
-&& apt-get install -y --no-install-recommends ca-certificates curl \
-&& rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
 
+# Path Spark
+ENV SPARK_HOME=/opt/bitnami/spark
+WORKDIR $SPARK_HOME/jars
 
-# JDBC driver Postgres (evita "No suitable driver")
-RUN curl -fsSL \
-https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.3/postgresql-42.7.3.jar \
--o /opt/bitnami/spark/jars/postgresql-42.7.3.jar
+# === Scarica JAR necessari ===
+# Kafka + Hadoop AWS + AWS SDK + Postgres + Commons Pool2
+RUN curl -fsSL -o spark-sql-kafka-0-10_2.12-3.4.0.jar \
+        https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.12/3.4.0/spark-sql-kafka-0-10_2.12-3.4.0.jar && \
+    curl -fsSL -o kafka-clients-3.4.0.jar \
+        https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.4.0/kafka-clients-3.4.0.jar && \
+    curl -fsSL -o spark-token-provider-kafka-0-10_2.12-3.4.0.jar \
+        https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.12/3.4.0/spark-token-provider-kafka-0-10_2.12-3.4.0.jar && \
+    curl -fsSL -o hadoop-aws-3.3.4.jar \
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    curl -fsSL -o aws-java-sdk-bundle-1.12.262.jar \
+        https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar && \
+    curl -fsSL -o commons-pool2-2.11.1.jar \
+        https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar && \
+    curl -fsSL -o postgresql-42.7.3.jar \
+        https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.3/postgresql-42.7.3.jar
 
-
+# Torna in /app per il codice
 WORKDIR /app
 
-
-# requirements Python (psycopg2-binary)
+# requirements Python (psycopg2-binary ecc.)
 COPY requirements.txt .
 RUN if [ -s requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 
-
-# PySpark per allineamento (Bitnami lo include, qui è ridondante ma innocuo)
-RUN pip install pyspark
-
+# PySpark (bitnami già lo include, ma forziamo allineamento)
+RUN pip install pyspark==3.4.1
 
 # Codice Spark
 COPY app.py /app/app.py
@@ -34,6 +44,5 @@ COPY app.py /app/app.py
 # Torna utente non-root (best practice Bitnami)
 USER 1001
 
-
-# Avvio con pacchetti per Kafka + S3A + AWS SDK
-CMD ["spark-submit","--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262","--conf", "spark.sql.shuffle.partitions=2","--conf", "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem","--conf", "spark.hadoop.fs.s3a.path.style.access=true","--conf", "spark.hadoop.fs.s3a.endpoint=${S3_ENDPOINT}","--conf", "spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider","/app/app.py"]
+# Avvio: ora senza --packages (tutto già in $SPARK_HOME/jars)
+CMD ["spark-submit", "/app/app.py"]

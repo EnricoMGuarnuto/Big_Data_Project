@@ -2,6 +2,8 @@ import os
 import json
 from typing import Any, Dict
 from decimal import Decimal
+from kafka import KafkaAdminClient
+import time
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
@@ -48,6 +50,21 @@ SILVER_PATH = f"{MINIO_URL}/silver/pos"
 # Psycopg2 only on the driver inside foreachBatch
 import psycopg2
 
+def wait_for_topic(topic, bootstrap, attempts=20, sleep_s=3):
+    """Aspetta che il topic Kafka sia disponibile prima di far partire Spark"""
+    for i in range(1, attempts+1):
+        try:
+            admin = KafkaAdminClient(bootstrap_servers=bootstrap, client_id="spark-pos-check")
+            topics = admin.list_topics()
+            admin.close()
+            if topic in topics:
+                print(f"[spark-pos] ✅ Trovato topic {topic}")
+                return
+            print(f"[spark-pos] ⏳ Topic {topic} non ancora presente (tentativo {i}/{attempts})")
+        except Exception as e:
+            print(f"[spark-pos] ⚠️ Errore check topic: {e}")
+        time.sleep(sleep_s)
+    raise RuntimeError(f"[spark-pos] ❌ Topic {topic} non trovato dopo {attempts} tentativi")
 # ------------------
 # Spark session
 # ------------------
@@ -88,6 +105,8 @@ pos_schema = StructType([
 # ------------------
 # Kafka source
 # ------------------
+wait_for_topic(POS_TOPIC, KAFKA_SERVERS)
+
 raw = (
     spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_SERVERS)

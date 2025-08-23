@@ -1,10 +1,28 @@
 import os
+from kafka import KafkaAdminClient
+import time
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, from_json, to_timestamp, to_date, expr, when, lit, coalesce
 )
 from pyspark.sql.types import StructType, StructField, StringType
 
+
+def wait_for_topic(topic, bootstrap, attempts=20, sleep_s=3):
+    """Aspetta che il topic Kafka sia disponibile prima di far partire Spark"""
+    for i in range(1, attempts+1):
+        try:
+            admin = KafkaAdminClient(bootstrap_servers=bootstrap, client_id="spark-foot-traffic-realistic-check")
+            topics = admin.list_topics()
+            admin.close()
+            if topic in topics:
+                print(f"[spark-foot-traffic] ✅ Trovato topic {topic}")
+                return
+            print(f"[spark-foot-traffic] ⏳ Topic {topic} non ancora presente (tentativo {i}/{attempts})")
+        except Exception as e:
+            print(f"[spark-foot-traffic] ⚠️ Errore check topic: {e}")
+        time.sleep(sleep_s)
+    raise RuntimeError(f"[spark-foot-traffic] ❌ Topic {topic} non trovato dopo {attempts} tentativi")
 # -----------------------------
 # Spark
 # -----------------------------
@@ -15,6 +33,11 @@ spark = (
     .config("spark.sql.parquet.output.committer.class", "org.apache.parquet.hadoop.ParquetOutputCommitter")
     .config("spark.hadoop.fs.s3a.committer.name", "directory")
     .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+    .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+    .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID", "minio"))
+    .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY", "minio123"))
+    .config("spark.hadoop.fs.s3a.path.style.access", "true")
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel("WARN")
@@ -39,6 +62,9 @@ ft_realistic_schema = StructType([
 ])
 
 # ===== Kafka → raw realistic
+
+wait_for_topic(TOPIC_REALISTIC, KAFKA_SERVERS)
+
 parsed_df = (
     spark.readStream.format("kafka")
          .option("kafka.bootstrap.servers", KAFKA_SERVERS)
