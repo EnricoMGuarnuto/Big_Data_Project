@@ -69,13 +69,19 @@ def load_price_map_from_store(path: str) -> Dict[str, float]:
     return df.set_index("shelf_id")["price"].astype(float).to_dict()
 
 def load_discounts_from_file(path: str) -> Dict[str, float]:
-    try:
-        with open(path, "r") as f:
-            data = json.load(f)
-        return {item["item_id"]: float(item["discount"]) for item in data}
-    except Exception as e:
-        print(f"[pos] ERRORE leggendo sconti da {path}: {e}")
-        return {}
+    while True:
+        try:
+            if not os.path.exists(path):
+                print(f"[pos] ⚠️ File sconti non trovato ({path}), ritento fra 30s...")
+                time.sleep(30)
+                continue
+            with open(path, "r") as f:
+                data = json.load(f)
+            print(f"[pos] ✅ Sconti caricati da {path} ({len(data)} items)")
+            return {item["item_id"]: float(item["discount"]) for item in data}
+        except Exception as e:
+            print(f"[pos] ⚠️ Errore leggendo sconti da {path}: {e}")
+            time.sleep(30)
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)

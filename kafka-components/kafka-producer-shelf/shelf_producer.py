@@ -65,13 +65,19 @@ def generate_scheduled_actions(entry, exit):
     return [(ts, "pickup" if random.random() > PUTBACK_PROB else "putback") for ts in timestamps]
 
 def load_discounts_from_file(path: str) -> dict:
-    try:
-        with open(path, "r") as f:
-            data = json.load(f)
-        return {item["item_id"]: float(item["discount"]) for item in data}
-    except Exception as e:
-        print(f"[shelf] ERRORE leggendo sconti da {path}: {e}")
-        return {}
+    while True:
+        try:
+            if not os.path.exists(path):
+                print(f"[pos] ⚠️ File sconti non trovato ({path}), ritento fra 30s...")
+                time.sleep(30)
+                continue
+            with open(path, "r") as f:
+                data = json.load(f)
+            print(f"[pos] ✅ Sconti caricati da {path} ({len(data)} items)")
+            return {item["item_id"]: float(item["discount"]) for item in data}
+        except Exception as e:
+            print(f"[pos] ⚠️ Errore leggendo sconti da {path}: {e}")
+            time.sleep(30)
 # ========================
 # Kafka
 # ========================

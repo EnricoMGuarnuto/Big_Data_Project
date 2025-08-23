@@ -91,6 +91,7 @@ services:
     environment:
       - KAFKA_BROKER=kafka:9092
       - KAFKA_TOPIC=foot_traffic
+      - KAFKA_TOPIC_REALISTIC=foot_traffic_realistic
       - SLEEP=0.3
       - TIME_SCALE=60
     depends_on:
@@ -188,8 +189,52 @@ services:
       - "4041:4040" # UI Spark di questo container (per non confliggere con spark-shelf 4040)
     volumes:
       - ./spark-checkpoints:/chk
+  
+  spark-foot-traffic:
+    build:
+      context: ./spark-apps/foot_traffic
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_FOOT_TRAFFIC_REALISTIC=foot_traffic_realistic
+      - MINIO_URL=s3a://retail-lake
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - AWS_REGION=us-east-1
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+    ports:
+      - "4042:4040"        # UI Spark (4040 già usato da shelf, 4041 da pos)
+    volumes:
+      - ./spark-checkpoints:/chk
 
-
+  spark-discount:
+    build:
+      context: ./spark-apps/discount
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+    ports:
+      - "4043:4040" 
+    volumes:
+      - ./spark-checkpoints:/chk
+    
   alert-center:
     build:
       context: ./alert-center
