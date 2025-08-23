@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 import time
 import uuid
@@ -5,7 +6,7 @@ import random
 import json
 import logging
 import signal
-from typing import List,Optional
+from typing import List, Optional
 from datetime import datetime, timedelta, date, time as dtime, timezone
 
 from kafka import KafkaProducer
@@ -16,21 +17,18 @@ from kafka.errors import NoBrokersAvailable
 # ============================================================
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC = os.getenv("KAFKA_TOPIC", "foot_traffic")
+TOPIC_REALISTIC = os.getenv("KAFKA_TOPIC_REALISTIC", "foot_traffic_realistic")
 
-# Tick loop (ridotto se TIME_SCALE > 1)
 SLEEP = float(os.getenv("SLEEP", 0.5))
 TIME_SCALE = float(os.getenv("TIME_SCALE", 1.0))
 
-# Totali giornalieri
 DEFAULT_DAILY_CUSTOMERS = int(os.getenv("DEFAULT_DAILY_CUSTOMERS", 1000))
 BASE_DAILY_CUSTOMERS = int(os.getenv("BASE_DAILY_CUSTOMERS", DEFAULT_DAILY_CUSTOMERS))
 DAILY_CUSTOMERS = os.getenv("DAILY_CUSTOMERS")
 
-# Variabilità giornaliera (per non avere sempre gli stessi totali)
 DAILY_VARIATION_PCT = float(os.getenv("DAILY_VARIATION_PCT", 0.10))
 DISABLE_DAILY_VARIATION = os.getenv("DISABLE_DAILY_VARIATION", "0") in ("1", "true", "True")
 
-# Random seed opzionale per test riproducibili
 SEED = os.getenv("SEED")
 if SEED is not None:
     try:
@@ -38,11 +36,9 @@ if SEED is not None:
     except ValueError:
         random.seed(SEED)
 
-# Kafka retry
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", 6))
 RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", 5.0))
 
-# NB: orari in UTC per semplicità; se vuoi locale, vedi zoneinfo("Europe/Rome")
 time_slots = [
     ("00:00", "06:59"),
     ("07:00", "09:59"),
@@ -52,7 +48,6 @@ time_slots = [
     ("20:00", "23:59"),
 ]
 
-# Pesi per weekday (interpreta come pesi relativi intra-giorno; la somma serve anche come "popolarità" inter-giorno)
 schedule = {
     "Sunday":    [22, 21, 23, 19, 16, 13],
     "Monday":    [16, 17, 20, 17, 13, 10],
@@ -63,15 +58,9 @@ schedule = {
     "Saturday":  [22, 24, 27, 22, 20, 18]
 }
 
-# ============================================================
-# Logging
-# ============================================================
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
 log = logging.getLogger(__name__)
 
-# ============================================================
-# Segnali di stop
-# ============================================================
 stop = False
 def _handle_stop(sig, frame):
     global stop
@@ -79,9 +68,6 @@ def _handle_stop(sig, frame):
 signal.signal(signal.SIGTERM, _handle_stop)
 signal.signal(signal.SIGINT, _handle_stop)
 
-# ============================================================
-# Utilità
-# ============================================================
 WEEKDAYS_ORDER = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 SCHEDULE_BY_IDX = [
     schedule["Monday"],
@@ -178,7 +164,6 @@ def decide_daily_total(weekday_idx: int) -> int:
     return max(1, round(mean_total * noise_factor))
 
 def build_producer():
-    producer = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             log.info(f"Tentativo {attempt}: connessione a Kafka ({KAFKA_BROKER})")
@@ -193,17 +178,13 @@ def build_producer():
                 max_in_flight_requests_per_connection=1,
             )
             log.info("Connesso a Kafka.")
-            break
+            return producer
         except NoBrokersAvailable as e:
             log.warning(f"Kafka non disponibile ({e}), riprovo tra {RETRY_BACKOFF_SECONDS}s...")
-            time.sleep(RETRY_BACKOFF_SECONDS)
         except Exception as e:
             log.warning(f"Errore di connessione a Kafka ({type(e).__name__}: {e}), riprovo tra {RETRY_BACKOFF_SECONDS}s...")
-            time.sleep(RETRY_BACKOFF_SECONDS)
-
-    if not producer:
-        raise RuntimeError("Impossibile connettersi a Kafka.")
-    return producer
+        time.sleep(RETRY_BACKOFF_SECONDS)
+    raise RuntimeError("Impossibile connettersi a Kafka.")
 
 def build_event(entry_time: datetime):
     duration = generate_trip_duration()
@@ -231,9 +212,7 @@ class DayPlan:
         self.weekday_idx = weekday_idx
         self.total_customers = total_customers
         self.schedule = SCHEDULE_BY_IDX[weekday_idx]
-
         base_counts = largest_remainder_allocation(total_customers, self.schedule)
-
         self.slot_counts = base_counts[:]
         if now is not None and now.date() == day:
             curr_idx = get_slot_index_for(now)
@@ -248,7 +227,6 @@ class DayPlan:
                     rem = max(0.0, (e - now).total_seconds())
                     frac = rem / full if full > 0 else 0.0
                     self.slot_counts[idx] = int(round(self.slot_counts[idx] * frac))
-
         self.events = []
         for idx, cnt in enumerate(self.slot_counts):
             s, e = slot_bounds(day, idx)
@@ -256,7 +234,6 @@ class DayPlan:
             if now is not None and now.date() == day and s <= now <= e:
                 cutoff = now
             self.events.extend(uniform_times_in_slot(s, e, cnt, now_cut=cutoff))
-
         self.events.sort()
         self._cursor = 0
 
@@ -269,19 +246,15 @@ class DayPlan:
             return t
         return None
 
-    def remaining_today(self):
-        return len(self.events) - self._cursor
-
 def main():
     producer = build_producer()
-
     now = now_utc()
     current_day = now.date()
     weekday_idx = now.weekday()
     plan = DayPlan(current_day, weekday_idx, decide_daily_total(weekday_idx), now=now)
+    future_exits = []
 
-    log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Totale pianificato (da ora in poi): "
-             f"{sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
+    log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Totale pianificato (da ora in poi): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
 
     try:
         while not stop:
@@ -290,8 +263,7 @@ def main():
                 current_day = now.date()
                 weekday_idx = now.weekday()
                 plan = DayPlan(current_day, weekday_idx, decide_daily_total(weekday_idx), now=now)
-                log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Nuovo piano. Totale (da ora in poi): "
-                         f"{sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
+                log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Nuovo piano. Totale (da ora in poi): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
 
             while True:
                 ts = plan.next_ready(now)
@@ -299,9 +271,36 @@ def main():
                     break
                 event, cid = build_event(ts)
                 producer.send(TOPIC, key=cid, value=event)
-                log.info(f"message sent: {event}")
+                log.info(f"Simulativo: {event}")
+                
 
-            time.sleep(max(600, SLEEP / max(1.0, TIME_SCALE)))
+                # Evento realistico: entry
+                entry_event = {
+                    "event_type": "entry",
+                    "time": event["entry_time"],
+                    "weekday": event["weekday"],
+                    "time_slot": event["time_slot"]
+                }
+                producer.send(TOPIC_REALISTIC, key=cid, value=entry_event)
+                log.info(f"Realistico ENTRY: {entry_event}")
+
+                # Pianifica evento exit per il futuro
+                exit_event = {
+                    "event_type": "exit",
+                    "time": event["exit_time"],
+                    "weekday": event["weekday"],
+                    "time_slot": event["time_slot"]
+                }
+                future_exits.append((datetime.fromisoformat(event["exit_time"]), exit_event, cid))
+
+            # Verifica eventi di uscita pronti da inviare
+            for exit_time, exit_event, cid in future_exits[:]:
+                if exit_time <= now:
+                    producer.send(TOPIC_REALISTIC, key=cid, value=exit_event)
+                    log.info(f"Realistico EXIT: {exit_event}")
+                    future_exits.remove((exit_time, exit_event, cid))
+
+            time.sleep(max(0.1, SLEEP / max(1.0, TIME_SCALE)))
     finally:
         log.info("Flush & close producer...")
         try:
