@@ -197,24 +197,22 @@ CREATE OR REPLACE FUNCTION apply_pos_transaction(
     p_transaction JSONB
 ) RETURNS VOID AS $$
 DECLARE
-    v_receipt_id BIGINT;
-    v_total_net NUMERIC(12,2) := 0;
-    v_total_tax NUMERIC(12,2) := 0;
-    v_total_gross NUMERIC(12,2) := 0;
+    v_receipt_id    BIGINT;
+    v_total_net     NUMERIC(12,2) := 0;
     v_business_date DATE;
-    v_item JSONB;
-    v_unit_price NUMERIC(12,4);
-    v_discount NUMERIC(12,4);
-    v_qty INT;
-    v_total_line NUMERIC(14,4);
+    v_item          JSONB;
+    v_unit_price    NUMERIC(12,4);
+    v_discount      NUMERIC(12,4);
+    v_qty           INT;
+    v_total_line    NUMERIC(14,4);
 BEGIN
-    -- business_date con fallback a oggi
+    -- business_date con fallback ad oggi
     v_business_date := COALESCE(
         (p_transaction->>'timestamp')::timestamptz::date,
         CURRENT_DATE
     );
 
-    -- Inserisci/aggiorna header receipt
+    -- Header scontrino (idempotente su transaction_id)
     INSERT INTO receipts(transaction_id, customer_id, business_date, closed_at, status)
     VALUES (
         p_transaction->>'transaction_id',
@@ -230,21 +228,20 @@ BEGIN
           status        = 'CLOSED'
     RETURNING receipt_id INTO v_receipt_id;
 
-    -- cancella righe vecchie (idempotenza)
+    -- reset righe (idempotenza)
     DELETE FROM receipt_lines WHERE receipt_id = v_receipt_id;
 
-    -- loop sugli items
-    FOR v_item IN SELECT jsonb_array_elements(p_transaction->'items')
+    -- loop sugli items (se manca 'items', il loop non parte)
+    FOR v_item IN SELECT jsonb_array_elements(COALESCE(p_transaction->'items', '[]'::jsonb))
     LOOP
-        v_qty        := COALESCE((v_item->>'quantity')::int,0);
-        v_unit_price := COALESCE((v_item->>'unit_price')::numeric,0);
-        v_discount   := COALESCE((v_item->>'discount')::numeric,0);
-        v_total_line := COALESCE((v_item->>'total_price')::numeric, v_qty*(v_unit_price-v_discount));
+        v_qty        := COALESCE((v_item->>'quantity')::int, 0);
+        v_unit_price := COALESCE((v_item->>'unit_price')::numeric, 0);
+        v_discount   := COALESCE((v_item->>'discount')::numeric, 0);
+        v_total_line := COALESCE((v_item->>'total_price')::numeric,
+                                 v_qty * (v_unit_price - v_discount));
 
-        -- inserisci riga
         INSERT INTO receipt_lines(
-            receipt_id, shelf_id, quantity,
-            unit_price, discount, total_price
+            receipt_id, shelf_id, quantity, unit_price, discount, total_price
         )
         VALUES (
             v_receipt_id,
@@ -255,22 +252,18 @@ BEGIN
             v_total_line
         );
 
-        -- aggiorna totali
-        v_total_net   := v_total_net + (v_qty * (v_unit_price - v_discount));
-        v_total_gross := v_total_gross + v_total_line;
+        v_total_net := v_total_net + (v_qty * (v_unit_price - v_discount));
     END LOOP;
 
-    -- supponiamo IVA = 22%
-    v_total_tax := v_total_gross - v_total_net;
-
-    -- aggiorna header
+    -- aggiorna solo il NETTO (coerente con lo schema)
     UPDATE receipts
-    SET total_net   = v_total_net,
-        total_tax   = v_total_tax,
-        total_gross = v_total_gross
+    SET total_net = ROUND(v_total_net, 2)
     WHERE receipt_id = v_receipt_id;
+
 END;
 $$ LANGUAGE plpgsql;
+
+
 
 CREATE OR REPLACE FUNCTION apply_sale_event(
   p_event_id TEXT,

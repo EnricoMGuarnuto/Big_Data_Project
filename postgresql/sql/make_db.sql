@@ -80,8 +80,6 @@ CREATE TABLE IF NOT EXISTS receipts (
   business_date  DATE        NOT NULL,
   closed_at      TIMESTAMPTZ NOT NULL,
   total_net      NUMERIC(12,2) NOT NULL DEFAULT 0,
-  total_tax      NUMERIC(12,2) NOT NULL DEFAULT 0,
-  total_gross    NUMERIC(12,2) NOT NULL DEFAULT 0,
   status         TEXT          NOT NULL DEFAULT 'CLOSED'
 );
 
@@ -256,13 +254,17 @@ CREATE INDEX IF NOT EXISTS idx_batches_item   ON batches(item_id);
 CREATE INDEX IF NOT EXISTS idx_batches_expiry ON batches(expiry_date);
 CREATE INDEX IF NOT EXISTS idx_batchinv_loc   ON batch_inventory(location_id);
 
+-- ---------- seed ----------
+INSERT INTO locations (location) VALUES ('instore'), ('warehouse')
+ON CONFLICT (location) DO NOTHING;
+
 -- ---------- parametri path ----------
 \set store_inventory '/data/store_inventory_final.csv'
 \set wh_inventory    '/data/warehouse_inventory_final.csv'
 \set store_batches   '/data/store_batches.csv'
 \set wh_batches      '/data/warehouse_batches.csv'
 
--- ---------- guard rails ----------
+-- ---------- soft guard rails: log-only ----------
 DO $$
 DECLARE
   n_items BIGINT; n_categories BIGINT; n_inventory BIGINT; n_batches BIGINT; n_batch_inventory BIGINT;
@@ -272,15 +274,31 @@ BEGIN
   SELECT COUNT(*) INTO n_inventory       FROM product_inventory;
   SELECT COUNT(*) INTO n_batches         FROM batches;
   SELECT COUNT(*) INTO n_batch_inventory FROM batch_inventory;
-  IF n_items > 0 OR n_categories > 0 OR n_inventory > 0 OR n_batches > 0 OR n_batch_inventory > 0 THEN
-    RAISE EXCEPTION 'dati già presenti (items=%, categories=%, inventory=%, batches=%, batch_inventory=%). Interrompo per sicurezza.',
+
+  IF n_items = 0 AND n_categories = 0 AND n_inventory = 0 AND n_batches = 0 AND n_batch_inventory = 0 THEN
+    RAISE NOTICE 'Bootstrap: DB vuoto → carico i CSV.';
+  ELSE
+    RAISE NOTICE 'Bootstrap saltato: dati già presenti (items=%, categories=%, inventory=%, batches=%, batch_inventory=%).',
       n_items, n_categories, n_inventory, n_batches, n_batch_inventory;
   END IF;
 END$$;
 
--- ---------- seed ----------
-INSERT INTO locations (location) VALUES ('instore'), ('warehouse')
-ON CONFLICT (location) DO NOTHING;
+-- ---------- calcolo :do_bootstrap (1 se DB vuoto) ----------
+WITH c AS (
+  SELECT
+    (SELECT COUNT(*) FROM items)            AS n_items,
+    (SELECT COUNT(*) FROM categories)       AS n_categories,
+    (SELECT COUNT(*) FROM product_inventory) AS n_inventory,
+    (SELECT COUNT(*) FROM batches)          AS n_batches,
+    (SELECT COUNT(*) FROM batch_inventory)  AS n_batch_inventory
+)
+SELECT CASE WHEN n_items=0 AND n_categories=0 AND n_inventory=0 AND n_batches=0 AND n_batch_inventory=0
+            THEN 1 ELSE 0 END AS do_bootstrap
+FROM c
+\gset
+
+\if :do_bootstrap
+  \echo '>>> Eseguo bootstrap CSV...'
 
 -- ---------- staging ----------
 CREATE TEMP TABLE staging_inventory_raw (
@@ -507,6 +525,9 @@ WHERE l.location='instore'
 ON CONFLICT (shelf_id) 
 DO UPDATE SET status = EXCLUDED.status;
 
+\else
+  \echo '>>> Bootstrap CSV saltato (DB non vuoto).'
+\endif
 
 ANALYZE;
 COMMIT;
