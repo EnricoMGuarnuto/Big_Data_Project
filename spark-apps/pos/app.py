@@ -134,7 +134,7 @@ def _connect_pg():
     return conn
 
 def write_batch_to_pg(batch_df: DataFrame, batch_id: int):
-    """Chiama apply_pos_transaction + apply_sale_event + stream_events"""
+    """Chiama apply_pos_transaction + apply_sale_event """
     if batch_df.rdd.isEmpty():
         return
 
@@ -186,16 +186,6 @@ def write_batch_to_pg(batch_df: DataFrame, batch_id: int):
                         "SELECT apply_sale_event(%s,%s,%s,%s,%s)",
                         (f"pos-{tx_id}", closed_ts, ln["item_id"], int(ln["quantity"]), json.dumps(meta)),
                     )
-
-                # 3) log stream_events
-                cur.execute(
-                    """
-                    INSERT INTO stream_events(event_id, source, event_ts, payload)
-                    VALUES (%s,%s,%s,%s)
-                    ON CONFLICT (event_id) DO NOTHING
-                    """,
-                    (f"pos-{tx_id}", "pos.sales", closed_ts, json.dumps(tx_json)),
-                )
 
             conn.commit()
     except Exception:

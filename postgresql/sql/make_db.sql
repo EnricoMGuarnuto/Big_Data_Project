@@ -157,6 +157,50 @@ CREATE TABLE shelf_status (
 
 
 -- =====================================================================
+-- >>> NUOVE TABELLE PER FOOT TRAFFIC <<<
+-- =====================================================================
+
+-- Eventi “grezzi” idempotenti (utile anche per audit)
+CREATE TABLE IF NOT EXISTS foot_traffic_events (
+  event_id   TEXT PRIMARY KEY,                              -- generato dal consumer Spark
+  event_type TEXT NOT NULL CHECK (event_type IN ('entry','exit')),
+  event_time TIMESTAMPTZ NOT NULL,
+  weekday    TEXT,                                          -- opzionale, dal producer
+  time_slot  TEXT,                                          -- es. "07:00–09:59"
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ft_events_time ON foot_traffic_events(event_time);
+
+-- Tabella per dashboard: contatore live nel tempo (come richiesto)
+CREATE TABLE IF NOT EXISTS foot_traffic_counter (
+  id                    BIGSERIAL PRIMARY KEY,
+  event_type            TEXT NOT NULL CHECK (event_type IN ('entry','exit')),
+  event_time            TIMESTAMPTZ NOT NULL,
+  current_foot_traffic  INT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ft_counter_time ON foot_traffic_counter(event_time);
+
+-- Aggregato per timeslot (giorno x timeslot)
+CREATE TABLE IF NOT EXISTS foot_traffic_timeslot_agg (
+  business_date DATE NOT NULL,
+  weekday       TEXT,
+  time_slot     TEXT NOT NULL,
+  total_entries INT  NOT NULL DEFAULT 0,
+  total_exits   INT  NOT NULL DEFAULT 0,
+  net_traffic   INT  NOT NULL DEFAULT 0,
+  PRIMARY KEY (business_date, time_slot)
+);
+
+-- Stato “live” (singola riga) per occupazione attuale
+CREATE TABLE IF NOT EXISTS foot_traffic_state (
+  id          SMALLINT PRIMARY KEY DEFAULT 1,
+  current_cnt INT NOT NULL DEFAULT 0,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO foot_traffic_state(id, current_cnt)
+VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+
+-- =====================================================================
 -- ML Dataset - Previsione refill warehouse
 -- =====================================================================
 

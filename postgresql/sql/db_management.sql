@@ -738,3 +738,108 @@ BEGIN
 
   RETURN v_count;
 END$$;
+
+/* =======================================================================
+   FOOT TRAFFIC — funzioni idempotenti per eventi entry/exit + aggregazioni
+   ======================================================================= */
+
+-- Applica un evento foot_traffic (ENTRY/EXIT) in modo idempotente
+-- Assunzione: il consumer Spark genera un event_id unico per ogni record
+CREATE OR REPLACE FUNCTION apply_foot_traffic_event(
+  p_event_id   TEXT,
+  p_event_ts   TIMESTAMPTZ,
+  p_event_type TEXT,
+  p_weekday    TEXT,
+  p_time_slot  TEXT
+) RETURNS VOID
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_delta    INT;
+  v_curr     INT;
+  v_new      INT;
+  v_date     DATE := p_event_ts::date;
+BEGIN
+  -- Validazione tipo evento
+  IF p_event_type NOT IN ('entry','exit') THEN
+    RAISE EXCEPTION 'event_type non valido: %', p_event_type;
+  END IF;
+
+  -- Idempotenza: se già presente su eventi grezzi → esci
+  IF EXISTS (SELECT 1 FROM foot_traffic_events WHERE event_id = p_event_id) THEN
+    RETURN;
+  END IF;
+
+  -- Inserisci su tabella eventi grezzi (audit)
+  INSERT INTO foot_traffic_events(event_id, event_type, event_time, weekday, time_slot)
+  VALUES (p_event_id, p_event_type, p_event_ts, p_weekday, p_time_slot);
+
+  -- Delta contatore
+  v_delta := CASE WHEN p_event_type='entry' THEN 1 ELSE -1 END;
+
+  -- Stato live corrente
+  SELECT current_cnt INTO v_curr FROM foot_traffic_state WHERE id=1 FOR UPDATE;
+  IF v_curr IS NULL THEN
+    v_curr := 0;
+  END IF;
+  v_new := GREATEST(0, v_curr + v_delta); -- non andare sotto zero
+
+  -- Persisti stato live
+  UPDATE foot_traffic_state
+     SET current_cnt = v_new, updated_at = now()
+   WHERE id = 1;
+
+  -- Append su tabella per dashboard (come richiesto)
+  INSERT INTO foot_traffic_counter(event_type, event_time, current_foot_traffic)
+  VALUES (p_event_type, p_event_ts, v_new);
+
+  -- Aggiorna aggregato timeslot (upsert)
+  INSERT INTO foot_traffic_timeslot_agg(business_date, weekday, time_slot, total_entries, total_exits, net_traffic)
+  VALUES (
+    v_date,
+    COALESCE(p_weekday, TO_CHAR(v_date, 'Day')),
+    COALESCE(p_time_slot, 'n/a'),
+    CASE WHEN p_event_type='entry' THEN 1 ELSE 0 END,
+    CASE WHEN p_event_type='exit'  THEN 1 ELSE 0 END,
+    CASE WHEN p_event_type='entry' THEN 1 ELSE -1 END
+  )
+  ON CONFLICT (business_date, time_slot) DO UPDATE
+    SET total_entries = foot_traffic_timeslot_agg.total_entries + EXCLUDED.total_entries,
+        total_exits   = foot_traffic_timeslot_agg.total_exits   + EXCLUDED.total_exits,
+        net_traffic   = foot_traffic_timeslot_agg.net_traffic   + EXCLUDED.net_traffic,
+        weekday       = COALESCE(EXCLUDED.weekday, foot_traffic_timeslot_agg.weekday);
+END$$;
+
+-- (Opzionale) Ricalcolo “full” del contatore/aggregati a partire dalla tabella grezza
+-- Utile per manutenzione o backfill.
+CREATE OR REPLACE FUNCTION rebuild_foot_traffic_from_raw()
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
+  v_curr INT := 0;
+BEGIN
+  TRUNCATE foot_traffic_counter;
+  TRUNCATE foot_traffic_timeslot_agg;
+
+  FOR r IN
+    SELECT * FROM foot_traffic_events ORDER BY event_time ASC
+  LOOP
+    v_curr := GREATEST(0, v_curr + CASE WHEN r.event_type='entry' THEN 1 ELSE -1 END);
+    INSERT INTO foot_traffic_counter(event_type, event_time, current_foot_traffic)
+    VALUES (r.event_type, r.event_time, v_curr);
+
+    INSERT INTO foot_traffic_timeslot_agg(business_date, weekday, time_slot, total_entries, total_exits, net_traffic)
+    VALUES (r.event_time::date, r.weekday, COALESCE(r.time_slot,'n/a'),
+            CASE WHEN r.event_type='entry' THEN 1 ELSE 0 END,
+            CASE WHEN r.event_type='exit'  THEN 1 ELSE 0 END,
+            CASE WHEN r.event_type='entry' THEN 1 ELSE -1 END)
+    ON CONFLICT (business_date, time_slot) DO UPDATE
+      SET total_entries = foot_traffic_timeslot_agg.total_entries + EXCLUDED.total_entries,
+          total_exits   = foot_traffic_timeslot_agg.total_exits   + EXCLUDED.total_exits,
+          net_traffic   = foot_traffic_timeslot_agg.net_traffic   + EXCLUDED.net_traffic,
+          weekday       = COALESCE(EXCLUDED.weekday, foot_traffic_timeslot_agg.weekday);
+  END LOOP;
+
+  UPDATE foot_traffic_state SET current_cnt = v_curr, updated_at = now() WHERE id=1;
+END$$;
+
