@@ -263,8 +263,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-
-
 CREATE OR REPLACE FUNCTION apply_sale_event(
   p_event_id TEXT,
   p_event_ts TIMESTAMPTZ,
