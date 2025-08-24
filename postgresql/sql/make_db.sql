@@ -455,75 +455,154 @@ WHERE sb.quantity > 0
 ON CONFLICT (batch_id, location_id) DO NOTHING;
 
 -- ---------- soglie ----------
-INSERT INTO inventory_thresholds (scope, location_id, low_stock_threshold, safety_stock, near_expiry_days)
+-- ============================================================
+-- (1) Fallback GLOBAL per instore/warehouse (opzionale ma consigliato)
+-- ============================================================
+WITH loc AS (
+  SELECT location_id, location
+  FROM locations
+  WHERE location IN ('instore','warehouse')
+)
+INSERT INTO inventory_thresholds(scope, location_id, low_stock_threshold, safety_stock, near_expiry_days)
 SELECT 'global', l.location_id,
-       CASE WHEN l.location='instore'   THEN 5  ELSE 20 END,
-       CASE WHEN l.location='instore'   THEN 2  ELSE 5  END,
-       CASE WHEN l.location='instore'   THEN 3  ELSE 7  END
-FROM locations l
-WHERE l.location IN ('instore','warehouse')
-ON CONFLICT (scope, item_id, category_id, location_id) DO NOTHING;
+       CASE WHEN l.location='instore' THEN 5 ELSE 20 END,
+       CASE WHEN l.location='instore' THEN 2 ELSE 5  END,
+       CASE WHEN l.location='instore' THEN 3 ELSE 7  END
+FROM loc l;
 
-INSERT INTO inventory_thresholds (scope, category_id, location_id, low_stock_threshold, safety_stock, near_expiry_days)
-SELECT 'category', c.category_id, l.location_id,
-       CASE WHEN l.location='instore' THEN 8 ELSE 30 END,
-       CASE WHEN l.location='instore' THEN 3 ELSE 8  END,
-       CASE WHEN l.location='instore' THEN 2 ELSE 5  END
-FROM categories c
-CROSS JOIN locations l
-WHERE lower(c.category_name) ~ '^(fresh|fresco|perish|deperib|dairy|lattic|meat|carne|fish|pesce|produce|frutta|verdura|bakery|pane|pasticc)'
-ON CONFLICT (scope, item_id, category_id, location_id) DO NOTHING;
-
-INSERT INTO inventory_thresholds (scope, item_id, location_id, low_stock_threshold, safety_stock, near_expiry_days)
-SELECT 'item', pi.item_id, pi.location_id,
-       CASE
-         WHEN COALESCE(pi.initial_stock, pi.current_stock, 0) <= 0 THEN
-           CASE WHEN l.location='instore' THEN 5 ELSE 20 END
-         ELSE
-           CASE
-             WHEN l.location='instore' THEN GREATEST(1, LEAST(25, CEIL(COALESCE(pi.initial_stock, pi.current_stock)::numeric * 0.10))::int)
-             ELSE                          GREATEST(1, LEAST(50, CEIL(COALESCE(pi.initial_stock, pi.current_stock)::numeric * 0.10))::int)
-           END
-       END,
-       NULL::int, NULL::int
-FROM product_inventory pi
-JOIN locations l ON l.location_id = pi.location_id
-ON CONFLICT (scope, item_id, category_id, location_id) DO NOTHING;
-
--- aggiorna shelf_status in base alle soglie definite
-INSERT INTO shelf_status (shelf_id, status)
-SELECT 
-    i.shelf_id,
+-- ============================================================
+-- (2) ITEM + LOCATION: soglie da baseline (CSV) e near‑expiry da lotti
+--     baseline = GREATEST(initial_stock, current_stock)
+--     instore:  low = ceil(15%) clamp 2..30 ; safety = ceil(7%)  clamp 1..15
+--     wh:       low = ceil(25%) clamp 10..100; safety = ceil(10%) clamp 5..50
+--     near-expiry: life_days = avg(expiry - received) (pesata su qty)
+--       instore:  ceil(life*0.20) clamp 2..14 (fallback 3)
+--       wh:       ceil(life*0.35) clamp 5..30 (fallback 7)
+-- ============================================================
+WITH
+loc AS (
+  SELECT
+    MAX(CASE WHEN location='instore'  THEN location_id END) AS instore_id,
+    MAX(CASE WHEN location='warehouse' THEN location_id END) AS warehouse_id
+  FROM locations
+),
+base AS (
+  SELECT
+    pi.item_id,
+    pi.location_id,
+    GREATEST(COALESCE(pi.initial_stock,0), COALESCE(pi.current_stock,0))::int AS baseline
+  FROM product_inventory pi
+),
+life AS (
+  SELECT
+    b.item_id,
+    CASE WHEN SUM(COALESCE(bi.quantity,0)) > 0
+         THEN ROUND( SUM( GREATEST(1, (b.expiry_date - b.received_date)) * COALESCE(bi.quantity,0) )
+                     / SUM(COALESCE(bi.quantity,0)) )::int
+         ELSE NULL END AS life_days
+  FROM batches b
+  JOIN batch_inventory bi ON bi.batch_id = b.batch_id
+  WHERE b.expiry_date IS NOT NULL
+  GROUP BY b.item_id
+),
+thr AS (
+  SELECT
+    b.item_id,
+    b.location_id,
+    b.baseline,
     CASE
-      WHEN pi.current_stock <= 0 THEN 'critical'
-      WHEN pi.current_stock <= COALESCE(thr.low_thr, 0) THEN 'critical'
-      WHEN pi.current_stock <= COALESCE(thr.low_thr, 0) + 2 THEN 'near'
-      ELSE 'ok'
-    END AS status
-FROM product_inventory pi
-JOIN items i ON i.item_id = pi.item_id
-JOIN categories c ON c.category_id = i.category_id
-LEFT JOIN LATERAL (
-    SELECT COALESCE(
-        (SELECT low_stock_threshold 
-           FROM inventory_thresholds t 
-           WHERE t.scope='item' AND t.item_id=pi.item_id AND (t.location_id=pi.location_id OR t.location_id IS NULL)
-           ORDER BY t.location_id NULLS LAST LIMIT 1),
-        (SELECT low_stock_threshold 
-           FROM inventory_thresholds t 
-           WHERE t.scope='category' AND t.category_id=c.category_id AND (t.location_id=pi.location_id OR t.location_id IS NULL)
-           ORDER BY t.location_id NULLS LAST LIMIT 1),
-        (SELECT low_stock_threshold 
-           FROM inventory_thresholds t 
-           WHERE t.scope='global' AND (t.location_id=pi.location_id OR t.location_id IS NULL)
-           ORDER BY t.location_id NULLS LAST LIMIT 1),
+      WHEN b.location_id = (SELECT instore_id FROM loc) THEN LEAST( GREATEST(2,  CEIL(b.baseline * 0.15)::int), 30 )
+      ELSE                                                LEAST( GREATEST(10, CEIL(b.baseline * 0.25)::int), 100)
+    END AS low_thr,
+    CASE
+      WHEN b.location_id = (SELECT instore_id FROM loc) THEN LEAST( GREATEST(1,  CEIL(b.baseline * 0.07)::int), 15 )
+      ELSE                                                LEAST( GREATEST(5,  CEIL(b.baseline * 0.10)::int), 50 )
+    END AS safety_thr
+  FROM base b
+),
+near AS (
+  SELECT
+    b.item_id,
+    b.location_id,
+    CASE
+      WHEN b.location_id = (SELECT instore_id FROM loc)
+        THEN LEAST( GREATEST(2,  CEIL(COALESCE(l.life_days, 3) * 0.20)::int), 14 )
+      ELSE LEAST( GREATEST(5,  CEIL(COALESCE(l.life_days, 7) * 0.35)::int), 30 )
+    END AS near_expiry_days
+  FROM base b
+  LEFT JOIN life l ON l.item_id = b.item_id
+)
+INSERT INTO inventory_thresholds(scope, item_id, location_id, low_stock_threshold, safety_stock, near_expiry_days)
+SELECT
+  'item'::text,
+  t.item_id,
+  t.location_id,
+  NULLIF(t.low_thr,    0),
+  NULLIF(t.safety_thr, 0),
+  n.near_expiry_days
+FROM thr t
+JOIN near n ON n.item_id = t.item_id AND n.location_id = t.location_id;
+-- ============================================================
+-- (3) POPOLA shelf_status in base alle nuove soglie (solo INSTORE)
+--     Regole:
+--       - critical: current_stock <= 0  OR  current_stock <= low_thr
+--       - near:     current_stock <= low_thr + GREATEST(safety_thr, 1)
+--       - ok:       altrimenti
+--     Fallback soglie: ITEM -> GLOBAL (stesso location_id o NULL)
+-- ============================================================
+WITH per_shelf AS (
+  SELECT
+      i.shelf_id,
+      pi.current_stock,
+      COALESCE(
+        (SELECT t.low_stock_threshold
+           FROM inventory_thresholds t
+          WHERE t.scope = 'item'
+            AND t.item_id = pi.item_id
+            AND (t.location_id = pi.location_id OR t.location_id IS NULL)
+          ORDER BY t.location_id NULLS LAST
+          LIMIT 1),
+        (SELECT t.low_stock_threshold
+           FROM inventory_thresholds t
+          WHERE t.scope = 'global'
+            AND (t.location_id = pi.location_id OR t.location_id IS NULL)
+          ORDER BY t.location_id NULLS LAST
+          LIMIT 1),
         0
-    ) AS low_thr
-) thr ON TRUE
-JOIN locations l ON l.location_id = pi.location_id
-WHERE l.location='instore'
-ON CONFLICT (shelf_id) 
-DO UPDATE SET status = EXCLUDED.status;
+      ) AS low_thr,
+      COALESCE(
+        (SELECT t.safety_stock
+           FROM inventory_thresholds t
+          WHERE t.scope = 'item'
+            AND t.item_id = pi.item_id
+            AND (t.location_id = pi.location_id OR t.location_id IS NULL)
+          ORDER BY t.location_id NULLS LAST
+          LIMIT 1),
+        (SELECT t.safety_stock
+           FROM inventory_thresholds t
+          WHERE t.scope = 'global'
+            AND (t.location_id = pi.location_id OR t.location_id IS NULL)
+          ORDER BY t.location_id NULLS LAST
+          LIMIT 1),
+        0
+      ) AS safety_thr
+  FROM product_inventory pi
+  JOIN items     i ON i.item_id = pi.item_id
+  JOIN locations l ON l.location_id = pi.location_id
+  WHERE l.location = 'instore'
+)
+INSERT INTO shelf_status (shelf_id, status)
+SELECT
+  shelf_id,
+  CASE
+    WHEN current_stock <= 0 THEN 'critical'
+    WHEN current_stock <= low_thr THEN 'critical'
+    WHEN current_stock <= (low_thr + GREATEST(safety_thr, 1)) THEN 'near'
+    ELSE 'ok'
+  END AS status
+FROM per_shelf
+ON CONFLICT (shelf_id) DO UPDATE
+SET status = EXCLUDED.status;
 
 \else
   \echo '>>> Bootstrap CSV saltato (DB non vuoto).'

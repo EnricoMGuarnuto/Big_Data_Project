@@ -1,42 +1,42 @@
 [
   {
-    "item_id": "SDH43",
-    "discount": 0.27
-  },
-  {
-    "item_id": "SFO38",
-    "discount": 0.16
-  },
-  {
-    "item_id": "SCY11",
-    "discount": 0.27
-  },
-  {
-    "item_id": "FRU43",
-    "discount": 0.25
-  },
-  {
-    "item_id": "BPM20",
-    "discount": 0.16
-  },
-  {
-    "item_id": "CAA46",
-    "discount": 0.23
-  },
-  {
-    "item_id": "HHH44",
-    "discount": 0.23
-  },
-  {
-    "item_id": "FVA53",
+    "item_id": "SCJ80",
     "discount": 0.15
   },
   {
-    "item_id": "SDV64",
-    "discount": 0.25
+    "item_id": "HBD47",
+    "discount": 0.13
   },
   {
-    "item_id": "FVQ81",
-    "discount": 0.28
+    "item_id": "FRA88",
+    "discount": 0.27
+  },
+  {
+    "item_id": "FVM99",
+    "discount": 0.16
+  },
+  {
+    "item_id": "FVK79",
+    "discount": 0.05
+  },
+  {
+    "item_id": "SFM61",
+    "discount": 0.27
+  },
+  {
+    "item_id": "SFJ32",
+    "discount": 0.1
+  },
+  {
+    "item_id": "BRN04",
+    "discount": 0.1
+  },
+  {
+    "item_id": "HBW41",
+    "discount": 0.05
+  },
+  {
+    "item_id": "HBC97",
+    "discount": 0.12
   }
 ]
