@@ -389,21 +389,25 @@ FROM :'wh_batches' WITH (FORMAT csv, HEADER true);
 -- normalizza per location → staging_batches
 TRUNCATE staging_batches;
 
+-- STORE → normalizzazione location (In-Store → instore)
 INSERT INTO staging_batches
   (shelf_id, batch_code, received_date, expiry_date, quantity, location)
 SELECT shelf_id, batch_code, received_date, expiry_date,
        COALESCE(batch_quantity_store, batch_quantity_total, 0) AS quantity,
        'instore'::text
 FROM staging_batches_raw
-WHERE location = 'instore' AND COALESCE(batch_quantity_store, batch_quantity_total, 0) > 0;
+WHERE lower(location) IN ('instore','in-store') 
+  AND COALESCE(batch_quantity_store, batch_quantity_total, 0) > 0;
 
+-- WAREHOUSE → normalizzazione location (Warehouse → warehouse)
 INSERT INTO staging_batches
   (shelf_id, batch_code, received_date, expiry_date, quantity, location)
 SELECT shelf_id, batch_code, received_date, expiry_date,
        COALESCE(batch_quantity_warehouse, batch_quantity_total, 0) AS quantity,
        'warehouse'::text
 FROM staging_batches_raw
-WHERE location = 'warehouse' AND COALESCE(batch_quantity_warehouse, batch_quantity_total, 0) > 0;
+WHERE lower(location) IN ('warehouse') 
+  AND COALESCE(batch_quantity_warehouse, batch_quantity_total, 0) > 0;
 
 -- dimensione lotti
 INSERT INTO batches (item_id, batch_code, received_date, expiry_date)
