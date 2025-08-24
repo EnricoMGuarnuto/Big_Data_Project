@@ -8,7 +8,7 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import StructType, StructField, StringType
 
 
-def wait_for_topic(topic, bootstrap, attempts=20, sleep_s=3):
+def wait_for_topic(topic, bootstrap, attempts=20, sleep_s=10):
     """Aspetta che il topic Kafka sia disponibile prima di far partire Spark"""
     for i in range(1, attempts+1):
         try:
