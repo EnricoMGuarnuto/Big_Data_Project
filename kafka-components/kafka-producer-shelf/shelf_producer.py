@@ -71,7 +71,7 @@ def load_discounts_from_parquet(path: str) -> dict:
         df = pd.read_parquet(path)
         df = df[df["week"] == week_str]
         print(f"[shelf] ✅ Sconti caricati per la settimana {week_str}: {len(df)} righe")
-        return dict(zip(df["product_id"], df["discount"]))
+        return dict(zip(df["shelf_id"], df["discount"]))
     except Exception as e:
         print(f"[shelf] ⚠️ Errore leggendo sconti da {path}: {e}")
         return {}

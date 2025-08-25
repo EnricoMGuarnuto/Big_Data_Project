@@ -142,16 +142,15 @@ CREATE TABLE IF NOT EXISTS inventory_thresholds (
 );
 
 -- ---------- historical weekly discounts ----------
-DROP TABLE IF EXISTS discount_history CASCADE;
-
 CREATE TABLE IF NOT EXISTS discount_history (
   item_id     BIGINT NOT NULL REFERENCES items(item_id),
-  week        TEXT   NOT NULL,               -- esempio: '2025-W34'
-  discount    NUMERIC(5,4) NOT NULL,         -- esempio: 0.15
+  week        TEXT   NOT NULL,               -- es: '2025-W34'
+  discount    NUMERIC(5,4) NOT NULL,         -- es: 0.15
+  start_date  DATE NOT NULL,
+  end_date    DATE NOT NULL,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (item_id, week)
 );
-
 
 
 CREATE TABLE shelf_status (
@@ -160,15 +159,28 @@ CREATE TABLE shelf_status (
 );
 
 
--- ---------- carica sconti dallo CSV ----------
--- Assumiamo che il file sia montato su /data/all_discounts_reduced.csv
--- E abbia header: item_id,week,discount
 
-\copy discount_history(item_id, week, discount) FROM '/data/all_discounts.csv' DELIMITER ',' CSV HEADER;
+CREATE TEMP TABLE staging_discount_history (
+  shelf_id    TEXT,
+  week        TEXT,
+  discount    NUMERIC,
+  start_date  DATE,
+  end_date    DATE
+) ON COMMIT DROP;
 
--- aggiorna i timestamp (opzionale)
+
+-- Import dal CSV montato su /data/
+\copy staging_discount_history FROM '/data/all_discounts.csv' DELIMITER ',' CSV HEADER;
+
+-- Inserisci nella tabella finale, collegando con item_id
+INSERT INTO discount_history(item_id, week, discount, start_date, end_date)
+SELECT i.item_id, sdh.week, sdh.discount, sdh.start_date, sdh.end_date
+FROM staging_discount_history sdh
+JOIN items i ON i.shelf_id = sdh.shelf_id
+WHERE sdh.discount IS NOT NULL;
+
+-- Aggiorna i timestamp (opzionale)
 UPDATE discount_history SET created_at = now();
-
 
 -- =====================================================================
 -- >>> NUOVE TABELLE PER FOOT TRAFFIC <<<

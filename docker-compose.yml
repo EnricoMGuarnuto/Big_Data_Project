@@ -30,6 +30,7 @@ services:
     volumes:
       - ./postgresql/sql:/sql:ro
       - ./data:/data:ro
+      - ./data/all_discounts.csv:/data/all_discounts.csv
     entrypoint: ["sh", "-c",
       "psql postgresql://$DB_USER:$DB_PASSWORD@postgres:5432/$DB_NAME -v ON_ERROR_STOP=1 -f /sql/make_db.sql &&
        psql postgresql://$DB_USER:$DB_PASSWORD@postgres:5432/$DB_NAME -v ON_ERROR_STOP=1 -f /sql/db_management.sql"]

@@ -113,7 +113,7 @@ def write_to_pg(batch_df, batch_id):
 
     rows = (
         batch_df
-        .select("event_id","event_time","event_type","weekday","time_slot")
+        .select("event_id", "event_time", "event_type", "weekday", "time_slot")
         .toLocalIterator()
     )
 
@@ -121,19 +121,20 @@ def write_to_pg(batch_df, batch_id):
     from psycopg2.extras import execute_batch
 
     conn = psycopg2.connect(
-        host=os.getenv("PG_HOST","postgres"),
-        port=os.getenv("PG_PORT","5432"),
-        dbname=os.getenv("PG_DB","retaildb"),
-        user=os.getenv("PG_USER","retail"),
-        password=os.getenv("PG_PASS","retailpass"),
+        host=os.getenv("PG_HOST", "postgres"),
+        port=os.getenv("PG_PORT", "5432"),
+        dbname=os.getenv("PG_DB", "retaildb"),
+        user=os.getenv("PG_USER", "retail"),
+        password=os.getenv("PG_PASS", "retailpass"),
     )
     conn.autocommit = False
+
     try:
         with conn.cursor() as cur:
             execute_batch(
                 cur,
-                "SELECT apply_foot_traffic_event(%s,%s,%s,%s,%s)",
-                [(r["event_id"], r["event_time"], r["event_type"], r["weekday"], r["time_slot"]) for r in rows],
+                "SELECT apply_foot_traffic_event(%s, %s, %s, %s, %s)",
+                [(str(r["event_id"]), r["event_time"], r["event_type"], r["weekday"], r["time_slot"]) for r in rows],
                 page_size=1000
             )
         conn.commit()
@@ -142,12 +143,3 @@ def write_to_pg(batch_df, batch_id):
         raise
     finally:
         conn.close()
-
-pg_q = (
-    parsed_df.writeStream
-            .foreachBatch(write_to_pg)
-            .option("checkpointLocation", "/chk/foot_traffic/postgres")
-            .start()
-)
-
-spark.streams.awaitAnyTermination()

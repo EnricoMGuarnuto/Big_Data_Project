@@ -81,7 +81,7 @@ def load_discounts_from_parquet(path: str) -> Dict[str, float]:
     week_str = f"{today.isocalendar().year}-W{today.isocalendar().week:02}"
     df = df[df["week"] == week_str]
     print(f"[pos] ✅ Caricati {len(df)} sconti per la settimana {week_str}")
-    return dict(zip(df["product_id"], df["discount"]))
+    return dict(zip(df["shelf_id"], df["discount"]))
 
 # ========================
 # Stato applicativo
