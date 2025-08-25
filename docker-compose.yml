@@ -129,20 +129,6 @@ services:
     volumes:
       - ./data:/data
 
-  kafka-producer-discount:
-    build:
-      context: ./kafka-components/kafka-discount_updater_producer
-    environment:
-      - KAFKA_BROKER=kafka:9092
-      - DISCOUNT_TOPIC=weekly_discounts
-      - INVENTORY_FILE=/data/store_inventory_final.parquet
-      - DISCOUNT_JSON_FILE=/data/current_discounts.json
-    depends_on:
-      - kafka
-    volumes:
-      - ./data:/data
-    restart: unless-stopped 
-
   spark-shelf:
     build:
       context: ./spark-apps/shelf
@@ -236,26 +222,26 @@ services:
       - ./spark-checkpoints:/chk  
   
 
-  demand-forecastor:
-    build:
-      context: ./demand-forecastor
-      dockerfile: Dockerfile
-    environment:
-      PG_HOST: postgres
-      PG_PORT: 5432
-      PG_DB: retaildb
-      PG_USER: retail
-      PG_PASS: retailpass
-      MODEL_DIR: /app/model
-      TZ: Europe/Rome
-      # opzionale: cambia sleep (es. 12h)
-      # SLEEP_SECS: 43200
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - model_data:/app/model
-    restart: unless-stopped
+  # demand-forecastor:
+  #   build:
+  #     context: ./demand-forecastor
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     PG_HOST: postgres
+  #     PG_PORT: 5432
+  #     PG_DB: retaildb
+  #     PG_USER: retail
+  #     PG_PASS: retailpass
+  #     MODEL_DIR: /app/model
+  #     TZ: Europe/Rome
+  #     # opzionale: cambia sleep (es. 12h)
+  #     # SLEEP_SECS: 43200
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - model_data:/app/model
+  #   restart: unless-stopped
 
 
   spark-alerts-orch:

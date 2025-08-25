@@ -25,10 +25,11 @@ GROUP_ID_SHELF = os.getenv("GROUP_ID_SHELF", "pos-simulator-shelf")
 GROUP_ID_FOOT  = os.getenv("GROUP_ID_FOOT", "pos-simulator-foot")
 
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
-DISCOUNT_JSON_FILE = os.getenv("DISCOUNT_JSON_FILE", "/data/current_discounts.json")
+DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
 
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
+
 def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
     last = None
     for i in range(1, attempts+1):
@@ -50,13 +51,16 @@ def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
             return
     print(f"[pos] ⚠️ impossibile creare/verificare topic {topic}: {last}")
 
-# Assicurati che i topic esistano PRIMA di creare il producer
 ensure_topic(POS_TOPIC,   KAFKA_BROKER)
 ensure_topic(SHELF_TOPIC, KAFKA_BROKER)
 ensure_topic(FOOT_TOPIC,  KAFKA_BROKER)
+
 # ========================
 # Helpers
 # ========================
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
 def load_price_map_from_store(path: str) -> Dict[str, float]:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Store parquet non trovato: {path}")
@@ -68,23 +72,16 @@ def load_price_map_from_store(path: str) -> Dict[str, float]:
     df = df.dropna(subset=["shelf_id", "item_price"])
     return df.set_index("shelf_id")["item_price"].astype(float).to_dict()
 
-def load_discounts_from_file(path: str) -> Dict[str, float]:
-    while True:
-        try:
-            if not os.path.exists(path):
-                print(f"[pos] ⚠️ File sconti non trovato ({path}), ritento fra 30s...")
-                time.sleep(30)
-                continue
-            with open(path, "r") as f:
-                data = json.load(f)
-            print(f"[pos] ✅ Sconti caricati da {path} ({len(data)} items)")
-            return {item["item_id"]: float(item["discount"]) for item in data}
-        except Exception as e:
-            print(f"[pos] ⚠️ Errore leggendo sconti da {path}: {e}")
-            time.sleep(30)
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+def load_discounts_from_parquet(path: str) -> Dict[str, float]:
+    if not os.path.exists(path):
+        print(f"[pos] ⚠️ File sconti non trovato: {path}")
+        return {}
+    df = pd.read_parquet(path)
+    today = datetime.today()
+    week_str = f"{today.isocalendar().year}-W{today.isocalendar().week:02}"
+    df = df[df["week"] == week_str]
+    print(f"[pos] ✅ Caricati {len(df)} sconti per la settimana {week_str}")
+    return dict(zip(df["product_id"], df["discount"]))
 
 # ========================
 # Stato applicativo
@@ -103,7 +100,7 @@ except Exception as e:
     print(f"[pos] ❌ ERRORE caricando i prezzi da {STORE_PARQUET}: {e}")
     price_by_item = {}
 
-discounts_by_item = load_discounts_from_file(DISCOUNT_JSON_FILE)
+discounts_by_item = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
 
 # ========================
 # Kafka Producer
