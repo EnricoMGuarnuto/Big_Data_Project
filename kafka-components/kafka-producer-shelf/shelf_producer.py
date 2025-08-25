@@ -13,20 +13,17 @@ from kafka.errors import NoBrokersAvailable
 # customer_id -> item_id -> {"quantity": int, "weight": float}
 customer_carts = defaultdict(lambda: defaultdict(lambda: {"quantity": 0, "weight": 0.0}))
 
-
-BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
-
 # ========================
 # Config
 # ========================
-KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
+BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_BROKER = BOOTSTRAP
 TOPIC_SHELF = os.getenv("KAFKA_TOPIC_SHELF", "shelf_events")
 TOPIC_FOOT = os.getenv("KAFKA_TOPIC_FOOT", "foot_traffic")
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
+DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
 SLEEP_SEC = float(os.getenv("SHELF_SLEEP", 1.0))
 PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
-
-DISCOUNT_JSON_FILE = os.getenv("DISCOUNT_JSON_FILE", "/data/current_discounts.json")
 
 # ========================
 # Stato
@@ -38,7 +35,6 @@ lock = threading.Lock()
 # ========================
 # utils
 # ========================
-
 def now_utc():
     return datetime.utcnow().replace(tzinfo=timezone.utc)
 
@@ -64,20 +60,21 @@ def generate_scheduled_actions(entry, exit):
     ])
     return [(ts, "pickup" if random.random() > PUTBACK_PROB else "putback") for ts in timestamps]
 
-def load_discounts_from_file(path: str) -> dict:
-    while True:
-        try:
-            if not os.path.exists(path):
-                print(f"[pos] ⚠️ File sconti non trovato ({path}), ritento fra 30s...")
-                time.sleep(30)
-                continue
-            with open(path, "r") as f:
-                data = json.load(f)
-            print(f"[pos] ✅ Sconti caricati da {path} ({len(data)} items)")
-            return {item["item_id"]: float(item["discount"]) for item in data}
-        except Exception as e:
-            print(f"[pos] ⚠️ Errore leggendo sconti da {path}: {e}")
-            time.sleep(30)
+def load_discounts_from_parquet(path: str) -> dict:
+    today = datetime.today()
+    week_str = f"{today.isocalendar().year}-W{today.isocalendar().week:02}"
+    try:
+        if not os.path.exists(path):
+            print(f"[shelf] ⚠️ File sconti non trovato: {path}")
+            return {}
+        df = pd.read_parquet(path)
+        df = df[df["week"] == week_str]
+        print(f"[shelf] ✅ Sconti caricati per la settimana {week_str}: {len(df)} righe")
+        return dict(zip(df["product_id"], df["discount"]))
+    except Exception as e:
+        print(f"[shelf] ⚠️ Errore leggendo sconti da {path}: {e}")
+        return {}
+
 # ========================
 # Kafka
 # ========================
@@ -91,10 +88,10 @@ def build_producer():
                 retries=10,
                 acks="all",
             )
-            print("[shelf] Connected to Kafka.")
+            print("[shelf] ✅ Connected to Kafka.")
             return p
         except NoBrokersAvailable:
-            print(f"[shelf] Kafka not available (attempt {attempt+1}/6). Retrying...")
+            print(f"[shelf] ❌ Kafka not available (attempt {attempt+1}/6). Retrying...")
             time.sleep(3)
     raise RuntimeError("Kafka not reachable")
 
@@ -136,8 +133,8 @@ def main():
     required_cols = {"shelf_id", "item_weight", "item_visibility"}
     if not required_cols.issubset(df.columns):
         raise ValueError(f"Parquet must contain columns: {required_cols}")
-     
-    discounts_by_item = load_discounts_from_file(DISCOUNT_JSON_FILE)
+
+    discounts_by_item = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
 
     df["discount"] = df["shelf_id"].map(lambda sid: max(0.0, min(discounts_by_item.get(sid, 0.0), 0.95)))
     df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
@@ -175,7 +172,7 @@ def main():
                     elif action_type == "putback":
                         available_items = [(iid, data) for iid, data in customer_carts[customer_id].items() if data["quantity"] > 0]
                         if not available_items:
-                            continue  # niente da rimettere
+                            continue
 
                         item_id, data = rng.choice(available_items)
                         item_weight = data["weight"]
@@ -184,7 +181,7 @@ def main():
                         quantity = rng.randint(1, max_quantity)
                         customer_carts[customer_id][item_id]["quantity"] -= quantity
                     else:
-                        continue  # azione sconosciuta
+                        continue
 
                     quantity = rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
                     total_weight = round(item_weight * quantity, 3)
@@ -209,7 +206,6 @@ def main():
                     }
                     producer.send(TOPIC_SHELF, value=weight_event)
                     print(f"[shelf] Sent WEIGHT_CHANGE: {weight_event}")
-
 
                     executed = True
                     break
