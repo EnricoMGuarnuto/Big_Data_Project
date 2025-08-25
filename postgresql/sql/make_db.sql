@@ -228,7 +228,6 @@ CREATE INDEX IF NOT EXISTS idx_batchinv_loc   ON batch_inventory(location_id);
 -- =====================================================================
 -- feature selection --> forecast
 -- =====================================================================
-
 DROP TABLE IF EXISTS feature_demand_forecast;
 CREATE TABLE feature_demand_forecast AS
 WITH dates AS (
@@ -487,27 +486,32 @@ CREATE TEMP TABLE staging_batches (
 -- ---------- COPY + arricchimento (INVENTORY) ----------
 -- STORE
 COPY staging_inventory_raw
-  (shelf_id, item_category, item_weight, shelf_weight, item_visibility, initial_stock, current_stock, time_stamp, price)
+  (shelf_id, aisle, item_weight, shelf_weight, item_category, item_subcategory,
+   item_visibility, maximum_stock, current_stock, item_price, time_stamp)
 FROM :'store_inventory' WITH (FORMAT csv, HEADER true);
 
 INSERT INTO staging_inventory
-  (shelf_id, item_category, item_weight, shelf_weight, item_visibility, initial_stock, current_stock, time_stamp, price, location)
-SELECT shelf_id, item_category, item_weight, shelf_weight, item_visibility,
-       initial_stock, current_stock, time_stamp, price, 'instore'::text
+  (shelf_id, aisle, item_category, item_subcategory, item_weight, shelf_weight,
+   item_visibility, initial_stock, current_stock, time_stamp, item_price, location)
+SELECT shelf_id, aisle, item_category, item_subcategory, item_weight, shelf_weight,
+       item_visibility, maximum_stock, current_stock, time_stamp, item_price, 'instore'
 FROM staging_inventory_raw;
 
 -- WAREHOUSE
 TRUNCATE staging_inventory_raw;
 
 COPY staging_inventory_raw
-  (shelf_id, item_category, item_weight, shelf_weight, item_visibility, initial_stock, current_stock, time_stamp)
+  (shelf_id, aisle, item_weight, shelf_weight, item_category, item_subcategory,
+  maximum_stock, current_stock, item_price, time_stamp)
 FROM :'wh_inventory' WITH (FORMAT csv, HEADER true);
 
 INSERT INTO staging_inventory
-  (shelf_id, item_category, item_weight, shelf_weight, item_visibility, initial_stock, current_stock, time_stamp, price, location)
-SELECT shelf_id, item_category, item_weight, shelf_weight, item_visibility,
-       initial_stock, current_stock, time_stamp, NULL::numeric, 'warehouse'::text
+  (shelf_id, aisle, item_category, item_subcategory, item_weight, shelf_weight,
+   item_visibility, initial_stock, current_stock, time_stamp, item_price, location)
+SELECT shelf_id, aisle, item_category, item_subcategory, item_weight, shelf_weight,
+       NULL::numeric, maximum_stock, current_stock, time_stamp, item_price, 'warehouse'
 FROM staging_inventory_raw;
+
 
 -- ---------- normalizzazione da INVENTORY ----------
 INSERT INTO categories (category_name)
@@ -536,7 +540,7 @@ SELECT
   si.item_visibility,
   ROUND(si.initial_stock)::int,
   ROUND(si.current_stock)::int,
-  CASE WHEN l.location='instore' THEN si.price ELSE NULL END
+  CASE WHEN l.location='instore' THEN si.item_price ELSE NULL END
 FROM staging_inventory si
 JOIN items i     ON i.shelf_id = si.shelf_id
 JOIN locations l ON l.location  = si.location
