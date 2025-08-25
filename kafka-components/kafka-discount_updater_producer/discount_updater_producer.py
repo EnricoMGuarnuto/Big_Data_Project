@@ -137,9 +137,6 @@ def main():
         print(f"[discount] ❌ Errore in main: {e}")
 
 
-# --- Loop settimanale ---
 if __name__ == "__main__":
-    while True:
-        main()
-        # ⬇️ per test puoi ridurre a 60 secondi
-        time.sleep(60 * 60 * 24 * 7)  # ogni 7 giorni
+    main()
+
