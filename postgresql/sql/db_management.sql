@@ -732,8 +732,10 @@ END$$;
 
 
 -- Parametrizza l’orario di chiusura negozio se vuoi (22:00 qui di esempio)
-CREATE OR REPLACE FUNCTION list_near_expiry_discounts(p_now timestamptz DEFAULT now(),
-                                                      p_store_close timetz DEFAULT '22:00') 
+CREATE OR REPLACE FUNCTION list_near_expiry_discounts(
+    p_now timestamptz DEFAULT now(),
+    p_store_close timetz DEFAULT '22:00'
+) 
 RETURNS TABLE(
   location_id   int,
   batch_id      int,
@@ -759,9 +761,9 @@ BEGIN
     FROM batches b
   )
   SELECT 
-    bi.location_id,
-    b.batch_id,
-    b.item_id,
+    bi.location_id::INT,
+    b.batch_id::INT,
+    b.item_id::INT,
     b.expiry_date::date AS expiry_date,
     0.50                AS discount_pct,
     GREATEST( date_trunc('day', (p_now AT TIME ZONE 'Europe/Rome')),
@@ -775,7 +777,6 @@ BEGIN
   JOIN thr t ON t.batch_id = b.batch_id
   WHERE bi.quantity > 0
     AND b.expiry_date IS NOT NULL
-    -- sconto vale per chi scade oggi o domani (il tuo requisito: lun+mar per scadenza mar)
     AND b.expiry_date BETWEEN (p_now AT TIME ZONE 'Europe/Rome')::date 
                           AND ((p_now AT TIME ZONE 'Europe/Rome')::date + 1);
 END$$;
