@@ -8,7 +8,7 @@ import pandas as pd
 #    'dataset_changes/store_batches.csv'
 #]
 
-csv_files= ['store_inventory_final.csv']
+csv_files= ['all_discounts.csv']
 # Convertili tutti
 for file in csv_files:
     df = pd.read_csv(file)
