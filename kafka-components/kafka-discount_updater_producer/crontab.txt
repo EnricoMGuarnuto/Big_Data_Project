@@ -1,0 +1,5 @@
+# Run every Monday at 08:00 UTC
+0 8 * * 1 /usr/local/bin/python3 /app/producer.py >> /var/log/cron.log 2>&1
+
+
+

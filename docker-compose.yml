@@ -132,7 +132,6 @@ services:
   kafka-producer-discount:
     build:
       context: ./kafka-components/kafka-discount_updater_producer
-      dockerfile: Dockerfile
     environment:
       - KAFKA_BROKER=kafka:9092
       - DISCOUNT_TOPIC=weekly_discounts
@@ -142,7 +141,7 @@ services:
       - kafka
     volumes:
       - ./data:/data
-
+    restart: unless-stopped 
 
   spark-shelf:
     build:
