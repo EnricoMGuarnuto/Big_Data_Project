@@ -1,0 +1,25 @@
+# ./demand-forecastor/Dockerfile
+FROM python:3.11-slim
+
+ENV TZ=Europe/Rome \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# (psycopg2-binary evita dipendenze di sistema)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# codice
+COPY app.py /app/app.py
+
+# directory per persistere modello
+RUN mkdir -p /app/model
+VOLUME ["/app/model"]
+
+# default: esegui una volta al giorno
+# (puoi passare SLEEP_SECS da compose, default 86400)
+ENV SLEEP_SECS=86400
+
+CMD python /app/app.py && sleep ${SLEEP_SECS}

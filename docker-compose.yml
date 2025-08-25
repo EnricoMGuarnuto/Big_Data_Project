@@ -236,6 +236,29 @@ services:
     volumes:
       - ./spark-checkpoints:/chk  
   
+
+  demand-forecastor:
+    build:
+      context: ./demand-forecastor
+      dockerfile: Dockerfile
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DB: retaildb
+      PG_USER: retail
+      PG_PASS: retailpass
+      MODEL_DIR: /app/model
+      TZ: Europe/Rome
+      # opzionale: cambia sleep (es. 12h)
+      # SLEEP_SECS: 43200
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - model_data:/app/model
+    restart: unless-stopped
+
+
   spark-alerts-orch:
     build:
       context: ./spark-apps/alerts_orch            
@@ -269,7 +292,10 @@ services:
       - postgres
     restart: unless-stopped
 
+
 volumes:
   postgres_data:
   redis_data:
   minio_data:
+  model_data:
+

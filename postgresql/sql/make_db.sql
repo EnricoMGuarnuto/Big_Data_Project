@@ -223,6 +223,169 @@ CREATE INDEX IF NOT EXISTS idx_batches_item   ON batches(item_id);
 CREATE INDEX IF NOT EXISTS idx_batches_expiry ON batches(expiry_date);
 CREATE INDEX IF NOT EXISTS idx_batchinv_loc   ON batch_inventory(location_id);
 
+
+-- =====================================================================
+-- feature selection --> forecast
+-- =====================================================================
+
+DROP TABLE IF EXISTS feature_demand_forecast;
+CREATE TABLE feature_demand_forecast AS
+WITH dates AS (
+  SELECT DISTINCT business_date FROM receipts
+),
+base AS (
+  SELECT d.business_date, i.shelf_id
+  FROM dates d
+  CROSS JOIN items i
+),
+-- Vendite giornaliere per shelf_id
+sales_raw AS (
+  SELECT rl.shelf_id, r.business_date, SUM(rl.quantity) AS qty
+  FROM receipt_lines rl
+  JOIN receipts r USING (receipt_id)
+  GROUP BY rl.shelf_id, r.business_date
+),
+sales_aggregates AS (
+  SELECT
+    b.business_date,
+    b.shelf_id,
+    COALESCE(SUM(s1.qty), 0) AS sales_1d,
+    COALESCE(SUM(s3.qty), 0) AS sales_3d,
+    COALESCE(SUM(s7.qty), 0) AS sales_7d,
+    COALESCE(s1w.qty, 0)     AS sales_1w_ago
+  FROM base b
+  LEFT JOIN sales_raw s1
+    ON s1.shelf_id = b.shelf_id
+   AND s1.business_date = b.business_date - INTERVAL '1 day'
+  LEFT JOIN sales_raw s3
+    ON s3.shelf_id = b.shelf_id
+   AND s3.business_date BETWEEN b.business_date - INTERVAL '3 day' AND b.business_date - INTERVAL '1 day'
+  LEFT JOIN sales_raw s7
+    ON s7.shelf_id = b.shelf_id
+   AND s7.business_date BETWEEN b.business_date - INTERVAL '7 day' AND b.business_date - INTERVAL '1 day'
+  LEFT JOIN sales_raw s1w
+    ON s1w.shelf_id = b.shelf_id
+   AND s1w.business_date = b.business_date - INTERVAL '7 day'
+  GROUP BY b.business_date, b.shelf_id, s1w.qty
+),
+-- Traffico giornaliero da foot_traffic_timeslot_agg
+traffic_daily AS (
+  SELECT business_date, SUM(net_traffic) AS net_traffic
+  FROM foot_traffic_timeslot_agg
+  GROUP BY business_date
+),
+traffic_aggregates AS (
+  SELECT
+    b.business_date,
+    COALESCE(t1.net_traffic, 0)            AS traffic_1d,
+    COALESCE(SUM(t3.net_traffic), 0)       AS traffic_3d
+  FROM (SELECT DISTINCT business_date FROM base) b
+  LEFT JOIN traffic_daily t1
+    ON t1.business_date = b.business_date - INTERVAL '1 day'
+  LEFT JOIN traffic_daily t3
+    ON t3.business_date BETWEEN b.business_date - INTERVAL '3 day' AND b.business_date - INTERVAL '1 day'
+  GROUP BY b.business_date, t1.net_traffic
+),
+
+-- Sconti: settimana ISO → week_start (lunedì ISO)
+discounts AS (
+  SELECT
+    dh.item_id,
+    TO_DATE(dh.week, 'IYYY-"W"IW') AS week_start,
+    dh.discount
+  FROM discount_history dh
+),
+
+-- Target: vendite nei 3 giorni successivi a business_date
+label_future_sales AS (
+  SELECT
+    b.business_date,
+    b.shelf_id,
+    COALESCE(SUM(sr.qty), 0) AS future_sales_3d
+  FROM base b
+  LEFT JOIN sales_raw sr
+    ON sr.shelf_id = b.shelf_id
+   AND sr.business_date BETWEEN b.business_date + INTERVAL '1 day'
+                             AND b.business_date + INTERVAL '3 day'
+  GROUP BY b.business_date, b.shelf_id
+),
+
+final AS (
+  SELECT
+    b.business_date,
+    b.shelf_id,
+    sa.sales_1d,
+    sa.sales_3d,
+    sa.sales_7d,
+    sa.sales_1w_ago,
+    ta.traffic_1d,
+    ta.traffic_3d,
+    -- sconto attivo se business_date cade nella settimana di dh
+    COALESCE((
+      SELECT TRUE
+      FROM discounts d
+      JOIN items it ON it.item_id = d.item_id
+      WHERE it.shelf_id = b.shelf_id
+        AND b.business_date >= d.week_start
+        AND b.business_date <  d.week_start + INTERVAL '7 day'
+      LIMIT 1
+    ), FALSE) AS is_discounted,
+    TO_CHAR(b.business_date, 'Dy') AS weekday,
+    EXTRACT(ISODOW FROM b.business_date) IN (6, 7) AS is_weekend,
+    fs.future_sales_3d
+  FROM base b
+  LEFT JOIN sales_aggregates sa
+    ON sa.business_date = b.business_date AND sa.shelf_id = b.shelf_id
+  LEFT JOIN traffic_aggregates ta
+    ON ta.business_date = b.business_date
+  LEFT JOIN label_future_sales fs
+    ON fs.business_date = b.business_date AND fs.shelf_id = b.shelf_id
+)
+SELECT *
+FROM final
+WHERE future_sales_3d IS NOT NULL;
+
+
+-- =====================================================================
+-- PREDICTIONS STORAGE (one row per shelf_id x prediction_date)
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS demand_predictions (
+  prediction_id     BIGSERIAL PRIMARY KEY,
+  prediction_date   DATE NOT NULL,               -- data delle feature usate per predire
+  shelf_id          TEXT NOT NULL,
+  horizon_days      INT  NOT NULL DEFAULT 3,
+  y_hat             NUMERIC(12,4) NOT NULL,      -- previsione
+  y_true            NUMERIC(12,4),               -- etichetta reale (riempita quando disponibile)
+  mae               NUMERIC(12,4),               -- |y_true - y_hat|
+  mape              NUMERIC(12,4),               -- |y_true - y_hat| / (y_true + eps)
+  model_version     TEXT,
+  features_json     JSONB NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dpred_bydate       ON demand_predictions(prediction_date);
+CREATE INDEX IF NOT EXISTS idx_dpred_shelf_date   ON demand_predictions(shelf_id, prediction_date);
+
+-- =====================================================================
+-- VIEW: etichetta reale (y_true) per una previsione (finestra +1..+horizon)
+-- =====================================================================
+CREATE OR REPLACE VIEW v_prediction_labels AS
+SELECT
+  p.prediction_id,
+  SUM(rl.quantity)::numeric AS y_true
+FROM demand_predictions p
+JOIN receipts r
+  ON r.business_date BETWEEN (p.prediction_date + INTERVAL '1 day')
+                        AND     (p.prediction_date + (p.horizon_days || ' days')::interval)
+JOIN receipt_lines rl
+  ON rl.receipt_id = r.receipt_id
+ AND rl.shelf_id   = p.shelf_id
+GROUP BY p.prediction_id;
+
+
+
+
+
 -- ---------- seed ----------
 INSERT INTO locations (location) VALUES ('instore'), ('warehouse')
 ON CONFLICT (location) DO NOTHING;

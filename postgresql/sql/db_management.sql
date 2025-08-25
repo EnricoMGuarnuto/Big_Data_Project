@@ -834,32 +834,35 @@ BEGIN
   UPDATE foot_traffic_state SET current_cnt = v_curr, updated_at = now() WHERE id=1;
 END$$;
 
+
+-- popolate feature_demand_forecast
 CREATE OR REPLACE FUNCTION refresh_feature_demand_forecast()
-RETURNS VOID LANGUAGE plpgsql AS $$
+RETURNS VOID
+LANGUAGE plpgsql AS $$
 BEGIN
-  RAISE NOTICE 'Refreshing feature_demand_forecast...';
+  -- ricalcolo full: semplice/robusto
+  DELETE FROM feature_demand_forecast;
 
-  DROP TABLE IF EXISTS feature_demand_forecast;
-
-  CREATE TABLE feature_demand_forecast AS
+  INSERT INTO feature_demand_forecast (
+    business_date, shelf_id,
+    sales_1d, sales_3d, sales_7d, sales_1w_ago,
+    traffic_1d, traffic_3d,
+    is_discounted, weekday, is_weekend,
+    future_sales_3d
+  )
   WITH dates AS (
     SELECT DISTINCT business_date FROM receipts
   ),
   base AS (
-    SELECT 
-      d.business_date,
-      i.shelf_id
-    FROM 
-      dates d CROSS JOIN items i
+    SELECT d.business_date, i.shelf_id
+    FROM dates d
+    CROSS JOIN items i
   ),
   sales_raw AS (
-    SELECT
-      rl.shelf_id,
-      r.business_date,
-      SUM(rl.quantity) AS qty
+    SELECT rl.shelf_id, r.business_date, SUM(rl.quantity) AS qty
     FROM receipt_lines rl
-    JOIN receipts r USING(receipt_id)
-    GROUP BY 1, 2
+    JOIN receipts r USING (receipt_id)
+    GROUP BY rl.shelf_id, r.business_date
   ),
   sales_aggregates AS (
     SELECT
@@ -870,72 +873,89 @@ BEGIN
       COALESCE(SUM(s7.qty), 0) AS sales_7d,
       COALESCE(s1w.qty, 0)     AS sales_1w_ago
     FROM base b
-    LEFT JOIN sales_raw s1 
-      ON s1.shelf_id = b.shelf_id AND s1.business_date = b.business_date - INTERVAL '1 day'
-    LEFT JOIN sales_raw s3 
-      ON s3.shelf_id = b.shelf_id AND s3.business_date BETWEEN b.business_date - INTERVAL '3 day' AND b.business_date - INTERVAL '1 day'
-    LEFT JOIN sales_raw s7 
-      ON s7.shelf_id = b.shelf_id AND s7.business_date BETWEEN b.business_date - INTERVAL '7 day' AND b.business_date - INTERVAL '1 day'
-    LEFT JOIN sales_raw s1w 
-      ON s1w.shelf_id = b.shelf_id AND s1w.business_date = b.business_date - INTERVAL '7 day'
-    GROUP BY 1, 2, s1w.qty
+    LEFT JOIN sales_raw s1
+      ON s1.shelf_id = b.shelf_id
+     AND s1.business_date = b.business_date - INTERVAL '1 day'
+    LEFT JOIN sales_raw s3
+      ON s3.shelf_id = b.shelf_id
+     AND s3.business_date BETWEEN b.business_date - INTERVAL '3 day' AND b.business_date - INTERVAL '1 day'
+    LEFT JOIN sales_raw s7
+      ON s7.shelf_id = b.shelf_id
+     AND s7.business_date BETWEEN b.business_date - INTERVAL '7 day' AND b.business_date - INTERVAL '1 day'
+    LEFT JOIN sales_raw s1w
+      ON s1w.shelf_id = b.shelf_id
+     AND s1w.business_date = b.business_date - INTERVAL '7 day'
+    GROUP BY b.business_date, b.shelf_id, s1w.qty
   ),
-  traffic_raw AS (
-    SELECT
-      event_time::date AS event_date,
-      SUM(net_traffic) AS traffic
-    FROM foot_traffic_counter
-    GROUP BY 1
+  traffic_daily AS (
+    SELECT business_date, SUM(net_traffic) AS net_traffic
+    FROM foot_traffic_timeslot_agg
+    GROUP BY business_date
   ),
   traffic_aggregates AS (
     SELECT
       b.business_date,
-      COALESCE(t1.traffic, 0) AS traffic_1d,
-      COALESCE(SUM(t3.traffic), 0) AS traffic_3d
+      COALESCE(t1.net_traffic, 0)      AS traffic_1d,
+      COALESCE(SUM(t3.net_traffic), 0) AS traffic_3d
     FROM (SELECT DISTINCT business_date FROM base) b
-    LEFT JOIN traffic_raw t1 ON t1.event_date = b.business_date - INTERVAL '1 day'
-    LEFT JOIN traffic_raw t3 ON t3.event_date BETWEEN b.business_date - INTERVAL '3 day' AND b.business_date - INTERVAL '1 day'
-    GROUP BY b.business_date, t1.traffic
+    LEFT JOIN traffic_daily t1
+      ON t1.business_date = b.business_date - INTERVAL '1 day'
+    LEFT JOIN traffic_daily t3
+      ON t3.business_date BETWEEN b.business_date - INTERVAL '3 day' AND b.business_date - INTERVAL '1 day'
+    GROUP BY b.business_date, t1.net_traffic
   ),
+  -- ✅ correzione parsing settimana ISO
   discounts AS (
-    SELECT 
-      shelf_id,
-      business_date,
-      TRUE AS is_discounted
-    FROM discount_history
-  ),
-  label_future_sales AS (
     SELECT
-      s.shelf_id,
-      s.business_date,
-      SUM(s.qty) AS future_sales_3d
-    FROM sales_raw s
-    WHERE s.business_date BETWEEN CURRENT_DATE - INTERVAL '90 day' AND CURRENT_DATE
-    GROUP BY 1, 2
+      dh.item_id,
+      TO_DATE(dh.week, 'IYYY-"W"IW') AS week_start,
+      dh.discount
+    FROM discount_history dh
   ),
-  final AS (
+  -- ✅ target su finestra futura +1..+3 dalla business_date di base
+  label_future_sales AS (
     SELECT
       b.business_date,
       b.shelf_id,
-      sa.sales_1d,
-      sa.sales_3d,
-      sa.sales_7d,
-      sa.sales_1w_ago,
-      ta.traffic_1d,
-      ta.traffic_3d,
-      COALESCE(d.is_discounted, FALSE) AS is_discounted,
-      TO_CHAR(b.business_date, 'Dy') AS weekday,
-      EXTRACT(DOW FROM b.business_date) IN (0, 6) AS is_weekend,
-      fs.future_sales_3d
+      COALESCE(SUM(sr.qty), 0) AS future_sales_3d
     FROM base b
-    LEFT JOIN sales_aggregates sa ON sa.business_date = b.business_date AND sa.shelf_id = b.shelf_id
-    LEFT JOIN traffic_aggregates ta ON ta.business_date = b.business_date
-    LEFT JOIN discounts d ON d.business_date = b.business_date AND d.shelf_id = b.shelf_id
-    LEFT JOIN label_future_sales fs ON fs.business_date = b.business_date AND fs.shelf_id = b.shelf_id
+    LEFT JOIN sales_raw sr
+      ON sr.shelf_id = b.shelf_id
+     AND sr.business_date BETWEEN b.business_date + INTERVAL '1 day'
+                               AND b.business_date + INTERVAL '3 day'
+    GROUP BY b.business_date, b.shelf_id
   )
-  SELECT * FROM final
-  WHERE future_sales_3d IS NOT NULL;
+  SELECT
+    b.business_date,
+    b.shelf_id,
+    sa.sales_1d,
+    sa.sales_3d,
+    sa.sales_7d,
+    sa.sales_1w_ago,
+    ta.traffic_1d,
+    ta.traffic_3d,
+    COALESCE((
+      SELECT TRUE
+      FROM discounts d
+      JOIN items it ON it.item_id = d.item_id
+      WHERE it.shelf_id = b.shelf_id
+        AND b.business_date >= d.week_start
+        AND b.business_date <  d.week_start + INTERVAL '7 day'
+      LIMIT 1
+    ), FALSE) AS is_discounted,
+    TO_CHAR(b.business_date, 'Dy') AS weekday,
+    EXTRACT(ISODOW FROM b.business_date) IN (6, 7) AS is_weekend,
+    fs.future_sales_3d
+  FROM base b
+  LEFT JOIN sales_aggregates sa
+    ON sa.business_date = b.business_date AND sa.shelf_id = b.shelf_id
+  LEFT JOIN traffic_aggregates ta
+    ON ta.business_date = b.business_date
+  LEFT JOIN label_future_sales fs
+    ON fs.business_date = b.business_date AND fs.shelf_id = b.shelf_id
+  WHERE fs.future_sales_3d IS NOT NULL;
 
-  RAISE NOTICE 'Done refreshing feature_demand_forecast';
 END;
 $$;
+
+
