@@ -663,7 +663,7 @@ BEGIN
     SELECT b.batch_id, b.item_id,
            COALESCE(
              (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='item' AND t.item_id=b.item_id LIMIT 1),
-             (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='category' AND t.category_id=(SELECT category_id FROM items WHERE item_id=b.item_id) LIMIT 1),
+             (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='category' AND t.category_id=(SELECT i.category_id FROM items i WHERE i.item_id=b.item_id) LIMIT 1),
              (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='global' LIMIT 1),
              3
            ) AS days_thr
@@ -751,7 +751,7 @@ BEGIN
     SELECT b.batch_id, b.item_id,
            COALESCE(
              (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='item' AND t.item_id=b.item_id LIMIT 1),
-             (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='category' AND t.category_id=(SELECT category_id FROM items WHERE item_id=b.item_id) LIMIT 1),
+             (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='category' AND t.category_id=(SELECT i.category_id FROM items i WHERE i.item_id=b.item_id) LIMIT 1),
              (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='global' LIMIT 1),
              3
            ) AS days_thr,

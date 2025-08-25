@@ -143,3 +143,15 @@ def write_to_pg(batch_df, batch_id):
         raise
     finally:
         conn.close()
+
+# ===== Sink → Postgres (foreachBatch)
+pg_q = (
+    parsed_df
+      .writeStream
+      .foreachBatch(write_to_pg)
+      .option("checkpointLocation", "/chk/foot_traffic/postgres")
+      .start()
+)
+
+
+spark.streams.awaitAnyTermination()

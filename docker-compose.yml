@@ -130,29 +130,22 @@ services:
     volumes:
       - ./data:/data
 
-  
   kafka-producer-near-expiry:
-    build:
-      context: ./kafka-components/kafka-producer-near_expiry_discount
-      dockerfile: Dockerfile
-    environment:
-      - KAFKA_BROKER=kafka:9092
-      - NEAR_EXPIRY_TOPIC=near_expiry_discounts
-      - DB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
-      - NEAR_EXPIRY_PERIOD_SEC=3600         # snapshot oraria idempotente
-      - NEAR_EXPIRY_JSON_FILE=/data/current_near_expiry.json
-      - TZ=Europe/Rome
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-sql-jobs:
-        condition: service_completed_successfully
-      kafka:
-        condition: service_started
-    volumes:
-      - ./data:/data
-    restart: unless-stopped
-
+      build:
+        context: ./kafka-components/kafka-producer-near_expiry_discount
+        dockerfile: Dockerfile
+      environment:
+        - KAFKA_BROKER=kafka:9092
+        - NEAR_EXPIRY_TOPIC=near_expiry_discounts
+        - DB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+        - NEAR_EXPIRY_PERIOD_SEC=3600         # snapshot oraria idempotente
+        - NEAR_EXPIRY_JSON_FILE=/data/current_near_expiry.json
+        - TZ=Europe/Rome
+      depends_on:
+        postgres:
+          condition: service_healthy
+        kafka:
+          condition: service_started
 
   spark-shelf:
     build:

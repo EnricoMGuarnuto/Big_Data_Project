@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS discount_history (
 );
 
 
-CREATE TABLE shelf_status (
+CREATE TABLE IF NOT EXISTS shelf_status (
     shelf_id TEXT PRIMARY KEY,
     status TEXT
 );
