@@ -10,7 +10,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data/pgdata
-      - ./data:/data:ro
+      - ./data:/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h localhost || exit 1"]
       interval: 3s
@@ -270,6 +270,7 @@ services:
       - PG_DB=retaildb
       - PG_USER=retail
       - PG_PASS=retailpass
+      - ALERT_LOCATIONS=instore,warehouse
     depends_on:
       - postgres
       - kafka

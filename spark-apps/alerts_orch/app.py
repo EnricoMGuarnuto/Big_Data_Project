@@ -6,22 +6,9 @@ Funzioni:
   • Applica refill set-based per low_stock.
   • Apre/aggiorna/chiude alert near_expiry (da batches/batch_inventory).
   • Eventuale emissione refill events su Kafka.
-
-Env richieste:
-  PG_HOST=postgres
-  PG_PORT=5432
-  PG_DB=retaildb
-  PG_USER=retail
-  PG_PASS=retailpass
-  CHECKPOINT_DIR=/chk/alerts_orch
-  SPARK_APP_NAME=alerts-orch
-  LOW_STOCK_INTERVAL_SECS=10
-  NEAR_EXP_INTERVAL_MINS=10
-
-Dipendenze: pyspark, psycopg2-binary, kafka-python
 """
-from __future__ import annotations
 
+from __future__ import annotations
 import os, sys, json
 from dataclasses import dataclass
 from typing import Optional
@@ -64,6 +51,9 @@ EMIT_KAFKA_REFILL = os.getenv("EMIT_KAFKA_REFILL", "true").lower() in {"1","true
 EMIT_REFILL_WEIGHT_CHANGE = os.getenv("EMIT_REFILL_WEIGHT_CHANGE", "false").lower() in {"1","true","yes"}
 REFILL_UNIT_WEIGHT_DEFAULT_KG = float(os.getenv("REFILL_UNIT_WEIGHT_DEFAULT_KG", "0.25"))
 
+# 👇 NEW: locations parametrizzate
+ALERT_LOCATIONS = [s.strip() for s in env("ALERT_LOCATIONS", "instore").split(",") if s.strip()]
+
 # ---------------------------------------------------------------------------
 # DB accessor
 # ---------------------------------------------------------------------------
@@ -82,22 +72,25 @@ class DB:
     # -------- LOW STOCK ALERTS (open/refresh/close)
     def process_low_stock_alerts(self, conn):
         with conn.cursor() as cur:
-            # Apri nuovi
-            cur.execute("""
+            cur.execute(f"""
+            WITH locs AS (
+              SELECT location_id FROM locations WHERE location = ANY(%s)
+            )
             INSERT INTO alerts(rule_key,status,item_id,location_id,opened_at,last_seen_at,meta)
             SELECT 'low_stock','OPEN',i.item_id,pi.location_id,now(),now(),
                    jsonb_build_object('shelf_id',ss.shelf_id)
             FROM shelf_status ss
             JOIN items i ON i.shelf_id=ss.shelf_id
             JOIN product_inventory pi ON pi.item_id=i.item_id
-            JOIN locations l ON l.location_id=pi.location_id
-            WHERE l.location='instore' AND ss.status='critical'
+            WHERE pi.location_id IN (SELECT location_id FROM locs)
+              AND ss.status='critical'
               AND NOT EXISTS (
                 SELECT 1 FROM alerts a
                 WHERE a.item_id=i.item_id AND a.location_id=pi.location_id
                   AND a.rule_key='low_stock' AND a.status='OPEN'
               );
-            """)
+            """, (ALERT_LOCATIONS,))
+
             # Refresh
             cur.execute("""
             UPDATE alerts a
@@ -106,6 +99,7 @@ class DB:
             JOIN items i ON i.shelf_id=ss.shelf_id
             WHERE a.item_id=i.item_id AND a.rule_key='low_stock' AND a.status='OPEN';
             """)
+
             # Close
             cur.execute("""
             UPDATE alerts a
@@ -118,7 +112,7 @@ class DB:
               AND ss.status='ok';
             """)
 
-    # -------- LOW STOCK REFILLS
+    # -------- LOW STOCK REFILLS (rimane su instore)
     def process_low_stock_refills_setbased(self, conn):
         sql = """
         WITH instore AS (
@@ -165,19 +159,17 @@ class DB:
 
     # -------- NEAR EXPIRY ALERTS
     def process_near_expiry_alerts(self, conn) -> None:
-        # OPEN/REFRESH
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH instore AS (
-                  SELECT location_id FROM locations WHERE location='instore'
+            cur.execute("""
+                WITH locs AS (
+                  SELECT location_id FROM locations WHERE location = ANY(%s)
                 ),
                 item_min_expire AS (
                   SELECT b.item_id, bi.location_id, MIN(b.expiry_date)::date AS min_expiry
                   FROM batch_inventory bi
                   JOIN batches b ON b.batch_id = bi.batch_id
                   WHERE bi.quantity > 0
-                    AND bi.location_id IN (SELECT location_id FROM instore)
+                    AND bi.location_id IN (SELECT location_id FROM locs)
                     AND b.expiry_date IS NOT NULL
                   GROUP BY b.item_id, bi.location_id
                 ),
@@ -185,16 +177,13 @@ class DB:
                   SELECT i.item_id, i.location_id,
                          i.min_expiry,
                          COALESCE(
-                           (
-                             SELECT t.near_expiry_days FROM inventory_thresholds t
-                              WHERE t.scope='item' AND t.item_id=i.item_id AND (t.location_id=i.location_id OR t.location_id IS NULL)
-                              ORDER BY t.location_id NULLS LAST LIMIT 1
-                           ),
-                           (
-                             SELECT t.near_expiry_days FROM inventory_thresholds t
+                           (SELECT t.near_expiry_days FROM inventory_thresholds t
+                              WHERE t.scope='item' AND t.item_id=i.item_id
+                                AND (t.location_id=i.location_id OR t.location_id IS NULL)
+                              ORDER BY t.location_id NULLS LAST LIMIT 1),
+                           (SELECT t.near_expiry_days FROM inventory_thresholds t
                               WHERE t.scope='global' AND (t.location_id=i.location_id OR t.location_id IS NULL)
-                              ORDER BY t.location_id NULLS LAST LIMIT 1
-                           ),
+                              ORDER BY t.location_id NULLS LAST LIMIT 1),
                            3
                          ) AS near_thr
                   FROM item_min_expire i
@@ -220,7 +209,7 @@ class DB:
                   RETURNING a.alert_id
                 )
                 INSERT INTO alerts(rule_key, status, item_id, location_id, opened_at, last_seen_at, meta)
-                SELECT 'near_expiry', 'OPEN', c.item_id, c.location_id, now(), now(),
+                SELECT 'near_expiry','OPEN', c.item_id, c.location_id, now(), now(),
                        jsonb_build_object('min_expiry', c.min_expiry, 'days_left', c.days_left, 'threshold', c.near_thr)
                 FROM candidates c
                 WHERE NOT EXISTS (
@@ -228,14 +217,12 @@ class DB:
                    WHERE a.rule_key='near_expiry' AND a.status='OPEN'
                      AND a.item_id=c.item_id AND a.location_id=c.location_id
                 );
-                """
-            )
-        # RESOLVE
+            """, (ALERT_LOCATIONS,))
+
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH instore AS (
-                  SELECT location_id FROM locations WHERE location='instore'
+            cur.execute("""
+                WITH locs AS (
+                  SELECT location_id FROM locations WHERE location = ANY(%s)
                 ),
                 still_near AS (
                   SELECT a.item_id, a.location_id
@@ -243,20 +230,17 @@ class DB:
                   JOIN batch_inventory bi ON bi.location_id=a.location_id AND bi.quantity>0
                   JOIN batches b ON b.batch_id = bi.batch_id AND b.item_id=a.item_id AND b.expiry_date IS NOT NULL
                   WHERE a.rule_key='near_expiry' AND a.status='OPEN'
-                    AND a.location_id IN (SELECT location_id FROM instore)
+                    AND a.location_id IN (SELECT location_id FROM locs)
                   GROUP BY a.item_id, a.location_id
                   HAVING MIN(b.expiry_date)::date - CURRENT_DATE
                          <= COALESCE(
-                              (
-                                SELECT t.near_expiry_days FROM inventory_thresholds t
-                                WHERE t.scope='item' AND t.item_id=a.item_id AND (t.location_id=a.location_id OR t.location_id IS NULL)
-                                ORDER BY t.location_id NULLS LAST LIMIT 1
-                              ),
-                              (
-                                SELECT t.near_expiry_days FROM inventory_thresholds t
+                              (SELECT t.near_expiry_days FROM inventory_thresholds t
+                                WHERE t.scope='item' AND t.item_id=a.item_id
+                                  AND (t.location_id=a.location_id OR t.location_id IS NULL)
+                                ORDER BY t.location_id NULLS LAST LIMIT 1),
+                              (SELECT t.near_expiry_days FROM inventory_thresholds t
                                 WHERE t.scope='global' AND (t.location_id=a.location_id OR t.location_id IS NULL)
-                                ORDER BY t.location_id NULLS LAST LIMIT 1
-                              ),
+                                ORDER BY t.location_id NULLS LAST LIMIT 1),
                               3
                             )
                 )
@@ -265,11 +249,9 @@ class DB:
                        resolved_at=now(),
                        meta = COALESCE(a.meta,'{}'::jsonb) || jsonb_build_object('resolved_reason','expiry_ok')
                  WHERE a.rule_key='near_expiry' AND a.status='OPEN'
-                   AND a.location_id IN (SELECT location_id FROM instore)
+                   AND a.location_id IN (SELECT location_id FROM locs)
                    AND (a.item_id, a.location_id) NOT IN (SELECT item_id, location_id FROM still_near);
-                """
-            )
-
+            """, (ALERT_LOCATIONS,))
 
 # ---------------------------------------------------------------------------
 # Spark plumbing
@@ -288,7 +270,7 @@ def _run_low_stock_alerts(_: DataFrame, __: int):
     conn = db.connect()
     try:
         db.process_low_stock_alerts(conn); conn.commit()
-        print("[alerts-orch] ✅ low_stock alerts refreshed")
+        print(f"[alerts-orch] ✅ low_stock alerts refreshed (locations={ALERT_LOCATIONS})")
     except Exception as e:
         conn.rollback(); print(f"[alerts-orch] ❌ low_stock alerts error: {e}"); raise
     finally:
@@ -326,7 +308,7 @@ def _run_near_expiry(_: DataFrame, __: int):
     conn = db.connect()
     try:
         db.process_near_expiry_alerts(conn); conn.commit()
-        print("[alerts-orch] ✅ near_expiry processed")
+        print(f"[alerts-orch] ✅ near_expiry processed (locations={ALERT_LOCATIONS})")
     except Exception as e:
         conn.rollback(); print(f"[alerts-orch] ❌ near_expiry error: {e}"); raise
     finally:
@@ -338,7 +320,6 @@ def main():
     except Exception as e: print(f"[alerts-orch] ❌ DB connect fail: {e}"); sys.exit(2)
 
     spark = build_spark()
-
     clock = (spark.readStream.format("rate").option("rowsPerSecond",1).load())
 
     q_alerts = (clock.writeStream.foreachBatch(_run_low_stock_alerts)
@@ -353,7 +334,7 @@ def main():
                 .trigger(processingTime=f"{NEAR_EXP_INTERVAL_MINS} minutes")
                 .option("checkpointLocation",os.path.join(CHECKPOINT_DIR,"near_expiry")).start())
 
-    print(f"[alerts-orch] ▶ running with low_stock_interval={LOW_STOCK_INTERVAL_SECS}s, near_expiry_interval={NEAR_EXP_INTERVAL_MINS}m")
+    print(f"[alerts-orch] ▶ running with low_stock_interval={LOW_STOCK_INTERVAL_SECS}s, near_expiry_interval={NEAR_EXP_INTERVAL_MINS}m, locations={ALERT_LOCATIONS}")
     spark.streams.awaitAnyTermination()
 
 if __name__=="__main__":
