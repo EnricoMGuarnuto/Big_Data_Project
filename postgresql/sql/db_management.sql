@@ -730,6 +730,57 @@ BEGIN
   RETURN v_count;
 END$$;
 
+
+-- Parametrizza l’orario di chiusura negozio se vuoi (22:00 qui di esempio)
+CREATE OR REPLACE FUNCTION list_near_expiry_discounts(p_now timestamptz DEFAULT now(),
+                                                      p_store_close timetz DEFAULT '22:00') 
+RETURNS TABLE(
+  location_id   int,
+  batch_id      int,
+  item_id       int,
+  expiry_date   date,
+  discount_pct  numeric,
+  valid_from    timestamptz,
+  valid_to      timestamptz,
+  kind          text,
+  reason        text
+) LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY
+  WITH thr AS (
+    SELECT b.batch_id, b.item_id,
+           COALESCE(
+             (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='item' AND t.item_id=b.item_id LIMIT 1),
+             (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='category' AND t.category_id=(SELECT category_id FROM items WHERE item_id=b.item_id) LIMIT 1),
+             (SELECT near_expiry_days FROM inventory_thresholds t WHERE t.scope='global' LIMIT 1),
+             3
+           ) AS days_thr,
+           b.expiry_date
+    FROM batches b
+  )
+  SELECT 
+    bi.location_id,
+    b.batch_id,
+    b.item_id,
+    b.expiry_date::date AS expiry_date,
+    0.50                AS discount_pct,
+    GREATEST( date_trunc('day', (p_now AT TIME ZONE 'Europe/Rome')),
+              (b.expiry_date::timestamp AT TIME ZONE 'Europe/Rome') - interval '1 day'
+            ) AS valid_from,
+    ((b.expiry_date::timestamp AT TIME ZONE 'Europe/Rome')::date + p_store_close)::timestamptz AS valid_to,
+    'near_expiry' AS kind,
+    'near_expiry_50' AS reason
+  FROM batch_inventory bi
+  JOIN batches b ON b.batch_id = bi.batch_id
+  JOIN thr t ON t.batch_id = b.batch_id
+  WHERE bi.quantity > 0
+    AND b.expiry_date IS NOT NULL
+    -- sconto vale per chi scade oggi o domani (il tuo requisito: lun+mar per scadenza mar)
+    AND b.expiry_date BETWEEN (p_now AT TIME ZONE 'Europe/Rome')::date 
+                          AND ((p_now AT TIME ZONE 'Europe/Rome')::date + 1);
+END$$;
+
+
 /* =======================================================================
    FOOT TRAFFIC — funzioni idempotenti per eventi entry/exit + aggregazioni
    ======================================================================= */

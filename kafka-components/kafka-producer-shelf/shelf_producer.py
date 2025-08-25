@@ -62,7 +62,8 @@ def generate_scheduled_actions(entry, exit):
 
 def load_discounts_from_parquet(path: str) -> dict:
     today = datetime.today()
-    week_str = f"{today.isocalendar().year}-W{today.isocalendar().week:02}"
+    year, week, _ = today.isocalendar()
+    week_str = f"{year}-W{week:02}"
     try:
         if not os.path.exists(path):
             print(f"[shelf] ⚠️ File sconti non trovato: {path}")

@@ -142,18 +142,32 @@ CREATE TABLE IF NOT EXISTS inventory_thresholds (
 );
 
 -- ---------- historical weekly discounts ----------
+DROP TABLE IF EXISTS discount_history CASCADE;
+
 CREATE TABLE IF NOT EXISTS discount_history (
   item_id     BIGINT NOT NULL REFERENCES items(item_id),
   week        TEXT   NOT NULL,               -- esempio: '2025-W34'
   discount    NUMERIC(5,4) NOT NULL,         -- esempio: 0.15
-  created_at  TIMESTAMPTZ NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (item_id, week)
 );
+
+
 
 CREATE TABLE shelf_status (
     shelf_id TEXT PRIMARY KEY,
     status TEXT
 );
+
+
+-- ---------- carica sconti dallo CSV ----------
+-- Assumiamo che il file sia montato su /data/all_discounts_reduced.csv
+-- E abbia header: item_id,week,discount
+
+\copy discount_history(item_id, week, discount) FROM '/data/all_discounts.csv' DELIMITER ',' CSV HEADER;
+
+-- aggiorna i timestamp (opzionale)
+UPDATE discount_history SET created_at = now();
 
 
 -- =====================================================================
