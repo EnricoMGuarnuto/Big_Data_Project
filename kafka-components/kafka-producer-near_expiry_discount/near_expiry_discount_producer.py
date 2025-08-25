@@ -91,6 +91,15 @@ def key_for(d):
     # chiave deterministica -> topic compatto, 1 record “ultimo” per (batch,location)
     return f"{d['kind']}:{d['batch_id']}:{d['location_id']}".encode()
 
+def write_discounts_to_file(discounts, path):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(discounts, f, indent=2)
+        print(f"[near-expiry] ✅ Salvato file sconti: {path}")
+    except Exception as e:
+        print(f"[near-expiry] ⚠️ Errore scrivendo {path}: {e}")
+
 def main_loop():
     wait_for_postgres()
     wait_for_schema()
@@ -109,6 +118,11 @@ def main_loop():
                     }
                     producer.send(TOPIC, key=key_for(d), value=evt)
                 producer.flush()
+                write_discounts_to_file(
+                    ds,
+                    os.getenv("NEAR_EXPIRY_JSON_FILE", "/data/current_near_expiry.json")
+                )
+
                 print(f"[near-expiry] pubblicati {len(ds)} sconti")
             else:
                 # nessun dato: non è un errore. Lascia il loop vivo.

@@ -129,6 +129,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_open
   ON alerts(rule_key, COALESCE(item_id,0), COALESCE(location_id,0), COALESCE(batch_id,0))
   WHERE status='OPEN';
 
+CREATE TABLE IF NOT EXISTS near_expiry_history (
+    id SERIAL PRIMARY KEY,
+    event_time TIMESTAMPTZ DEFAULT now(),
+    batch_id   BIGINT,
+    item_id    BIGINT,
+    location_id INT,
+    discount   NUMERIC,
+    valid_from TIMESTAMPTZ,
+    valid_to   TIMESTAMPTZ,
+    expiry_date DATE,
+    reason TEXT,
+    source TEXT,
+    created_at TIMESTAMPTZ
+);
+
+
 CREATE TABLE IF NOT EXISTS inventory_thresholds (
   threshold_id        SERIAL PRIMARY KEY,
   scope               TEXT NOT NULL CHECK (scope IN ('item','category','global')),

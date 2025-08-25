@@ -131,21 +131,24 @@ services:
       - ./data:/data
 
   kafka-producer-near-expiry:
-      build:
-        context: ./kafka-components/kafka-producer-near_expiry_discount
-        dockerfile: Dockerfile
-      environment:
-        - KAFKA_BROKER=kafka:9092
-        - NEAR_EXPIRY_TOPIC=near_expiry_discounts
-        - DB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
-        - NEAR_EXPIRY_PERIOD_SEC=3600         # snapshot oraria idempotente
-        - NEAR_EXPIRY_JSON_FILE=/data/current_near_expiry.json
-        - TZ=Europe/Rome
-      depends_on:
-        postgres:
-          condition: service_healthy
-        kafka:
-          condition: service_started
+    build:
+      context: ./kafka-components/kafka-producer-near_expiry_discount
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - NEAR_EXPIRY_TOPIC=near_expiry_discounts
+      - DB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      - NEAR_EXPIRY_PERIOD_SEC=3600   # snapshot oraria idempotente
+      - NEAR_EXPIRY_JSON_FILE=/data/current_near_expiry.json
+      - TZ=Europe/Rome
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    volumes:
+      - ./data:/data
+
 
   spark-shelf:
     build:
@@ -216,6 +219,33 @@ services:
         - "4042:4040"        # UI Spark (4040 già usato da shelf, 4041 da pos)
       volumes:
         - ./spark-checkpoints:/chk
+  
+  spark-near-expiry:
+    build:
+      context: ./spark-apps/near_expiry_discount
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - NEAR_EXPIRY_TOPIC=near_expiry_discounts
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+    ports:
+      - "4044:4040"   # UI Spark (4040–4043 già occupati dagli altri)
+    volumes:
+      - ./spark-checkpoints:/chk
+
+
+
+  
   
   
 
