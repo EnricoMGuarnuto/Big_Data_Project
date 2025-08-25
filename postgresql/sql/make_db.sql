@@ -18,9 +18,11 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 
 CREATE TABLE IF NOT EXISTS items (
-  item_id     BIGSERIAL PRIMARY KEY,
-  shelf_id    VARCHAR(32) NOT NULL,
-  category_id INT        NOT NULL REFERENCES categories(category_id),
+  item_id          BIGSERIAL PRIMARY KEY,
+  shelf_id         VARCHAR(32) NOT NULL,
+  aisle_store      INT         NOT NULL,
+  category_id      INT         NOT NULL REFERENCES categories(category_id),
+  subcategory_name TEXT        NOT NULL,
   CONSTRAINT uq_items_shelf UNIQUE (shelf_id)
 );
 
@@ -223,7 +225,6 @@ CREATE INDEX IF NOT EXISTS idx_batches_item   ON batches(item_id);
 CREATE INDEX IF NOT EXISTS idx_batches_expiry ON batches(expiry_date);
 CREATE INDEX IF NOT EXISTS idx_batchinv_loc   ON batch_inventory(location_id);
 
-
 -- =====================================================================
 -- feature selection --> forecast
 -- =====================================================================
@@ -382,10 +383,6 @@ JOIN receipt_lines rl
  AND rl.shelf_id   = p.shelf_id
 GROUP BY p.prediction_id;
 
-
-
-
-
 -- ---------- seed ----------
 INSERT INTO locations (location) VALUES ('instore'), ('warehouse')
 ON CONFLICT (location) DO NOTHING;
@@ -435,43 +432,52 @@ FROM c
 -- ---------- staging ----------
 CREATE TEMP TABLE staging_inventory_raw (
   shelf_id TEXT,
-  item_category TEXT,
+  aisle NUMERIC,
   item_weight NUMERIC,
   shelf_weight NUMERIC,
+  item_category TEXT,
+  item_subcategory TEXT,
   item_visibility NUMERIC,
-  initial_stock NUMERIC,
+  maximum_stock NUMERIC,
   current_stock NUMERIC,
-  time_stamp TIMESTAMP NULL,
-  price NUMERIC NULL
+  item_price NUMERIC NULL,
+  time_stamp TIMESTAMP NULL
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE staging_inventory (
   shelf_id TEXT,
+  aisle NUMERIC,
   item_category TEXT,
+  item_subcategory TEXT,
   item_weight NUMERIC,
   shelf_weight NUMERIC,
   item_visibility NUMERIC,
   initial_stock NUMERIC,
   current_stock NUMERIC,
   time_stamp TIMESTAMP NULL,
-  price NUMERIC NULL,
+  item_price NUMERIC NULL,
   location TEXT
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE staging_batches_raw (
   shelf_id TEXT,
   batch_code VARCHAR(30),
+  item_category TEXT,
+  item_subcategory TEXT,
   received_date DATE,
   expiry_date DATE,
   batch_quantity_total NUMERIC NULL,
-  batch_quantity_warehouse NUMERIC NULL,
   batch_quantity_store NUMERIC NULL,
-  location TEXT NULL
+  batch_quantity_warehouse NUMERIC NULL,
+  location TEXT NULL,
+  time_stamp TIMESTAMP NULL
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE staging_batches (
   shelf_id TEXT,
   batch_code VARCHAR(30),
+  item_category TEXT,
+  item_subcategory TEXT,
   received_date DATE,
   expiry_date DATE,
   quantity NUMERIC,
@@ -510,8 +516,9 @@ FROM staging_inventory si
 WHERE si.item_category IS NOT NULL AND si.item_category <> ''
 ON CONFLICT (category_name) DO NOTHING;
 
-INSERT INTO items (shelf_id, category_id)
-SELECT DISTINCT si.shelf_id, c.category_id
+-- Modifica: Aggiunta 'aisle' e 'item_subcategory'
+INSERT INTO items (shelf_id, aisle_store, category_id, subcategory_name)
+SELECT DISTINCT si.shelf_id, si.aisle::int, c.category_id, si.item_subcategory
 FROM staging_inventory si
 JOIN categories c ON c.category_name = si.item_category
 WHERE si.shelf_id IS NOT NULL AND si.shelf_id <> ''
@@ -541,36 +548,35 @@ TRUNCATE staging_batches_raw;
 
 -- append STORE
 COPY staging_batches_raw
-  (shelf_id,batch_code,received_date,expiry_date,batch_quantity_total,batch_quantity_warehouse,batch_quantity_store,location)
+  (shelf_id, batch_code, item_category, item_subcategory, received_date, expiry_date, batch_quantity_total, batch_quantity_store, batch_quantity_warehouse, location, time_stamp)
 FROM :'store_batches' WITH (FORMAT csv, HEADER true);
 
 -- append WAREHOUSE (senza truncate!)
 COPY staging_batches_raw
-  (shelf_id,batch_code,received_date,expiry_date,batch_quantity_total,batch_quantity_warehouse,batch_quantity_store,location)
+  (shelf_id, batch_code, item_category, item_subcategory, received_date, expiry_date, batch_quantity_total, batch_quantity_store, batch_quantity_warehouse, location, time_stamp)
 FROM :'wh_batches' WITH (FORMAT csv, HEADER true);
 
 -- normalizza per location → staging_batches
 TRUNCATE staging_batches;
 
--- STORE → normalizzazione location (In-Store → instore)
+-- STORE
 INSERT INTO staging_batches
-  (shelf_id, batch_code, received_date, expiry_date, quantity, location)
-SELECT shelf_id, batch_code, received_date, expiry_date,
-       COALESCE(batch_quantity_store, batch_quantity_total, 0) AS quantity,
-       'instore'::text
+  (shelf_id, batch_code, item_category, item_subcategory, received_date, expiry_date, quantity, location)
+SELECT shelf_id, batch_code, item_category, item_subcategory, received_date, expiry_date,
+       batch_quantity_store AS quantity,
+       'in-store'::text
 FROM staging_batches_raw
-WHERE lower(location) IN ('instore','in-store') 
-  AND COALESCE(batch_quantity_store, batch_quantity_total, 0) > 0;
+WHERE location = 'in-store' AND batch_quantity_store > 0;
 
--- WAREHOUSE → normalizzazione location (Warehouse → warehouse)
+-- WAREHOUSE
 INSERT INTO staging_batches
-  (shelf_id, batch_code, received_date, expiry_date, quantity, location)
-SELECT shelf_id, batch_code, received_date, expiry_date,
-       COALESCE(batch_quantity_warehouse, batch_quantity_total, 0) AS quantity,
+  (shelf_id, batch_code, item_category, item_subcategory, received_date, expiry_date, quantity, location)
+SELECT shelf_id, batch_code, item_category, item_subcategory, received_date, expiry_date,
+       batch_quantity_warehouse AS quantity,
        'warehouse'::text
 FROM staging_batches_raw
-WHERE lower(location) IN ('warehouse') 
-  AND COALESCE(batch_quantity_warehouse, batch_quantity_total, 0) > 0;
+WHERE location = 'warehouse' AND batch_quantity_warehouse > 0;
+
 
 -- dimensione lotti
 INSERT INTO batches (item_id, batch_code, received_date, expiry_date)

@@ -61,12 +61,12 @@ def load_price_map_from_store(path: str) -> Dict[str, float]:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Store parquet non trovato: {path}")
     df = pd.read_parquet(path)
-    req = {"shelf_id", "price"}
+    req = {"shelf_id", "item_price"}
     missing = req - set(df.columns)
     if missing:
-        raise ValueError(f"{path} manca le colonne {missing} (serve 'price').")
-    df = df.dropna(subset=["shelf_id", "price"])
-    return df.set_index("shelf_id")["price"].astype(float).to_dict()
+        raise ValueError(f"{path} manca le colonne {missing} (serve 'item_price').")
+    df = df.dropna(subset=["shelf_id", "item_price"])
+    return df.set_index("shelf_id")["item_price"].astype(float).to_dict()
 
 def load_discounts_from_file(path: str) -> Dict[str, float]:
     while True:
