@@ -50,11 +50,17 @@ def wait_for_schema(max_attempts=120, sleep_s=3):
     raise RuntimeError("[near-expiry] Schema non disponibile")
 
 def build_producer():
-    return KafkaProducer(
-        bootstrap_servers=KAFKA_BROKER,
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        acks="all", linger_ms=10, retries=5
-    )
+    for i in range(10):
+        try:
+            return KafkaProducer(
+                bootstrap_servers=KAFKA_BROKER,
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                acks="all", linger_ms=10, retries=5
+            )
+        except Exception as e:
+            print(f"[near-expiry] Kafka non disponibile ({i+1}/10): {e}")
+            time.sleep(5)
+    raise RuntimeError("[near-expiry] Kafka mai pronto")
 
 SQL_FETCH = """
 SELECT location_id, batch_id, item_id, expiry_date, discount_pct,
