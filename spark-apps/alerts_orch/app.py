@@ -157,6 +157,17 @@ class DB:
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute(sql)
             return [dict(r) for r in cur.fetchall()]
+    
+    def apply_refill_event(self, conn, refill: dict):
+      with conn.cursor() as cur:
+          cur.execute("""
+              SELECT apply_refill_event(%s, now(), %s, %s, %s)
+          """, (
+              refill["event_id"],
+              refill["shelf_id"],
+              int(refill["qty"]),
+              json.dumps(refill.get("meta", {}))
+          ))
 
     # -------- NEAR EXPIRY ALERTS
     def process_near_expiry_alerts(self, conn) -> None:
@@ -281,6 +292,8 @@ def _run_low_stock_refills(_: DataFrame, __: int):
     conn = db.connect()
     try:
         rows = db.process_low_stock_refills_setbased(conn); conn.commit()
+        for r in rows:
+          db.apply_refill_event(conn, r)
         print(f"[alerts-orch] ✅ low_stock refills processed; prepared={len(rows)}")
     except Exception as e:
         conn.rollback(); print(f"[alerts-orch] ❌ low_stock refill error: {e}"); raise
