@@ -26,6 +26,7 @@ GROUP_ID_FOOT  = os.getenv("GROUP_ID_FOOT", "pos-simulator-foot")
 
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
+NEAR_EXPIRY_JSON_PATH = os.getenv("NEAR_EXPIRY_JSON_FILE", "/data/current_near_expiry.json")
 
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
@@ -83,6 +84,21 @@ def load_discounts_from_parquet(path: str) -> Dict[str, float]:
     print(f"[pos] ✅ Caricati {len(df)} sconti per la settimana {week_str}")
     return dict(zip(df["shelf_id"], df["discount"]))
 
+def load_discounts_from_json(path: str) -> dict:
+    try:
+        if not os.path.exists(path):
+            print(f"[shelf] ⚠️ File JSON near-expiry non trovato: {path}")
+            return {}
+        with open(path, "r") as f:
+            ds = json.load(f)
+        print(f"[shelf] ✅ Caricati {len(ds)} sconti near-expiry da {path}")
+        # ritorna un dict {item_id -> discount}
+        return {str(d["item_id"]): float(d["discount"]) for d in ds}
+    except Exception as e:
+        print(f"[shelf] ⚠️ Errore leggendo JSON near-expiry: {e}")
+        return {}
+
+
 # ========================
 # Stato applicativo
 # ========================
@@ -100,7 +116,10 @@ except Exception as e:
     print(f"[pos] ❌ ERRORE caricando i prezzi da {STORE_PARQUET}: {e}")
     price_by_item = {}
 
-discounts_by_item = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
+# merge sconti: parquet + near-expiry JSON
+discounts_by_item = {}
+discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
+discounts_by_item.update(load_discounts_from_json(NEAR_EXPIRY_JSON_PATH))
 
 # ========================
 # Kafka Producer

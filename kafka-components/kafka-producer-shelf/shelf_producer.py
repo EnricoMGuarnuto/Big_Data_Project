@@ -22,6 +22,7 @@ TOPIC_SHELF = os.getenv("KAFKA_TOPIC_SHELF", "shelf_events")
 TOPIC_FOOT = os.getenv("KAFKA_TOPIC_FOOT", "foot_traffic")
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
+NEAR_EXPIRY_JSON_PATH = os.getenv("NEAR_EXPIRY_JSON_FILE", "/data/current_near_expiry.json")
 SLEEP_SEC = float(os.getenv("SHELF_SLEEP", 1.0))
 PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
 
@@ -75,6 +76,21 @@ def load_discounts_from_parquet(path: str) -> dict:
     except Exception as e:
         print(f"[shelf] ⚠️ Errore leggendo sconti da {path}: {e}")
         return {}
+    
+def load_discounts_from_json(path: str) -> dict:
+    try:
+        if not os.path.exists(path):
+            print(f"[shelf] ⚠️ File JSON near-expiry non trovato: {path}")
+            return {}
+        with open(path, "r") as f:
+            ds = json.load(f)
+        print(f"[shelf] ✅ Caricati {len(ds)} sconti near-expiry da {path}")
+        # ritorna un dict {item_id -> discount}
+        return {str(d["item_id"]): float(d["discount"]) for d in ds}
+    except Exception as e:
+        print(f"[shelf] ⚠️ Errore leggendo JSON near-expiry: {e}")
+        return {}
+
 
 # ========================
 # Kafka
@@ -126,6 +142,8 @@ def reap_inactive():
                 customer_carts.pop(cid, None)
         time.sleep(5)
 
+
+
 # ========================
 # Main loop
 # ========================
@@ -135,7 +153,10 @@ def main():
     if not required_cols.issubset(df.columns):
         raise ValueError(f"Parquet must contain columns: {required_cols}")
 
-    discounts_by_item = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
+    discounts_by_item = {}
+    discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
+    discounts_by_item.update(load_discounts_from_json("/data/current_near_expiry.json"))
+
 
     df["discount"] = df["shelf_id"].map(lambda sid: max(0.0, min(discounts_by_item.get(sid, 0.0), 0.95)))
     df["pick_score"] = df["item_visibility"] * (1 + df["discount"])

@@ -36,7 +36,7 @@ df = (spark.readStream
       .format("kafka")
       .option("kafka.bootstrap.servers", kafka_bootstrap)
       .option("subscribe", topic)
-      .option("startingOffsets", "latest")
+      .option("startingOffsets", "earliest")
       .load())
 
 parsed = df.select(from_json(col("value").cast("string"), schema).alias("data")).select("data.*")
