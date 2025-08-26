@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 np.random.seed(42)
 
 # --- FASE 1: Definizione della struttura dei prodotti ---
-# La struttura è stata aggiornata per una navigazione più chiara
 product_hierarchy = {
     'BEVERAGES': {
         'aisle': 1,
+        'perishable': False,
         'subcategories': {
             'Water': {'count': 53, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (200, 500), 'current_stock_percent': (0.7, 1.0), 'price_range': (0.5, 2.5), 'weight_options': [500, 750, 1000, 1500, 2000]},
             'Fruit-based Soft Drinks': {'count': 59, 'store_max_stock_range': (15, 50), 'warehouse_max_stock_range': (150, 400), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.0, 3.0), 'weight_options': [330, 500, 1000, 1500]},
@@ -23,6 +23,7 @@ product_hierarchy = {
     },
     'SPIRITS AND APERITIFS': {
         'aisle': 2,
+        'perishable': False,
         'subcategories': {
             'Non-alcoholic Aperitifs': {'count': 8, 'store_max_stock_range': (5, 15), 'warehouse_max_stock_range': (50, 150), 'current_stock_percent': (0.7, 1.0), 'price_range': (4.0, 8.0), 'weight_options': [750, 1000]},
             'Alcoholic Aperitifs': {'count': 31, 'store_max_stock_range': (5, 10), 'warehouse_max_stock_range': (50, 100), 'current_stock_percent': (0.7, 1.0), 'price_range': (7.0, 20.0), 'weight_options': [750, 1000]},
@@ -39,6 +40,7 @@ product_hierarchy = {
     },
     'BEERS': {
         'aisle': 3,
+        'perishable': False,
         'subcategories': {
             'Standard': {'count': 62, 'store_max_stock_range': (24, 72), 'warehouse_max_stock_range': (240, 720), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.0, 3.0), 'weight_options': [330, 500, 660]},
             'Premium': {'count': 41, 'store_max_stock_range': (12, 36), 'warehouse_max_stock_range': (120, 360), 'current_stock_percent': (0.7, 1.0), 'price_range': (2.5, 5.0), 'weight_options': [330, 500, 750]},
@@ -49,6 +51,7 @@ product_hierarchy = {
     },
     'WINES': {
         'aisle': 4,
+        'perishable': False,
         'subcategories': {
             'Brick Wines': {'count': 19, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_range': (100, 250), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.5, 5.0), 'weight_options': [750, 1000, 1500]},
             'White Wines': {'count': 117, 'store_max_stock_range': (6, 12), 'warehouse_max_stock_range': (60, 120), 'current_stock_percent': (0.7, 1.0), 'price_range': (4.0, 30.0), 'weight_options': [750, 1500]},
@@ -63,6 +66,7 @@ product_hierarchy = {
     },
     'LONG-LIFE DAIRY': {
         'aisle': 5,
+        'perishable': False,
         'subcategories': {
             'Long-life Milk': {'count': 59, 'store_max_stock_range': (30, 100), 'warehouse_max_stock_range': (300, 1000), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.0, 2.5), 'weight_options': [500, 1000]},
             'Plant-based Drinks': {'count': 40, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (200, 600), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.5, 4.0), 'weight_options': [500, 1000]},
@@ -72,6 +76,7 @@ product_hierarchy = {
     },
     'HOUSEHOLD GOODS': {
         'aisle': 6,
+        'perishable': False,
         'subcategories': {
             'Paper Towels': {'count': 14, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_range': (100, 300), 'current_stock_percent': (0.7, 1.0), 'price_range': (2.0, 8.0), 'weight_range': (250, 1000)},
             'Tissues': {'count': 21, 'store_max_stock_range': (30, 80), 'warehouse_max_stock_range': (300, 800), 'current_stock_percent': (0.7, 1.0), 'price_range': (0.8, 3.0), 'weight_range': (50, 250)},
@@ -85,6 +90,7 @@ product_hierarchy = {
     },
     'BATH AND PERSONAL CARE': {
         'aisle': 7,
+        'perishable': False,
         'subcategories': {
             'Wipes': {'count': 11, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (200, 500), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.0, 4.0), 'weight_range': (100, 500)},
             'Sanitary pads and liners': {'count': 55, 'store_max_stock_range': (15, 45), 'warehouse_max_stock_range': (150, 450), 'current_stock_percent': (0.7, 1.0), 'price_range': (2.0, 6.0), 'weight_range': (100, 400)},
@@ -118,6 +124,7 @@ product_hierarchy = {
     },
     'LAUNDRY PRODUCTS': {
         'aisle': 8,
+        'perishable': False,
         'subcategories': {
             'Hand wash': {'count': 7, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_range': (100, 250), 'current_stock_percent': (0.7, 1.0), 'price_range': (2.0, 5.0), 'weight_options': [500, 1000, 1500]},
             'Liquid detergent': {'count': 42, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (150, 400), 'current_stock_percent': (0.7, 1.0), 'price_range': (4.0, 12.0), 'weight_options': [1000, 2000, 4000]},
@@ -131,6 +138,7 @@ product_hierarchy = {
     },
     'HOUSE CLEANING PRODUCTS': {
         'aisle': 9,
+        'perishable': False,
         'subcategories': {
             'Bleach': {'count': 15, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_range': (100, 300), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.5, 4.0), 'weight_options': [1000, 2000, 3000]},
             'Dish detergents': {'count': 38, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (200, 500), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.5, 5.0), 'weight_options': [250, 500, 1000, 1500]},
@@ -150,6 +158,7 @@ product_hierarchy = {
     },
     'BABY PRODUCTS': {
         'aisle': 10,
+        'perishable': False,
         'subcategories': {
             'Diapers': {'count': 42, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_range': (100, 300), 'current_stock_percent': (0.7, 1.0), 'price_range': (5.0, 15.0), 'weight_range': (500, 2000)},
             'Cookies': {'count': 7, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (200, 500), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.5, 4.0), 'weight_options': [100, 200, 400]},
@@ -161,49 +170,50 @@ product_hierarchy = {
     },
     'FRUITS AND VEGETABLES': {
         'aisle': 11,
+        'perishable': True,
         'subcategories': {
-            'Apples': {'count': 7, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (1.5, 3.0), 'weight_range': (100, 300)},
-            'Pears': {'count': 5, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (2.0, 3.5), 'weight_range': (100, 300)},
-            'Cherries': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (5.0, 10.0), 'weight_range': (10, 50)},
-            'Strawberries': {'count': 2, 'store_max_stock_range': (50, 100), 'warehouse_max_stock_range': (40, 80), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (3.0, 6.0), 'weight_range': (10, 50)},
-            'Apricots': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.5, 5.0), 'weight_range': (20, 75)},
-            'Plums': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 4.0), 'weight_range': (30, 100)},
-            'Yellow Peaches': {'count': 4, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.5, 5.0), 'weight_range': (100, 300)},
-            'Grapes': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (3.0, 6.0), 'weight_range': (100, 300)},
-            'Bananas': {'count': 3, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (1.0, 2.5), 'weight_range': (100, 250)},
-            'Kiwi': {'count': 2, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 4.0), 'weight_range': (50, 150)},
-            'Pineapples': {'count': 2, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_range': (8, 25), 'current_stock_probabilities': [0, 0, 1, 2], 'price_range': (2.5, 5.0), 'weight_range': (500, 2000)},
-            'Avocados': {'count': 2, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 1, 2], 'price_range': (1.5, 4.0), 'weight_range': (100, 300)},
-            'Watermelons': {'count': 1, 'store_max_stock_range': (5, 10), 'warehouse_max_stock_range': (4, 8), 'current_stock_probabilities': [0, 0, 1, 2], 'price_range': (0.8, 1.5), 'weight_range': (2000, 8000)},
-            'Melons': {'count': 2, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_range': (8, 20), 'current_stock_probabilities': [0, 0, 1, 2], 'price_range': (1.0, 2.5), 'weight_range': (1000, 4000)},
-            'Berries': {'count': 6, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 5.0), 'weight_range': (50, 250)},
-            'Potatoes': {'count': 5, 'store_max_stock_range': (50, 200), 'warehouse_max_stock_range': (40, 150), 'current_stock_probabilities': [0, 0, 1, 2, 3, 4], 'price_range': (0.8, 2.0), 'weight_range': (500, 3000)},
-            'Onions': {'count': 4, 'store_max_stock_range': (50, 200), 'warehouse_max_stock_range': (40, 150), 'current_stock_probabilities': [0, 0, 1, 2, 3, 4], 'price_range': (0.5, 1.5), 'weight_range': (250, 1000)},
-            'Spring onions': {'count': 3, 'store_max_stock_range': (30, 80), 'warehouse_max_stock_range': (25, 60), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 2.0), 'weight_range': (50, 200)},
-            'Carrots': {'count': 4, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 1, 2, 3, 4], 'price_range': (0.8, 2.5), 'weight_range': (250, 1000)},
-            'Radishes': {'count': 2, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 2.0), 'weight_range': (50, 200)},
-            'Green beans': {'count': 2, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 4.0), 'weight_range': (250, 500)},
-            'Tomatoes': {'count': 10, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0, 0, 1, 2, 3, 4], 'price_range': (1.5, 3.5), 'weight_range': (100, 500)},
-            'Cucumbers': {'count': 1, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (0.8, 2.0), 'weight_range': (150, 500)},
-            'Peppers': {'count': 3, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 4.0), 'weight_range': (150, 500)},
-            'Eggplants': {'count': 1, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.5, 3.0), 'weight_range': (250, 750)},
-            'Zucchini': {'count': 2, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 3.0), 'weight_range': (150, 500)},
-            'Fennels': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.5, 3.0), 'weight_range': (250, 750)},
-            'Celery': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 2.5), 'weight_range': (250, 750)},
-            'Cabbages': {'count': 4, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_range': (8, 20), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 2.5), 'weight_range': (500, 2000)},
-            'Broccoli': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.5, 3.5), 'weight_range': (250, 750)},
-            'Pumpkins': {'count': 2, 'store_max_stock_range': (5, 15), 'warehouse_max_stock_range': (4, 12), 'current_stock_probabilities': [0, 0, 1], 'price_range': (0.8, 2.0), 'weight_range': (1000, 5000)},
-            'Beets and chicory': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.5, 3.0), 'weight_range': (250, 750)},
-            'Lettuce': {'count': 3, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 2.5), 'weight_range': (200, 500)},
-            'Radicchio': {'count': 1, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.5, 3.0), 'weight_range': (200, 500)},
-            'Oranges': {'count': 3, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0, 0, 1, 2, 3, 4], 'price_range': (1.0, 2.5), 'weight_range': (100, 300)},
-            'Mandarins': {'count': 3, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0, 0, 1, 2, 3, 4], 'price_range': (1.5, 3.0), 'weight_range': (50, 150)},
-            'Grapefruits': {'count': 1, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 2.0), 'weight_range': (200, 600)},
-            'Ready-to-eat raw vegetables': {'count': 37, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 5.0), 'weight_range': (100, 500)},
-            'Ready-to-eat cooked vegetables': {'count': 10, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.5, 6.0), 'weight_range': (200, 750)},
+            'Apples': {'count': 7, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.0), 'weight_range': (100, 300)},
+            'Pears': {'count': 5, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0], 'price_range': (2.0, 3.5), 'weight_range': (100, 300)},
+            'Cherries': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (5.0, 10.0), 'weight_range': (10, 50)},
+            'Strawberries': {'count': 2, 'store_max_stock_range': (50, 100), 'warehouse_max_stock_range': (40, 80), 'current_stock_probabilities': [0], 'price_range': (3.0, 6.0), 'weight_range': (10, 50)},
+            'Apricots': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (2.5, 5.0), 'weight_range': (20, 75)},
+            'Plums': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (2.0, 4.0), 'weight_range': (30, 100)},
+            'Yellow Peaches': {'count': 4, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (2.5, 5.0), 'weight_range': (100, 300)},
+            'Grapes': {'count': 3, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (3.0, 6.0), 'weight_range': (100, 300)},
+            'Bananas': {'count': 3, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.5), 'weight_range': (100, 250)},
+            'Kiwi': {'count': 2, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (2.0, 4.0), 'weight_range': (50, 150)},
+            'Pineapples': {'count': 2, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_range': (8, 25), 'current_stock_probabilities': [0], 'price_range': (2.5, 5.0), 'weight_range': (500, 2000)},
+            'Avocados': {'count': 2, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (1.5, 4.0), 'weight_range': (100, 300)},
+            'Watermelons': {'count': 1, 'store_max_stock_range': (5, 10), 'warehouse_max_stock_range': (4, 8), 'current_stock_probabilities': [0], 'price_range': (0.8, 1.5), 'weight_range': (2000, 8000)},
+            'Melons': {'count': 2, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_range': (8, 20), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.5), 'weight_range': (1000, 4000)},
+            'Berries': {'count': 6, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0], 'price_range': (2.0, 5.0), 'weight_range': (50, 250)},
+            'Potatoes': {'count': 5, 'store_max_stock_range': (50, 200), 'warehouse_max_stock_range': (40, 150), 'current_stock_probabilities': [0], 'price_range': (0.8, 2.0), 'weight_range': (500, 3000)},
+            'Onions': {'count': 4, 'store_max_stock_range': (50, 200), 'warehouse_max_stock_range': (40, 150), 'current_stock_probabilities': [0], 'price_range': (0.5, 1.5), 'weight_range': (250, 1000)},
+            'Spring onions': {'count': 3, 'store_max_stock_range': (30, 80), 'warehouse_max_stock_range': (25, 60), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.0), 'weight_range': (50, 200)},
+            'Carrots': {'count': 4, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (0.8, 2.5), 'weight_range': (250, 1000)},
+            'Radishes': {'count': 2, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.0), 'weight_range': (50, 200)},
+            'Green beans': {'count': 2, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0], 'price_range': (2.0, 4.0), 'weight_range': (250, 500)},
+            'Tomatoes': {'count': 10, 'store_max_stock_range': (50, 150), 'warehouse_max_stock_range': (40, 120), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.5), 'weight_range': (100, 500)},
+            'Cucumbers': {'count': 1, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (0.8, 2.0), 'weight_range': (150, 500)},
+            'Peppers': {'count': 3, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0], 'price_range': (2.0, 4.0), 'weight_range': (150, 500)},
+            'Eggplants': {'count': 1, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.0), 'weight_range': (250, 750)},
+            'Zucchini': {'count': 2, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (1.0, 3.0), 'weight_range': (150, 500)},
+            'Fennels': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.0), 'weight_range': (250, 750)},
+            'Celery': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.5), 'weight_range': (250, 750)},
+            'Cabbages': {'count': 4, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_range': (8, 20), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.5), 'weight_range': (500, 2000)},
+            'Broccoli': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.5), 'weight_range': (250, 750)},
+            'Pumpkins': {'count': 2, 'store_max_stock_range': (5, 15), 'warehouse_max_stock_range': (4, 12), 'current_stock_probabilities': [0], 'price_range': (0.8, 2.0), 'weight_range': (1000, 5000)},
+            'Beets and chicory': {'count': 2, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.0), 'weight_range': (250, 750)},
+            'Lettuce': {'count': 3, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.5), 'weight_range': (200, 500)},
+            'Radicchio': {'count': 1, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.0), 'weight_range': (200, 500)},
+            'Oranges': {'count': 3, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.5), 'weight_range': (100, 300)},
+            'Mandarins': {'count': 3, 'store_max_stock_range': (100, 300), 'warehouse_max_stock_range': (80, 250), 'current_stock_probabilities': [0], 'price_range': (1.5, 3.0), 'weight_range': (50, 150)},
+            'Grapefruits': {'count': 1, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (1.0, 2.0), 'weight_range': (200, 600)},
+            'Ready-to-eat raw vegetables': {'count': 37, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_range': (15, 45), 'current_stock_probabilities': [0], 'price_range': (2.0, 5.0), 'weight_range': (100, 500)},
+            'Ready-to-eat cooked vegetables': {'count': 10, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (12, 30), 'current_stock_probabilities': [0], 'price_range': (2.5, 6.0), 'weight_range': (200, 750)},
             'Soups and side dishes': {'count': 39, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (150, 400), 'current_stock_percent': (0.7, 1.0), 'price_range': (2.0, 5.0), 'weight_options': [250, 500, 1000]},
-            'Garlic and chilies': {'count': 4, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (0.5, 2.0), 'weight_range': (50, 250)},
-            'Leaf herbs': {'count': 14, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.0, 3.0), 'weight_range': (20, 100)},
+            'Garlic and chilies': {'count': 4, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (0.5, 2.0), 'weight_range': (50, 250)},
+            'Leaf herbs': {'count': 14, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (15, 40), 'current_stock_probabilities': [0], 'price_range': (1.0, 3.0), 'weight_range': (20, 100)},
         }
     },
     'LONG-LIFE FRUIT': {
@@ -361,7 +371,6 @@ product_hierarchy = {
             'Cat snacks': {'count': 15, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (150, 400), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.0, 3.0), 'weight_range': (20, 150)},
             'Wet dog food': {'count': 41, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_range': (200, 500), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.0, 3.0), 'weight_options': [100, 200, 400, 500]},
             'Dry dog food': {'count': 30, 'store_max_stock_range': (15, 30), 'warehouse_max_stock_range': (150, 300), 'current_stock_percent': (0.7, 1.0), 'price_range': (3.0, 15.0), 'weight_options': [500, 1000, 2000, 5000]},
-            'Dog snacks': {'count': 25, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_range': (150, 400), 'current_stock_percent': (0.7, 1.0), 'price_range': (1.5, 4.0), 'weight_range': (50, 300)},
             'Dog hygiene and care': {'count': 7, 'store_max_stock_range': (10, 20), 'warehouse_max_stock_range': (100, 200), 'current_stock_percent': (0.7, 1.0), 'price_range': (3.0, 8.0), 'weight_range': (100, 500)},
             'Cat litter': {'count': 10, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_range': (100, 250), 'current_stock_percent': (0.7, 1.0), 'price_range': (2.5, 7.0), 'weight_options': [1000, 2000, 5000]},
         }
@@ -393,43 +402,43 @@ product_hierarchy = {
     'REFRIGERATED': {
         'aisle': 26,
         'subcategories': {
-            'Yogurt': {'count': 60, 'store_max_stock_range': (30, 80), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (0.8, 3.0), 'weight_options': [125, 150, 200, 500]},
-            'Fresh Milk': {'count': 15, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.2, 2.5), 'weight_options': [500, 1000]},
-            'Eggs': {'count': 10, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 5.0), 'weight_range': (300, 1000)},
-            'Fresh Pasta': {'count': 45, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.5, 5.0), 'weight_options': [250, 500]},
-            'Butter and Margarine': {'count': 20, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.0, 6.0), 'weight_options': [125, 250, 500]},
-            'Cheese and Cured Meats': {'count': 120, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (3.0, 20.0), 'weight_range': (100, 1000)},
-            'Pies and Pizza dough': {'count': 25, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (1.5, 4.0), 'weight_options': [200, 300, 500]},
-            'Fresh Juices': {'count': 15, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (2.5, 5.0), 'weight_options': [250, 500, 1000]},
+            'Yogurt': {'count': 60, 'store_max_stock_range': (30, 80), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (0.8, 3.0), 'weight_options': [125, 150, 200, 500]},
+            'Fresh Milk': {'count': 15, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (1.2, 2.5), 'weight_options': [500, 1000]},
+            'Eggs': {'count': 10, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (2.0, 5.0), 'weight_range': (300, 1000)},
+            'Fresh Pasta': {'count': 45, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (1.5, 5.0), 'weight_options': [250, 500]},
+            'Butter and Margarine': {'count': 20, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (2.0, 6.0), 'weight_options': [125, 250, 500]},
+            'Cheese and Cured Meats': {'count': 120, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (3.0, 20.0), 'weight_range': (100, 1000)},
+            'Pies and Pizza dough': {'count': 25, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (1.5, 4.0), 'weight_options': [200, 300, 500]},
+            'Fresh Juices': {'count': 15, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (2.5, 5.0), 'weight_options': [250, 500, 1000]},
         }
     },
     'FROZEN': {
         'aisle': 27,
         'subcategories': {
-            'Frozen Vegetables': {'count': 40, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3, 4], 'price_range': (1.5, 4.0), 'weight_options': [250, 450, 750, 1000]},
-            'Frozen Fish': {'count': 25, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (3.0, 10.0), 'weight_range': (200, 750)},
-            'Frozen Potatoes': {'count': 10, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3, 4], 'price_range': (1.5, 3.5), 'weight_options': [500, 750, 1000, 1500]},
-            'Ice Creams': {'count': 50, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (2.0, 8.0), 'weight_range': (200, 1000)},
-            'Pizzas': {'count': 30, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (2.5, 6.0), 'weight_options': [300, 400, 800]},
-            'Frozen Ready Meals': {'count': 35, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (3.0, 8.0), 'weight_range': (250, 750)},
+            'Frozen Vegetables': {'count': 40, 'store_max_stock_range': (20, 60), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (1.5, 4.0), 'weight_options': [250, 450, 750, 1000]},
+            'Frozen Fish': {'count': 25, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (3.0, 10.0), 'weight_range': (200, 750)},
+            'Frozen Potatoes': {'count': 10, 'store_max_stock_range': (20, 50), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (1.5, 3.5), 'weight_options': [500, 750, 1000, 1500]},
+            'Ice Creams': {'count': 50, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (2.0, 8.0), 'weight_range': (200, 1000)},
+            'Pizzas': {'count': 30, 'store_max_stock_range': (10, 25), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (2.5, 6.0), 'weight_options': [300, 400, 800]},
+            'Frozen Ready Meals': {'count': 35, 'store_max_stock_range': (15, 40), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (3.0, 8.0), 'weight_range': (250, 750)},
         }
     },
     'MEAT': {
         'aisle': 28,
         'subcategories': {
-            'Beef': {'count': 40, 'store_max_stock_range': (5, 15), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (8.0, 30.0), 'weight_range': (200, 1000)},
-            'Pork': {'count': 30, 'store_max_stock_range': (5, 15), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (6.0, 18.0), 'weight_range': (200, 1000)},
-            'Chicken': {'count': 50, 'store_max_stock_range': (8, 20), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (5.0, 15.0), 'weight_range': (200, 1500)},
-            'Sausages and Burgers': {'count': 25, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (4.0, 12.0), 'weight_options': [250, 400, 500, 750]},
-            'Cold Cuts': {'count': 70, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2, 3], 'price_range': (2.0, 15.0), 'weight_range': (100, 500)},
+            'Beef': {'count': 40, 'store_max_stock_range': (5, 15), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (8.0, 30.0), 'weight_range': (200, 1000)},
+            'Pork': {'count': 30, 'store_max_stock_range': (5, 15), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (6.0, 18.0), 'weight_range': (200, 1000)},
+            'Chicken': {'count': 50, 'store_max_stock_range': (8, 20), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (5.0, 15.0), 'weight_range': (200, 1500)},
+            'Sausages and Burgers': {'count': 25, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (4.0, 12.0), 'weight_options': [250, 400, 500, 750]},
+            'Cold Cuts': {'count': 70, 'store_max_stock_range': (10, 30), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (2.0, 15.0), 'weight_range': (100, 500)},
         }
     },
     'FISH': {
         'aisle': 29,
         'subcategories': {
-            'Fresh Fish': {'count': 30, 'store_max_stock_range': (5, 10), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (10.0, 40.0), 'weight_range': (200, 1500)},
-            'Shellfish': {'count': 15, 'store_max_stock_range': (5, 10), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (15.0, 50.0), 'weight_range': (200, 1000)},
-            'Smoked Salmon': {'count': 10, 'store_max_stock_range': (10, 20), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0, 0, 0, 1, 2], 'price_range': (8.0, 25.0), 'weight_options': [100, 200, 500]},
+            'Fresh Fish': {'count': 30, 'store_max_stock_range': (5, 10), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (10.0, 40.0), 'weight_range': (200, 1500)},
+            'Shellfish': {'count': 15, 'store_max_stock_range': (5, 10), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (15.0, 50.0), 'weight_range': (200, 1000)},
+            'Smoked Salmon': {'count': 10, 'store_max_stock_range': (10, 20), 'warehouse_max_stock_equal_store': True, 'current_stock_probabilities': [0], 'price_range': (8.0, 25.0), 'weight_options': [100, 200, 500]},
         }
     }
 }
@@ -481,6 +490,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
         
         cat_props = product_hierarchy[category]
         sub_props = cat_props['subcategories'][subcategory]
+        is_perishable = 'current_stock_probabilities' in sub_props
 
         # Logica per impostare la capienza massima del magazzino
         if inventory_type == 'warehouse':
@@ -488,7 +498,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
                 maximum_stock = store_max_stock_data.loc[store_max_stock_data['shelf_id'] == shelf_id, 'maximum_stock'].iloc[0]
             elif 'warehouse_max_stock_range' in sub_props:
                 maximum_stock = np.random.randint(sub_props['warehouse_max_stock_range'][0], sub_props['warehouse_max_stock_range'][1])
-            else: # Per i prodotti freschi non coperti
+            else:
                 store_max = store_max_stock_data.loc[store_max_stock_data['shelf_id'] == shelf_id, 'maximum_stock'].iloc[0]
                 maximum_stock = int(np.random.uniform(0.1, 0.4) * store_max)
                 maximum_stock = max(1, maximum_stock)
@@ -496,7 +506,9 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
             maximum_stock = np.random.randint(sub_props['store_max_stock_range'][0], sub_props['store_max_stock_range'][1])
         
         # Logica dello stock basata sulla deperibilità del prodotto
-        if 'current_stock_probabilities' in sub_props:
+        if inventory_type == 'warehouse' and is_perishable:
+            current_stock = 0
+        elif is_perishable:
             current_stock = np.random.choice(sub_props['current_stock_probabilities'])
             current_stock = min(current_stock, maximum_stock)
         else:
@@ -649,11 +661,3 @@ warehouse_batches_df.to_csv('data/warehouse_batches.csv', index=False)
 print("Dataset dei lotti per il magazzino salvato con successo!")
 
 print("\n Tutti i dataset sono stati creati con successo!")
-
-csv_files= ['data/store_inventory_final.csv']
-# Converti store_inventory_final.csv in parquet
-for file in csv_files:
-    df = pd.read_csv(file)
-    parquet_file = file.replace('.csv', '.parquet')
-    df.to_parquet(parquet_file, index=False)
-    print(f"Converted {file} -> {parquet_file}")
