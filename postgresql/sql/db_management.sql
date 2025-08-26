@@ -189,6 +189,103 @@ BEGIN
   RETURN v_moved;
 END$$;
 
+
+-- Customer decrement: simula scelta cliente NON sempre FEFO
+-- Usa probabilità per decidere se pescare dal lotto che scade prima
+-- oppure "a caso" tra gli altri lotti disponibili
+CREATE OR REPLACE FUNCTION _customer_decrement(
+  p_item_id   BIGINT,
+  p_loc_id    INT,
+  p_qty       INT,
+  p_event_id  TEXT,
+  p_event_ts  TIMESTAMPTZ,
+  p_reason    TEXT,
+  p_meta      JSONB,
+  p_fefo_prob NUMERIC DEFAULT 0.8  -- probabilità (0..1) di seguire FEFO
+) RETURNS INT
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_left   INT := p_qty;
+  v_row    RECORD;
+  v_choice BIGINT;
+  v_q      INT;
+BEGIN
+  PERFORM _ensure_pi_row(p_item_id, p_loc_id);
+
+  -- Branch probabilistico: FEFO o random
+  IF random() <= p_fefo_prob THEN
+    -- FEFO: ordino per expiry date (nulls last) e poi received_date
+    FOR v_row IN
+      SELECT b.batch_id, bi.quantity
+      FROM batches b
+      JOIN batch_inventory bi ON bi.batch_id = b.batch_id
+      WHERE b.item_id = p_item_id
+        AND bi.location_id = p_loc_id
+        AND bi.quantity > 0
+      ORDER BY b.expiry_date NULLS LAST, b.received_date
+    LOOP
+      EXIT WHEN v_left <= 0;
+
+      v_q := LEAST(v_left, v_row.quantity);
+
+      UPDATE batch_inventory
+         SET quantity = quantity - v_q
+       WHERE batch_id = v_row.batch_id
+         AND location_id = p_loc_id;
+
+      INSERT INTO inventory_ledger(event_id,event_ts,item_id,location_id,delta_qty,reason,batch_id,meta)
+      VALUES (p_event_id || '-' || v_row.batch_id, p_event_ts, p_item_id, p_loc_id, -v_q, p_reason, v_row.batch_id, p_meta);
+
+      v_left := v_left - v_q;
+    END LOOP;
+
+  ELSE
+    -- RANDOM pick: scelgo un lotto a caso tra quelli disponibili
+    SELECT batch_id
+    INTO v_choice
+    FROM (
+      SELECT b.batch_id
+      FROM batches b
+      JOIN batch_inventory bi ON bi.batch_id = b.batch_id
+      WHERE b.item_id = p_item_id
+        AND bi.location_id = p_loc_id
+        AND bi.quantity > 0
+      ORDER BY random()
+      LIMIT 1
+    ) sub;
+
+    IF v_choice IS NOT NULL THEN
+      SELECT quantity INTO v_q
+      FROM batch_inventory
+      WHERE batch_id = v_choice
+        AND location_id = p_loc_id;
+
+      UPDATE batch_inventory
+         SET quantity = quantity - LEAST(v_left, v_q)
+       WHERE batch_id = v_choice
+         AND location_id = p_loc_id;
+
+      INSERT INTO inventory_ledger(event_id,event_ts,item_id,location_id,delta_qty,reason,batch_id,meta)
+      VALUES (
+        p_event_id || '-' || v_choice,
+        p_event_ts,
+        p_item_id,
+        p_loc_id,
+        -LEAST(v_left, v_q),
+        p_reason,
+        v_choice,
+        p_meta
+      );
+
+      v_left := v_left - LEAST(v_left, v_q);
+    END IF;
+  END IF;
+
+  RETURN v_left;
+END;
+$$;
+
+
 /* =====================
    DOMAIN FUNCTIONS
    ===================== */
@@ -278,6 +375,7 @@ DECLARE
   v_pending   INT;
   v_prev_live INT; 
   v_new_live  INT;
+  v_prob_fefo NUMERIC := 0.8; -- probabilità di seguire FEFO (configurabile)
 BEGIN
   -- idempotenza: se già presente, esci
   IF EXISTS (SELECT 1 FROM inventory_ledger WHERE event_id = p_event_id) THEN
@@ -297,8 +395,8 @@ BEGIN
      SET current_stock = current_stock - p_qty
    WHERE item_id = v_item_id AND location_id = v_loc_id;
 
-  -- 2) Lotti FEFO (instore)
-  v_left := _fefo_decrement(v_item_id, v_loc_id, p_qty, p_event_id, p_event_ts, 'sale', p_meta);
+  -- 2) Lotti "quasi FEFO": uso funzione probabilistica
+  v_left := _customer_decrement(v_item_id, v_loc_id, p_qty, p_event_id, p_event_ts, 'sale', p_meta, v_prob_fefo);
 
   -- se avanzano quantità non coperte → log overdraw (idempotente)
   IF v_left > 0 THEN
@@ -776,6 +874,7 @@ BEGIN
   JOIN batches b ON b.batch_id = bi.batch_id
   JOIN thr t ON t.batch_id = b.batch_id
   WHERE bi.quantity > 0
+    AND bi.location_id = _get_location_id('instore')
     AND b.expiry_date IS NOT NULL
     AND b.expiry_date BETWEEN (p_now AT TIME ZONE 'Europe/Rome')::date 
                           AND ((p_now AT TIME ZONE 'Europe/Rome')::date + 1);
