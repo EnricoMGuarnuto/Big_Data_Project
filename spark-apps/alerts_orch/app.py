@@ -12,6 +12,7 @@ from __future__ import annotations
 import os, sys, json
 from dataclasses import dataclass
 from typing import Optional
+from datetime import datetime, time
 
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -314,6 +315,23 @@ def _run_near_expiry(_: DataFrame, __: int):
     finally:
         conn.close()
 
+def _run_trash_expiry(_: DataFrame, __: int):
+    conn = db.connect()
+    try:
+        now_ts = datetime.utcnow()
+        closing_time = time(22, 0) 
+        with conn.cursor() as cur:
+            cur.execute("SELECT trash_expiry(%s, %s);", (now_ts, closing_time))
+        conn.commit()
+        print(f"[alerts-orch] ✅ trash_expiry executed at {now_ts}")
+    except Exception as e:
+        conn.rollback()
+        print(f"[alerts-orch] ❌ trash_expiry error: {e}")
+        raise
+    finally:
+        conn.close()
+
+
 # -------- Main
 def main():
     try: db.ping(); print("[alerts-orch] ✅ DB reachable")
@@ -333,8 +351,13 @@ def main():
     q_expiry = (clock.writeStream.foreachBatch(_run_near_expiry)
                 .trigger(processingTime=f"{NEAR_EXP_INTERVAL_MINS} minutes")
                 .option("checkpointLocation",os.path.join(CHECKPOINT_DIR,"near_expiry")).start())
+    
+    q_trash = (clock.writeStream.foreachBatch(_run_trash_expiry)
+               .trigger(processingTime="60 seconds") 
+               .option("checkpointLocation", os.path.join(CHECKPOINT_DIR, "trash_expiry"))
+               .start())
 
-    print(f"[alerts-orch] ▶ running with low_stock_interval={LOW_STOCK_INTERVAL_SECS}s, near_expiry_interval={NEAR_EXP_INTERVAL_MINS}m, locations={ALERT_LOCATIONS}")
+    print(f"[alerts-orch] ▶ running with low_stock_interval={LOW_STOCK_INTERVAL_SECS}s, near_expiry_interval={NEAR_EXP_INTERVAL_MINS}m, trash_expiry=active, locations={ALERT_LOCATIONS}")
     spark.streams.awaitAnyTermination()
 
 if __name__=="__main__":

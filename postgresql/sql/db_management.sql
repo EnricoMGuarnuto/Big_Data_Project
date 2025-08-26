@@ -781,6 +781,77 @@ BEGIN
                           AND ((p_now AT TIME ZONE 'Europe/Rome')::date + 1);
 END$$;
 
+CREATE OR REPLACE FUNCTION trash_expiry(p_now timestamptz DEFAULT now(),
+    p_close timetz DEFAULT '22:00')
+RETURNS INT LANGUAGE plpgsql AS $$
+DECLARE
+  v_count INT := 0;
+BEGIN
+  -- Esegui solo se ora corrente coincide con l'orario di chiusura
+  IF p_now::time = p_close THEN
+    WITH locs AS (
+      SELECT location_id FROM locations WHERE location IN ('instore', 'warehouse')
+    ),
+    expired AS (
+      SELECT
+        b.batch_id,
+        b.item_id,
+        bi.location_id,
+        bi.quantity
+      FROM batch_inventory bi
+      JOIN batches b ON b.batch_id = bi.batch_id
+      WHERE b.expiry_date = CURRENT_DATE
+        AND bi.quantity > 0
+        AND bi.location_id IN (SELECT location_id FROM locs)
+    ),
+    resolved AS (
+      SELECT resolve_alert('near_expiry', e.item_id, e.location_id, e.batch_id) AS resolved_count, e.*
+      FROM expired e
+    ),
+    deleted AS (
+      DELETE FROM batch_inventory bi
+      USING expired e
+      WHERE bi.batch_id = e.batch_id AND bi.location_id = e.location_id
+      RETURNING e.*
+    )
+    -- Ledger: traccia cosa è stato buttato
+    INSERT INTO inventory_ledger(
+        event_id, event_ts, item_id, location_id, delta_qty, reason, batch_id, meta
+    )
+    SELECT 
+        'trash-' || substr(md5(random()::text || clock_timestamp()::text), 1, 10),
+        p_now,
+        d.item_id,
+        d.location_id,
+        -d.quantity,
+        'expired_trashed',
+        d.batch_id,
+        jsonb_build_object('note', 'Trashed at store closing')
+    FROM deleted d;
+
+    -- Aggiorna product_inventory solo per instore
+    UPDATE product_inventory pi
+    SET current_stock = pi.current_stock - d.quantity
+    FROM deleted d
+    JOIN locations l ON d.location_id = l.location_id
+    WHERE pi.item_id = d.item_id
+      AND pi.location_id = d.location_id
+      AND l.location = 'instore';
+
+    -- Elimina righe con stock <= 0 da product_inventory
+    DELETE FROM product_inventory pi
+    USING locations l
+    WHERE pi.location_id = l.location_id
+      AND l.location = 'instore'
+      AND pi.current_stock <= 0;
+
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+  END IF;
+
+  RETURN v_count;
+END
+$$;
+
 
 /* =======================================================================
    FOOT TRAFFIC — funzioni idempotenti per eventi entry/exit + aggregazioni

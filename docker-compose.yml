@@ -276,7 +276,6 @@ services:
       context: ./spark-apps/alerts_orch            
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - TOPIC_SHELF= shelf_events
       - PG_HOST=postgres
       - PG_PORT=5432
       - PG_DB=retaildb
