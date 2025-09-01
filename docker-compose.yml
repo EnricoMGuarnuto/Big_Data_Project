@@ -244,6 +244,26 @@ services:
       - ./spark-checkpoints:/chk
 
 
+  spark-restock-wh:
+    build:
+      context: ./spark-apps/restock_wh
+    environment:
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - AWS_REGION=us-east-1
+      - MINIO_URL=s3a://retail-lake
+    depends_on:
+      - postgres
+      - minio
+    ports:
+      - "4045:4040"   # Spark UI for this job
+    volumes:
+      - ./spark-checkpoints:/chk
 
   
   

@@ -1,6 +1,6 @@
-streamlit==1.37.1
-SQLAlchemy==2.0.31
-psycopg[binary]==3.2.9
-pandas==2.2.2
-plotly==5.22.0
-pytz==2024.1
+streamlit==1.38.0
+plotly==5.24.1
+streamlit-plotly-events==0.0.6
+pandas==2.2.3
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.34
