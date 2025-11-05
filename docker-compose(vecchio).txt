@@ -1,0 +1,333 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/pgdata
+      - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h localhost || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # ⚠️ Optional: SQL scripts per inizializzazione tabelle
+  db-sql-jobs:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+    volumes:
+      - ./postgresql/sql:/sql:ro
+      - ./data:/data:ro
+      - ./data/all_discounts.csv:/data/all_discounts.csv
+    entrypoint: ["sh", "-c",
+      "psql postgresql://$DB_USER:$DB_PASSWORD@postgres:5432/$DB_NAME -v ON_ERROR_STOP=1 -f /sql/make_db.sql &&
+       psql postgresql://$DB_USER:$DB_PASSWORD@postgres:5432/$DB_NAME -v ON_ERROR_STOP=1 -f /sql/db_management.sql"]
+    restart: 'no'
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - 9000:9000
+      - 9001:9001
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    build:
+      context: ./minio
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "/init.sh"]
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:6.2.1
+    platform: linux/amd64
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+  kafka:
+    image: confluentinc/cp-kafka:6.2.1
+    platform: linux/amd64
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+  kafka-producer-foot-traffic:
+    build:
+      context: ./kafka-components/kafka-producer-foot_traffic
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC=foot_traffic
+      - KAFKA_TOPIC_REALISTIC=foot_traffic_realistic
+      - SLEEP=0.3
+      - TIME_SCALE=60
+    depends_on:
+      - kafka
+    volumes:
+      - ./data:/data
+
+  kafka-producer-shelf:
+    build:
+      context: ./kafka-components/kafka-producer-shelf
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC_FOOT=foot_traffic
+      - KAFKA_TOPIC_SHELF=shelf_events
+    depends_on:
+      - kafka
+    volumes:
+      - ./data:/data
+
+  kafka-producer-pos:
+    build:
+      context: ./kafka-components/kafka-producer-pos
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - FOOT_TOPIC=foot_traffic
+      - POS_TOPIC=pos_transactions
+      - SHELF_TOPIC=shelf_events
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - kafka
+      - redis
+    volumes:
+      - ./data:/data
+
+  kafka-producer-near-expiry:
+    build:
+      context: ./kafka-components/kafka-producer-near_expiry_discount
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - NEAR_EXPIRY_TOPIC=near_expiry_discounts
+      - DB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      - NEAR_EXPIRY_PERIOD_SEC=3600   # snapshot oraria idempotente
+      - NEAR_EXPIRY_JSON_FILE=/data/current_near_expiry.json
+      - TZ=Europe/Rome
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    volumes:
+      - ./data:/data
+
+
+  spark-shelf:
+    build:
+      context: ./spark-apps/shelf
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_SHELF=shelf_events
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - AWS_REGION=us-east-1
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./spark-checkpoints:/chk
+
+  spark-pos:
+    build:
+      context: ./spark-apps/pos
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - POS_TOPIC=pos_transactions
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - AWS_REGION=us-east-1
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+    ports:
+      - "4041:4040" # UI Spark di questo container (per non confliggere con spark-shelf 4040)
+    volumes:
+      - ./spark-checkpoints:/chk
+
+  spark-foot-traffic:
+      build:
+        context: ./spark-apps/foot_traffic
+      environment:
+        - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+        - TOPIC_FOOT_TRAFFIC_REALISTIC=foot_traffic_realistic
+        - MINIO_URL=s3a://retail-lake
+        - AWS_ACCESS_KEY_ID=minio
+        - AWS_SECRET_ACCESS_KEY=minio123
+        - AWS_REGION=us-east-1
+        - PG_HOST=postgres
+        - PG_PORT=5432
+        - PG_DB=retaildb
+        - PG_USER=retail
+        - PG_PASS=retailpass
+      depends_on:
+        - kafka
+        - postgres
+        - minio
+      ports:
+        - "4042:4040"        # UI Spark (4040 già usato da shelf, 4041 da pos)
+      volumes:
+        - ./spark-checkpoints:/chk
+  
+  spark-near-expiry:
+    build:
+      context: ./spark-apps/near_expiry_discount
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - NEAR_EXPIRY_TOPIC=near_expiry_discounts
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+    ports:
+      - "4044:4040"   # UI Spark (4040–4043 già occupati dagli altri)
+    volumes:
+      - ./spark-checkpoints:/chk
+
+
+  spark-restock-wh:
+    build:
+      context: ./spark-apps/restock_wh
+    environment:
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
+      - AWS_REGION=us-east-1
+      - MINIO_URL=s3a://retail-lake
+    depends_on:
+      - postgres
+      - minio
+    ports:
+      - "4045:4040"   # Spark UI for this job
+    volumes:
+      - ./spark-checkpoints:/chk
+
+  
+  
+  
+
+  # demand-forecastor:
+  #   build:
+  #     context: ./demand-forecastor
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     PG_HOST: postgres
+  #     PG_PORT: 5432
+  #     PG_DB: retaildb
+  #     PG_USER: retail
+  #     PG_PASS: retailpass
+  #     MODEL_DIR: /app/model
+  #     TZ: Europe/Rome
+  #     # opzionale: cambia sleep (es. 12h)
+  #     # SLEEP_SECS: 43200
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - model_data:/app/model
+  #   restart: unless-stopped
+
+
+  spark-alerts-orch:
+    build:
+      context: ./spark-apps/alerts_orch            
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=retaildb
+      - PG_USER=retail
+      - PG_PASS=retailpass
+      - ALERT_LOCATIONS=instore,warehouse
+    depends_on:
+      - postgres
+      - kafka
+    volumes:
+      - ./spark-checkpoints:/chk
+
+  streamlit:
+    build:
+      context: ./dashboard
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DB: retaildb
+      PG_USER: retail
+      PG_PASS: retailpass
+      TZ: Europe/Rome
+    ports:
+      - "8501:8501"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  model_data:
+
