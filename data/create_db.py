@@ -2,10 +2,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-# Imposta il seed per la riproducibilità
+# Set seed for reproducibility
 np.random.seed(42)
 
-# --- FASE 1: Definizione della struttura dei prodotti ---
+# Define product hierarchy with categories, subcategories, and their attributes
 product_hierarchy = {
     'BEVERAGES': {
         'aisle': 1,
@@ -443,6 +443,7 @@ product_hierarchy = {
     }
 }
 
+# Function to generate the product catalog DataFrame
 
 def generate_product_catalog(product_hierarchy):
     catalog_data = []
@@ -477,6 +478,8 @@ def generate_product_catalog(product_hierarchy):
     return pd.DataFrame(catalog_data)
 
 
+# Function to generate inventory DataFrame
+
 def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, store_max_stock_data=None):
     data = []
     
@@ -492,7 +495,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
         sub_props = cat_props['subcategories'][subcategory]
         is_perishable = 'current_stock_probabilities' in sub_props
 
-        # Logica per impostare la capienza massima del magazzino
+        # Logic for maximum stock of warehouse and store
         if inventory_type == 'warehouse':
             if 'warehouse_max_stock_equal_store' in sub_props and sub_props['warehouse_max_stock_equal_store']:
                 maximum_stock = store_max_stock_data.loc[store_max_stock_data['shelf_id'] == shelf_id, 'maximum_stock'].iloc[0]
@@ -505,7 +508,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
         else:
             maximum_stock = np.random.randint(sub_props['store_max_stock_range'][0], sub_props['store_max_stock_range'][1])
         
-        # Logica dello stock basata sulla deperibilità del prodotto
+        # Logic for current stock based on maximum stock and perishability
         if inventory_type == 'warehouse' and is_perishable:
             current_stock = 0
         elif is_perishable:
@@ -547,6 +550,8 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
     
     return df[cols]
 
+# Function to generate batches data DataFrame
+
 def generate_batches_data(inventory_df, product_hierarchy, location_type):
     batches_data = []
     
@@ -556,14 +561,17 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
         category = row['item_category']
         subcategory = row['item_subcategory']
         
+        # Skip if current stock is zero
         if current_stock == 0:
             continue
-            
+
+        # Decide number of batches 
         if current_stock > 1:
             num_batches = np.random.choice([1, 2], p=[0.7, 0.3])
         else:
              num_batches = 1
 
+        # Generate batch data
         if num_batches == 1:
             batch_qty_store = current_stock if location_type == 'in-store' else 0
             batch_qty_warehouse = current_stock if location_type == 'warehouse' else 0
@@ -597,6 +605,7 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
             batch2_qty_store = (current_stock - split_point) if location_type == 'in-store' else 0
             batch2_qty_warehouse = (current_stock - split_point) if location_type == 'warehouse' else 0
             
+            # Determine perishability
             is_perishable = 'current_stock_probabilities' in product_hierarchy[category]['subcategories'][subcategory]
 
             if is_perishable:
@@ -636,28 +645,29 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
     
     return pd.DataFrame(batches_data)
 
-# --- Esecuzione principale dello script ---
-print("Generazione del catalogo prodotti...")
+# main
+
+print("Generating product catalog...")
 product_catalog = generate_product_catalog(product_hierarchy)
 
-print("Generazione dell'inventario dello store...")
+print("Generating store inventory...")
 store_inventory_df = generate_inventory_df(product_catalog, product_hierarchy, 'store')
-store_inventory_df.to_csv('data/store_inventory_final.csv', index=False)
-print("Inventario dello store salvato con successo!")
+store_inventory_df.to_parquet('data/store_inventory_final.parquet', index=False)
+print("Store inventory saved successfully!")
 
-print("Generazione dell'inventario del magazzino...")
+print("Generating warehouse inventory...")
 warehouse_inventory_df = generate_inventory_df(product_catalog, product_hierarchy, 'warehouse', store_max_stock_data=store_inventory_df)
-warehouse_inventory_df.to_csv('data/warehouse_inventory_final.csv', index=False)
-print("Inventario del magazzino salvato con successo!")
+warehouse_inventory_df.to_parquet('data/warehouse_inventory_final.parquet', index=False)
+print("Wharehouse inventory saved successfully!")
 
-print("Generazione del dataset dei lotti per lo store...")
+print("Generating batches dataset for the store...")
 store_batches_df = generate_batches_data(store_inventory_df, product_hierarchy, 'in-store')
-store_batches_df.to_csv('data/store_batches.csv', index=False)
-print("Dataset dei lotti per lo store salvato con successo!")
+store_batches_df.to_parquet('data/store_batches.parquet', index=False)
+print("Batches dataset for the store saved successfully!")
 
-print("Generazione del dataset dei lotti per il magazzino...")
+print("Generating batches dataset for the warehouse...")
 warehouse_batches_df = generate_batches_data(warehouse_inventory_df, product_hierarchy, 'warehouse')
-warehouse_batches_df.to_csv('data/warehouse_batches.csv', index=False)
-print("Dataset dei lotti per il magazzino salvato con successo!")
+warehouse_batches_df.to_parquet('data/warehouse_batches.parquet', index=False)
+print("Batches dataset for the warehouse saved successfully!")
 
-print("\n Tutti i dataset sono stati creati con successo!")
+print("\n All datasets generated and saved successfully!")
