@@ -1,4 +1,3 @@
-from datetime import datetime
 import os
 import time
 import uuid
@@ -166,7 +165,7 @@ def decide_daily_total(weekday_idx: int) -> int:
 def build_producer():
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            log.info(f"Tentativo {attempt}: connessione a Kafka ({KAFKA_BROKER})")
+            log.info(f"Attempt {attempt}: connecting to Kafka ({KAFKA_BROKER})")
             producer = KafkaProducer(
                 bootstrap_servers=KAFKA_BROKER,
                 value_serializer=lambda v: json.dumps(v).encode('utf-8'),
@@ -177,14 +176,14 @@ def build_producer():
                 compression_type='gzip',
                 max_in_flight_requests_per_connection=1,
             )
-            log.info("Connesso a Kafka.")
+            log.info("Connected to Kafka.")
             return producer
         except NoBrokersAvailable as e:
-            log.warning(f"Kafka non disponibile ({e}), riprovo tra {RETRY_BACKOFF_SECONDS}s...")
+            log.warning(f"Kafka not available ({e}), retry in {RETRY_BACKOFF_SECONDS}s...")
         except Exception as e:
-            log.warning(f"Errore di connessione a Kafka ({type(e).__name__}: {e}), riprovo tra {RETRY_BACKOFF_SECONDS}s...")
+            log.warning(f"Connection error to Kafka ({type(e).__name__}: {e}), retry in {RETRY_BACKOFF_SECONDS}s...")
         time.sleep(RETRY_BACKOFF_SECONDS)
-    raise RuntimeError("Impossibile connettersi a Kafka.")
+    raise RuntimeError("Impossible to connect to Kafka.")
 
 def build_event(entry_time: datetime):
     duration = generate_trip_duration()
@@ -254,7 +253,7 @@ def main():
     plan = DayPlan(current_day, weekday_idx, decide_daily_total(weekday_idx), now=now)
     future_exits = []
 
-    log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Totale pianificato (da ora in poi): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
+    log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Total planned (from now on): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
 
     try:
         while not stop:
@@ -263,7 +262,7 @@ def main():
                 current_day = now.date()
                 weekday_idx = now.weekday()
                 plan = DayPlan(current_day, weekday_idx, decide_daily_total(weekday_idx), now=now)
-                log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Nuovo piano. Totale (da ora in poi): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
+                log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] New plan. Total (from now on): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
 
             while True:
                 ts = plan.next_ready(now)
@@ -271,10 +270,10 @@ def main():
                     break
                 event, cid = build_event(ts)
                 producer.send(TOPIC, key=cid, value=event)
-                log.info(f"Simulativo: {event}")
+                log.info(f"Simulated: {event}")
                 
 
-                # Evento realistico: entry
+                # Realistic event: entry
                 entry_event = {
                     "event_type": "entry",
                     "time": event["entry_time"],
@@ -282,9 +281,9 @@ def main():
                     "time_slot": event["time_slot"]
                 }
                 producer.send(TOPIC_REALISTIC, key=cid, value=entry_event)
-                log.info(f"Realistico ENTRY: {entry_event}")
+                log.info(f"Realistic ENTRY: {entry_event}")
 
-                # Pianifica evento exit per il futuro
+                # Plan realistic exit event for future
                 exit_event = {
                     "event_type": "exit",
                     "time": event["exit_time"],
@@ -293,11 +292,11 @@ def main():
                 }
                 future_exits.append((datetime.fromisoformat(event["exit_time"]), exit_event, cid))
 
-            # Verifica eventi di uscita pronti da inviare
+            # Verify future realistic exits
             for exit_time, exit_event, cid in future_exits[:]:
                 if exit_time <= now:
                     producer.send(TOPIC_REALISTIC, key=cid, value=exit_event)
-                    log.info(f"Realistico EXIT: {exit_event}")
+                    log.info(f"Realistic EXIT: {exit_event}")
                     future_exits.remove((exit_time, exit_event, cid))
 
             time.sleep(max(0.1, SLEEP / max(1.0, TIME_SCALE)))

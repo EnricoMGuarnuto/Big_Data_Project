@@ -16,7 +16,6 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      # single-broker essentials
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -31,6 +30,18 @@ services:
     command: ["redis-server","--appendonly","yes"]
     volumes:
       - redis-data:/data
+    restart: unless-stopped
+  
+  # Producers
+  kafka-producer-foot-traffic:
+    build:
+      context: ./kafka-components/kafka-producer-foot_traffic
+      dockerfile: Dockerfile
+    container_name: kafka-producer-foot-traffic
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:9092
     restart: unless-stopped
 
 volumes:
