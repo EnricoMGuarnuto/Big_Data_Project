@@ -71,6 +71,7 @@ Timestamps are UTC (ISO 8601). Patterns vary by weekday and time slot.
 ---
 
 ## ./requirements.txt
+This file contains:
 ```
 kafka-python
 ```
