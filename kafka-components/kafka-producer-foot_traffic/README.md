@@ -1,6 +1,6 @@
 # Foot Traffic Producer
-
-## Overview
+## ./foot_traffic_producer.py
+### Overview
 `foot_traffic_producer.py` is a Kafka producer that simulates store foot traffic in (near) real time.  
 It emits:
 - **Sessions** → `foot_traffic` (single record with entry & exit).
@@ -10,7 +10,7 @@ Timestamps are UTC (ISO 8601). Patterns vary by weekday and time slot.
 
 ---
 
-## Features
+### Features
 - Realistic **weekday/time-slot** traffic profile  
 - Two-topic design: sessions + ENTRY/EXIT  
 - Pacing control via `TIME_SCALE`  
@@ -19,7 +19,7 @@ Timestamps are UTC (ISO 8601). Patterns vary by weekday and time slot.
 
 ---
 
-## Event Schemas
+### Event Schemas
 
 **Session (`foot_traffic`)**
 ```json
@@ -42,7 +42,7 @@ Timestamps are UTC (ISO 8601). Patterns vary by weekday and time slot.
 
 ---
 
-## Configuration (env)
+### Configuration (env)
 
 | Var | Default | Purpose |
 |---|---:|---|
@@ -64,20 +64,16 @@ Timestamps are UTC (ISO 8601). Patterns vary by weekday and time slot.
 
 ---
 
-## Run with Docker Compose
-Inside the same Docker network:
-```yaml
-environment:
-  KAFKA_BROKER: kafka:9092
-```
-Start and tail logs:
-```bash
-docker compose up -d
-docker compose logs -f kafka-producer-foot-traffic
-```
+### Why Two Topics?
+- `foot_traffic`: simulated informative events for guaranteeing consistency in the streaming process (such that shelf_events and pos_transactions can listen to foot_traffic messages)
+- `foot_traffic_realistic`: sensor-like ENTRY/EXIT for realistic analytics and stateful processing
 
 ---
 
-## Why Two Topics?
-- `foot_traffic`: simulated informative events for guaranteeing consistency in the streaming process (such that shelf_events and pos_transactions can listen to foot_traffic messages)
-- `foot_traffic_realistic`: sensor-like ENTRY/EXIT for realistic analytics and stateful processing
+## ./requirements.txt
+```
+kafka-python
+```
+---
+## ./Dockerfile
+A `Dockerfile` is provided to containerize the application. Ensure Docker is installed and configured to build and run the container.

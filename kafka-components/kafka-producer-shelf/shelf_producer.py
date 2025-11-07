@@ -27,7 +27,7 @@ SLEEP_SEC = float(os.getenv("SHELF_SLEEP", 1.0))
 PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
 
 # ========================
-# Stato
+# State
 # ========================
 active_customers = {}
 scheduled_actions = defaultdict(list)
