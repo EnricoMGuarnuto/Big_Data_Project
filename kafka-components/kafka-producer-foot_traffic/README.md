@@ -78,38 +78,6 @@ docker compose logs -f kafka-producer-foot-traffic
 
 ---
 
-## Build (example)
-
-**Dockerfile**
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY foot_traffic_producer.py .
-CMD ["python3", "-u", "foot_traffic_producer.py"]
-```
-
-**requirements.txt**
-```
-kafka-python>=2.0.2
-```
-
-**Build & run**
-```bash
-docker build -t foot-traffic-producer ./kafka-components/kafka-producer-foot_traffic
-docker run --rm --network <compose_network> -e KAFKA_BROKER=kafka:9092 foot-traffic-producer
-```
-
----
-
-## Troubleshooting
-- **`NoBrokersAvailable`** → check `KAFKA_BROKER` and topics  
-- No events? → verify topic names & consumer offsets  
-- Time zone → events are **UTC**; convert downstream if needed
-
----
-
 ## Why Two Topics?
-- `foot_traffic`: convenient analytics (durations, cohorts)  
-- `foot_traffic_realistic`: sensor-like ENTRY/EXIT for streaming/stateful processing
+- `foot_traffic`: simulated informative events for guaranteeing consistency in the streaming process (such that shelf_events and pos_transactions can listen to foot_traffic messages)
+- `foot_traffic_realistic`: sensor-like ENTRY/EXIT for realistic analytics and stateful processing
