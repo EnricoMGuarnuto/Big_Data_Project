@@ -6,14 +6,13 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Dict, DefaultDict
 from collections import defaultdict
-
 import pandas as pd
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable
 from kafka.admin import KafkaAdminClient, NewTopic
 
 # ========================
-# ENV / Config
+# Config
 # ========================
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 
@@ -26,7 +25,6 @@ GROUP_ID_FOOT  = os.getenv("GROUP_ID_FOOT", "pos-simulator-foot")
 
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
-NEAR_EXPIRY_JSON_PATH = os.getenv("NEAR_EXPIRY_JSON_FILE", "/data/current_near_expiry.json")
 
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
@@ -38,19 +36,21 @@ def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
             admin = KafkaAdminClient(bootstrap_servers=bootstrap, client_id="pos-init")
             if topic not in admin.list_topics():
                 admin.create_topics([NewTopic(name=topic, num_partitions=partitions, replication_factor=rf)])
-                print(f"[pos] ✅ creato topic {topic}")
+                print(f"[pos] created topic {topic}")
             else:
-                print(f"[pos] topic {topic} già esistente")
+                print(f"[pos] topic {topic} already exists")
             admin.close()
             return
         except NoBrokersAvailable as e:
             last = e
-            print(f"[pos] Kafka non pronto per create-topic (tentativo {i}/{attempts}). Retry in {sleep_s}s…")
+            print(f"[pos] Kafka not ready to create topic (attempt {i}/{attempts}). Retry in {sleep_s}s…")
             time.sleep(sleep_s)
         except Exception as e:
-            print(f"[pos] ⚠️ topic check/create fallito: {e}")
+            print(f"[pos] ⚠️ topic check/create failed: {e}")
             return
-    print(f"[pos] ⚠️ impossibile creare/verificare topic {topic}: {last}")
+        finally:
+            admin.close()
+    print(f"[pos] ⚠️ impossible to create/verify topic {topic}: {last}")
 
 ensure_topic(POS_TOPIC,   KAFKA_BROKER)
 ensure_topic(SHELF_TOPIC, KAFKA_BROKER)
@@ -64,43 +64,28 @@ def now_utc() -> datetime:
 
 def load_price_map_from_store(path: str) -> Dict[str, float]:
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Store parquet non trovato: {path}")
+        raise FileNotFoundError(f"Store parquet not found: {path}")
     df = pd.read_parquet(path)
     req = {"shelf_id", "item_price"}
     missing = req - set(df.columns)
     if missing:
-        raise ValueError(f"{path} manca le colonne {missing} (serve 'item_price').")
+        raise ValueError(f"{path} missing columns {missing} (need 'item_price').")
     df = df.dropna(subset=["shelf_id", "item_price"])
     return df.set_index("shelf_id")["item_price"].astype(float).to_dict()
 
 def load_discounts_from_parquet(path: str) -> Dict[str, float]:
     if not os.path.exists(path):
-        print(f"[pos] ⚠️ File sconti non trovato: {path}")
+        print(f"[pos] ⚠️ Discounts file not found: {path}")
         return {}
     df = pd.read_parquet(path)
     today = datetime.today()
     week_str = f"{today.isocalendar().year}-W{today.isocalendar().week:02}"
     df = df[df["week"] == week_str]
-    print(f"[pos] ✅ Caricati {len(df)} sconti per la settimana {week_str}")
+    print(f"[pos] ✅ Loaded {len(df)} discounts for week {week_str}")
     return dict(zip(df["shelf_id"], df["discount"]))
 
-def load_discounts_from_json(path: str) -> dict:
-    try:
-        if not os.path.exists(path):
-            print(f"[shelf] ⚠️ File JSON near-expiry non trovato: {path}")
-            return {}
-        with open(path, "r") as f:
-            ds = json.load(f)
-        print(f"[shelf] ✅ Caricati {len(ds)} sconti near-expiry da {path}")
-        # ritorna un dict {item_id -> discount}
-        return {str(d["item_id"]): float(d["discount"]) for d in ds}
-    except Exception as e:
-        print(f"[shelf] ⚠️ Errore leggendo JSON near-expiry: {e}")
-        return {}
-
-
 # ========================
-# Stato applicativo
+# State
 # ========================
 carts: DefaultDict[str, DefaultDict[str, int]] = defaultdict(lambda: defaultdict(int))
 carts_lock = threading.Lock()
@@ -111,15 +96,13 @@ entries_lock = threading.Lock()
 
 try:
     price_by_item = load_price_map_from_store(STORE_PARQUET)
-    print(f"[pos] ✅ Prezzi caricati da {STORE_PARQUET}, {len(price_by_item)} articoli trovati.")
+    print(f"[pos] ✅ Prices loaded from {STORE_PARQUET}, {len(price_by_item)} items found.")
 except Exception as e:
-    print(f"[pos] ❌ ERRORE caricando i prezzi da {STORE_PARQUET}: {e}")
+    print(f"[pos] ❌ ERROR while loading prices {STORE_PARQUET}: {e}")
     price_by_item = {}
 
-# merge sconti: parquet + near-expiry JSON
 discounts_by_item = {}
 discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
-discounts_by_item.update(load_discounts_from_json(NEAR_EXPIRY_JSON_PATH))
 
 # ========================
 # Kafka Producer
@@ -135,13 +118,13 @@ def build_producer():
                 acks="all",
                 retries=10,
             )
-            print("[pos] ✅ Connesso a Kafka.")
+            print("[pos] Connected to Kafka.")
             return p
         except NoBrokersAvailable as e:
             last_err = e
-            print(f"[pos] Kafka non disponibile (tentativo {attempt}/6). Retry in 3s…")
+            print(f"[pos] Kafka not available (attempt {attempt}/6). Retry in 3s…")
             time.sleep(3)
-    raise RuntimeError(f"Impossibile connettersi a Kafka: {last_err}")
+    raise RuntimeError(f"Impossible to connect to Kafka: {last_err}")
 
 producer = build_producer()
 
@@ -159,7 +142,7 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
         items_map = dict(carts.get(customer_id, {}))
 
     if not items_map and not FORCE_CHECKOUT_IF_EMPTY:
-        print(f"[pos] Checkout {customer_id}: carrello vuoto → skip.")
+        print(f"[pos] Checkout {customer_id}: cart empty → skip.")
         return
 
     transaction = {
@@ -185,11 +168,11 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
         })
 
     if not transaction["items"] and not FORCE_CHECKOUT_IF_EMPTY:
-        print(f"[pos] Checkout {customer_id}: nessun item valido → skip.")
+        print(f"[pos] Checkout {customer_id}: no valid item → skip.")
         return
 
     producer.send(POS_TOPIC, value=transaction)
-    print(f"[pos] POS transaction emessa: {transaction}")
+    print(f"[pos] POS transaction emitted: {transaction}")
 
     with carts_lock:
         carts.pop(customer_id, None)
@@ -222,7 +205,7 @@ def schedule_checkout(customer_id: str, exit_time: datetime):
         t.daemon = True
         t.start()
         timers[customer_id] = t
-        print(f"[pos] Checkout per {customer_id} tra {round(delay, 2)}s.")
+        print(f"[pos] Checkout for {customer_id} in {round(delay, 2)}s.")
 
 # ========================
 # Consumers

@@ -10,6 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App code
 COPY foot_traffic_producer.py .
 
-# Run only the producer (Kafka crea il topic se non c’è)
+# Run only the producer
 CMD ["python3", "-u", "foot_traffic_producer.py"]
 
