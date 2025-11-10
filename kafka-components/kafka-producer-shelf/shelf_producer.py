@@ -22,7 +22,6 @@ TOPIC_SHELF = os.getenv("KAFKA_TOPIC_SHELF", "shelf_events")
 TOPIC_FOOT = os.getenv("KAFKA_TOPIC_FOOT", "foot_traffic")
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
-NEAR_EXPIRY_JSON_PATH = os.getenv("NEAR_EXPIRY_JSON_FILE", "/data/current_near_expiry.json")
 SLEEP_SEC = float(os.getenv("SHELF_SLEEP", 1.0))
 PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
 
@@ -67,28 +66,14 @@ def load_discounts_from_parquet(path: str) -> dict:
     week_str = f"{year}-W{week:02}"
     try:
         if not os.path.exists(path):
-            print(f"[shelf] ⚠️ File sconti non trovato: {path}")
+            print(f"[shelf] ⚠️ File discounts not found: {path}")
             return {}
         df = pd.read_parquet(path)
         df = df[df["week"] == week_str]
-        print(f"[shelf] ✅ Sconti caricati per la settimana {week_str}: {len(df)} righe")
+        print(f"[shelf] ✅ weekly discounts loaaded {week_str}: {len(df)} righe")
         return dict(zip(df["shelf_id"], df["discount"]))
     except Exception as e:
-        print(f"[shelf] ⚠️ Errore leggendo sconti da {path}: {e}")
-        return {}
-    
-def load_discounts_from_json(path: str) -> dict:
-    try:
-        if not os.path.exists(path):
-            print(f"[shelf] ⚠️ File JSON near-expiry non trovato: {path}")
-            return {}
-        with open(path, "r") as f:
-            ds = json.load(f)
-        print(f"[shelf] ✅ Caricati {len(ds)} sconti near-expiry da {path}")
-        # ritorna un dict {item_id -> discount}
-        return {str(d["item_id"]): float(d["discount"]) for d in ds}
-    except Exception as e:
-        print(f"[shelf] ⚠️ Errore leggendo JSON near-expiry: {e}")
+        print(f"[shelf] ⚠️ error while reading disocunts from {path}: {e}")
         return {}
 
 

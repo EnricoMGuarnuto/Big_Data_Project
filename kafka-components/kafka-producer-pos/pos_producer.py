@@ -39,7 +39,6 @@ def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
                 print(f"[pos] created topic {topic}")
             else:
                 print(f"[pos] topic {topic} already exists")
-            admin.close()
             return
         except NoBrokersAvailable as e:
             last = e
@@ -49,7 +48,12 @@ def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
             print(f"[pos] ⚠️ topic check/create failed: {e}")
             return
         finally:
-            admin.close()
+            if admin is not None:
+                try:
+                    admin.close()
+                except Exception:
+                    pass
+            admin = None
     print(f"[pos] ⚠️ impossible to create/verify topic {topic}: {last}")
 
 ensure_topic(POS_TOPIC,   KAFKA_BROKER)

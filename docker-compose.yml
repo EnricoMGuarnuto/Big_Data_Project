@@ -56,6 +56,19 @@ services:
     volumes:
       - ./data:/data:ro
     restart: unless-stopped
+  
+  kafka-producer-shelf:
+    build:
+      context: ./kafka-components/kafka-producer-shelf
+      dockerfile: Dockerfile
+    container_name: kafka-producer-shelf
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:9092
+    volumes:
+      - ./data:/data:ro
+    restart: unless-stopped
 
 volumes:
   kafka-data:
