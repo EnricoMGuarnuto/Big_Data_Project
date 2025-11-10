@@ -3,12 +3,19 @@ import json
 import time
 import random
 import threading
+import redis
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-
 import pandas as pd
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
+
+# ========================
+# Logging
+# ========================
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
+log = logging.getLogger("shelf")
 
 # customer_id -> item_id -> {"quantity": int, "weight": float}
 customer_carts = defaultdict(lambda: defaultdict(lambda: {"quantity": 0, "weight": 0.0}))
@@ -20,6 +27,13 @@ BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_BROKER = BOOTSTRAP
 TOPIC_SHELF = os.getenv("KAFKA_TOPIC_SHELF", "shelf_events")
 TOPIC_FOOT = os.getenv("KAFKA_TOPIC_FOOT", "foot_traffic")
+
+# Redis (buffer-before-Kafka)
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_STREAM = os.getenv("REDIS_STREAM", "shelf_events")  # stream key
+
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
 SLEEP_SEC = float(os.getenv("SHELF_SLEEP", 1.0))
@@ -49,7 +63,6 @@ def sample_num_actions():
 
 def generate_scheduled_actions(entry, exit):
     n_actions = sample_num_actions()
-    duration = (exit - entry).total_seconds()
     start = entry + timedelta(seconds=60)
     end = exit - timedelta(seconds=30)
     if start >= end:
@@ -66,19 +79,18 @@ def load_discounts_from_parquet(path: str) -> dict:
     week_str = f"{year}-W{week:02}"
     try:
         if not os.path.exists(path):
-            print(f"[shelf] ⚠️ File discounts not found: {path}")
+            log.warning(f"[shelf] Discounts file not found: {path}")
             return {}
         df = pd.read_parquet(path)
         df = df[df["week"] == week_str]
-        print(f"[shelf] ✅ weekly discounts loaaded {week_str}: {len(df)} righe")
+        log.info(f"[shelf] Weekly discounts loaded {week_str}: {len(df)} rows")
         return dict(zip(df["shelf_id"], df["discount"]))
     except Exception as e:
-        print(f"[shelf] ⚠️ error while reading disocunts from {path}: {e}")
+        log.warning(f"[shelf] Error reading discounts from {path}: {e}")
         return {}
 
-
 # ========================
-# Kafka
+# IO (Kafka / Redis)
 # ========================
 def build_producer():
     for attempt in range(6):
@@ -90,13 +102,30 @@ def build_producer():
                 retries=10,
                 acks="all",
             )
-            print("[shelf] ✅ Connected to Kafka.")
+            log.info("[shelf] Connected to Kafka.")
             return p
         except NoBrokersAvailable:
-            print(f"[shelf] ❌ Kafka not available (attempt {attempt+1}/6). Retrying...")
+            log.warning(f"[shelf] Kafka not available (attempt {attempt+1}/6). Retrying...")
             time.sleep(3)
     raise RuntimeError("Kafka not reachable")
 
+def build_redis() -> redis.Redis:
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    r.ping()
+    log.info(f"[shelf] Connected to Redis at {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
+    return r
+
+def emit_with_buffer(rconn: redis.Redis, producer: KafkaProducer, topic: str, event: dict, redis_stream: str):
+    """Prima Redis Stream (buffer), poi Kafka."""
+    try:
+        rconn.xadd(redis_stream, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
+    except Exception as e:
+        log.warning(f"[shelf] Redis XADD failed: {e}")
+    producer.send(topic, value=event)
+
+# ========================
+# Kafka consumers
+# ========================
 def foot_traffic_listener():
     consumer = KafkaConsumer(
         TOPIC_FOOT,
@@ -127,8 +156,6 @@ def reap_inactive():
                 customer_carts.pop(cid, None)
         time.sleep(5)
 
-
-
 # ========================
 # Main loop
 # ========================
@@ -147,10 +174,11 @@ def main():
 
     rng = random.Random()
     producer = build_producer()
+    rconn = build_redis()  # <— inizializzato UNA VOLTA qui
 
     threading.Thread(target=foot_traffic_listener, daemon=True).start()
     threading.Thread(target=reap_inactive, daemon=True).start()
-    print("[shelf] Producer started.")
+    log.info("[shelf] Producer started.")
 
     while True:
         now = now_utc()
@@ -178,11 +206,9 @@ def main():
                         available_items = [(iid, data) for iid, data in customer_carts[customer_id].items() if data["quantity"] > 0]
                         if not available_items:
                             continue
-
                         item_id, data = rng.choice(available_items)
                         item_weight = data["weight"]
                         max_quantity = data["quantity"]
-
                         quantity = rng.randint(1, max_quantity)
                         customer_carts[customer_id][item_id]["quantity"] -= quantity
                     else:
@@ -191,6 +217,7 @@ def main():
                     quantity = rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
                     total_weight = round(item_weight * quantity, 3)
 
+                    # Evento simulato (pickup/putback) — buffer su Redis, poi Kafka
                     sim_event = {
                         "event_type": action_type,
                         "customer_id": customer_id,
@@ -199,9 +226,10 @@ def main():
                         "quantity": quantity,
                         "timestamp": now.isoformat(),
                     }
-                    producer.send(TOPIC_SHELF, value=sim_event)
-                    print(f"[shelf] Sent {action_type.upper()}: {sim_event}")
+                    emit_with_buffer(rconn, producer, TOPIC_SHELF, sim_event, REDIS_STREAM)
+                    log.info(f"[shelf] Sent {action_type.upper()}: {sim_event}")
 
+                    # Evento derivato di peso — buffer su Redis, poi Kafka
                     weight_event = {
                         "event_type": "weight_change",
                         "customer_id": customer_id,
@@ -209,8 +237,8 @@ def main():
                         "delta_weight": (-1 if action_type == "pickup" else 1) * total_weight,
                         "timestamp": now.isoformat(),
                     }
-                    producer.send(TOPIC_SHELF, value=weight_event)
-                    print(f"[shelf] Sent WEIGHT_CHANGE: {weight_event}")
+                    emit_with_buffer(rconn, producer, TOPIC_SHELF, weight_event, REDIS_STREAM)
+                    log.info(f"[shelf] Sent WEIGHT_CHANGE: {weight_event}")
 
                     executed = True
                     break

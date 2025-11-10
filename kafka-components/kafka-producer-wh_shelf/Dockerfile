@@ -1,4 +1,4 @@
-# kafka-producer-shelf/Dockerfile
+# kafka-producer-wh_shelf/Dockerfile
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -8,7 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # App code
-COPY shelf_producer.py .
+COPY wh_shelf_producer.py .
 
 # Run only the producer
-CMD ["python","-u", "shelf_producer.py"]
+CMD ["python","-u", "wh_shelf_producer.py"]

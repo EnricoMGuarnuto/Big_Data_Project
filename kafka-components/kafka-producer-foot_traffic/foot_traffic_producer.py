@@ -5,9 +5,9 @@ import random
 import json
 import logging
 import signal
+import redis
 from typing import List, Optional
 from datetime import datetime, timedelta, date, time as dtime, timezone
-
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
 
@@ -17,6 +17,11 @@ from kafka.errors import NoBrokersAvailable
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC = os.getenv("KAFKA_TOPIC", "foot_traffic")
 TOPIC_REALISTIC = os.getenv("KAFKA_TOPIC_REALISTIC", "foot_traffic_realistic")
+# Redis (buffer-before-Kafka)
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_STREAM = os.getenv("REDIS_STREAM", "foot_traffic")  # stream key
 
 SLEEP = float(os.getenv("SLEEP", 0.5))
 TIME_SCALE = float(os.getenv("TIME_SCALE", 1.0))
@@ -185,6 +190,12 @@ def build_producer():
         time.sleep(RETRY_BACKOFF_SECONDS)
     raise RuntimeError("Impossible to connect to Kafka.")
 
+def build_redis() -> redis.Redis:
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    r.ping()
+    log.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
+    return r
+
 def build_event(entry_time: datetime):
     duration = generate_trip_duration()
     exit_time = entry_time + timedelta(minutes=duration)
@@ -247,6 +258,8 @@ class DayPlan:
 
 def main():
     producer = build_producer()
+    rconn = build_redis()
+
     now = now_utc()
     current_day = now.date()
     weekday_idx = now.weekday()
@@ -269,9 +282,16 @@ def main():
                 if ts is None:
                     break
                 event, cid = build_event(ts)
+
+                # 1) Redis buffer (append-only)
+                try:
+                    rconn.xadd(REDIS_STREAM, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
+                except Exception as e:
+                    log.warning(f"Redis XADD failed (foot_traffic): {e}")
+
+                # 2) Kafka
                 producer.send(TOPIC, key=cid, value=event)
                 log.info(f"Simulated: {event}")
-                
 
                 # Realistic event: entry
                 entry_event = {
@@ -280,6 +300,10 @@ def main():
                     "weekday": event["weekday"],
                     "time_slot": event["time_slot"]
                 }
+                try:
+                    rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(entry_event)}, maxlen=20000, approximate=True)
+                except Exception as e:
+                    log.warning(f"Redis XADD failed (entry): {e}")
                 producer.send(TOPIC_REALISTIC, key=cid, value=entry_event)
                 log.info(f"Realistic ENTRY: {entry_event}")
 
@@ -295,6 +319,10 @@ def main():
             # Verify future realistic exits
             for exit_time, exit_event, cid in future_exits[:]:
                 if exit_time <= now:
+                    try:
+                        rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(exit_event)}, maxlen=20000, approximate=True)
+                    except Exception as e:
+                        log.warning(f"Redis XADD failed (exit): {e}")
                     producer.send(TOPIC_REALISTIC, key=cid, value=exit_event)
                     log.info(f"Realistic EXIT: {exit_event}")
                     future_exits.remove((exit_time, exit_event, cid))

@@ -3,13 +3,23 @@ import json
 import uuid
 import time
 import threading
-from datetime import datetime, timedelta, timezone
-from typing import Dict, DefaultDict
-from collections import defaultdict
+import redis
+import logging
+import random
+from datetime import datetime, timedelta, timezone, date
+from typing import Dict, DefaultDict, Optional, Deque, List, Tuple
+from collections import defaultdict, deque
+
 import pandas as pd
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable
 from kafka.admin import KafkaAdminClient, NewTopic
+
+# ========================
+# Logging
+# ========================
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
+log = logging.getLogger("pos")
 
 # ========================
 # Config
@@ -20,32 +30,50 @@ FOOT_TOPIC   = os.getenv("FOOT_TOPIC", "foot_traffic")
 SHELF_TOPIC  = os.getenv("SHELF_TOPIC", "shelf_events")
 POS_TOPIC    = os.getenv("POS_TOPIC", "pos_transactions")
 
+# Redis (buffer-before-Kafka)
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_STREAM = os.getenv("REDIS_STREAM", "pos_transactions")  # stream key
+
 GROUP_ID_SHELF = os.getenv("GROUP_ID_SHELF", "pos-simulator-shelf")
 GROUP_ID_FOOT  = os.getenv("GROUP_ID_FOOT", "pos-simulator-foot")
 
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
+STORE_BATCHED_PARQUET = os.getenv("STORE_BATCHED_PARQUET", "/data/store_batched.parquet")
 
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
 
+# Probabilità di scegliere il lotto con expiry più vicina
+PROB_EARLIEST_EXPIRY = float(os.getenv("PROB_EARLIEST_EXPIRY", "0.60"))
+
+# Globals inizializzati in main()
+producer: Optional[KafkaProducer] = None
+rconn: Optional[redis.Redis] = None
+
+# ========================
+# Kafka topic ensure
+# ========================
 def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
     last = None
-    for i in range(1, attempts+1):
+    for i in range(1, attempts + 1):
+        admin = None
         try:
             admin = KafkaAdminClient(bootstrap_servers=bootstrap, client_id="pos-init")
             if topic not in admin.list_topics():
                 admin.create_topics([NewTopic(name=topic, num_partitions=partitions, replication_factor=rf)])
-                print(f"[pos] created topic {topic}")
+                log.info(f"[pos] created topic {topic}")
             else:
-                print(f"[pos] topic {topic} already exists")
+                log.info(f"[pos] topic {topic} already exists")
             return
         except NoBrokersAvailable as e:
             last = e
-            print(f"[pos] Kafka not ready to create topic (attempt {i}/{attempts}). Retry in {sleep_s}s…")
+            log.warning(f"[pos] Kafka not ready (attempt {i}/{attempts}). Retry in {sleep_s}s…")
             time.sleep(sleep_s)
         except Exception as e:
-            print(f"[pos] ⚠️ topic check/create failed: {e}")
+            log.warning(f"[pos] topic check/create failed: {e}")
             return
         finally:
             if admin is not None:
@@ -53,8 +81,7 @@ def ensure_topic(topic, bootstrap, partitions=3, rf=1, attempts=10, sleep_s=3):
                     admin.close()
                 except Exception:
                     pass
-            admin = None
-    print(f"[pos] ⚠️ impossible to create/verify topic {topic}: {last}")
+    log.warning(f"[pos] impossible to create/verify topic {topic}: {last}")
 
 ensure_topic(POS_TOPIC,   KAFKA_BROKER)
 ensure_topic(SHELF_TOPIC, KAFKA_BROKER)
@@ -65,6 +92,11 @@ ensure_topic(FOOT_TOPIC,  KAFKA_BROKER)
 # ========================
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+def parse_date(d) -> date:
+    if isinstance(d, date):
+        return d
+    return datetime.strptime(str(d), "%Y-%m-%d").date()
 
 def load_price_map_from_store(path: str) -> Dict[str, float]:
     if not os.path.exists(path):
@@ -79,37 +111,83 @@ def load_price_map_from_store(path: str) -> Dict[str, float]:
 
 def load_discounts_from_parquet(path: str) -> Dict[str, float]:
     if not os.path.exists(path):
-        print(f"[pos] ⚠️ Discounts file not found: {path}")
+        log.warning(f"[pos] Discounts file not found: {path}")
         return {}
     df = pd.read_parquet(path)
     today = datetime.today()
     week_str = f"{today.isocalendar().year}-W{today.isocalendar().week:02}"
     df = df[df["week"] == week_str]
-    print(f"[pos] ✅ Loaded {len(df)} discounts for week {week_str}")
+    log.info(f"[pos] Loaded {len(df)} discounts for week {week_str}")
     return dict(zip(df["shelf_id"], df["discount"]))
 
 # ========================
-# State
+# Stato carrelli + Lotti per shelf
 # ========================
 carts: DefaultDict[str, DefaultDict[str, int]] = defaultdict(lambda: defaultdict(int))
 carts_lock = threading.Lock()
+
+# batch_state[shelf_id] = deque([{"batch_code", "expiry_date", "qty_store"}...]) ordinata per expiry asc
+batch_state: Dict[str, Deque[Dict]] = {}
+batches_lock = threading.Lock()
+
 timers: Dict[str, threading.Timer] = {}
 timers_lock = threading.Lock()
 entries: Dict[str, datetime] = {}
 entries_lock = threading.Lock()
 
+def load_store_batches(path: str) -> Dict[str, Deque[Dict]]:
+    """
+    Bootstrap da store_batched.parquet
+    Richieste colonne:
+      shelf_id, batch_code, expiry_date, batch_quantity_store
+    """
+    if not os.path.exists(path):
+        log.warning(f"[pos] store_batched parquet not found: {path}")
+        return {}
+    df = pd.read_parquet(path)
+    required = {"shelf_id","batch_code","expiry_date","batch_quantity_store"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"{path} missing columns: {missing}")
+    df = df.copy()
+    df["expiry_date"] = df["expiry_date"].apply(parse_date)
+
+    state: Dict[str, Deque[Dict]] = {}
+    for sid, g in df.groupby("shelf_id"):
+        rows = []
+        for _, r in g.iterrows():
+            qty_store = int(r["batch_quantity_store"]) if pd.notna(r["batch_quantity_store"]) else 0
+            if qty_store <= 0:
+                continue
+            rows.append({
+                "batch_code": str(r["batch_code"]),
+                "expiry_date": r["expiry_date"],
+                "qty_store": qty_store
+            })
+        rows.sort(key=lambda x: x["expiry_date"])  # soonest expiry first
+        state[str(sid)] = deque(rows)
+    log.info(f"[pos] Loaded in-store batch FIFO for {len(state)} shelves.")
+    return state
+
 try:
     price_by_item = load_price_map_from_store(STORE_PARQUET)
-    print(f"[pos] ✅ Prices loaded from {STORE_PARQUET}, {len(price_by_item)} items found.")
+    log.info(f"[pos] Prices loaded from {STORE_PARQUET}, {len(price_by_item)} items found.")
 except Exception as e:
-    print(f"[pos] ❌ ERROR while loading prices {STORE_PARQUET}: {e}")
+    log.error(f"[pos] ERROR while loading prices {STORE_PARQUET}: {e}")
     price_by_item = {}
 
 discounts_by_item = {}
 discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
 
+# Bootstrap batches
+try:
+    batch_state = load_store_batches(STORE_BATCHED_PARQUET)
+except Exception as e:
+    log.error(f"[pos] ERROR loading store batches: {e}")
+    batch_state = {}
+
 # ========================
-# Kafka Producer
+# IO builders
 # ========================
 def build_producer():
     last_err = None
@@ -122,18 +200,22 @@ def build_producer():
                 acks="all",
                 retries=10,
             )
-            print("[pos] Connected to Kafka.")
+            log.info("[pos] Connected to Kafka.")
             return p
         except NoBrokersAvailable as e:
             last_err = e
-            print(f"[pos] Kafka not available (attempt {attempt}/6). Retry in 3s…")
+            log.warning(f"[pos] Kafka not available (attempt {attempt}/6). Retry in 3s…")
             time.sleep(3)
     raise RuntimeError(f"Impossible to connect to Kafka: {last_err}")
 
-producer = build_producer()
+def build_redis() -> redis.Redis:
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    r.ping()
+    log.info(f"[pos] Connected to Redis at {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
+    return r
 
 # ========================
-# Checkout
+# Pricing / discount
 # ========================
 def _price_for(item_id: str) -> float:
     return float(price_by_item.get(item_id, 5.0))
@@ -141,12 +223,136 @@ def _price_for(item_id: str) -> float:
 def _discount_for(item_id: str) -> float:
     return max(0.0, min(discounts_by_item.get(item_id, 0.0), 0.95))
 
+# ========================
+# Allocazione lotti (FIFO + 60% earliest-expiry)
+# ========================
+def _choose_batch_index(q: Deque[Dict]) -> int:
+    """Ritorna l'indice da cui prelevare: 0 con prob 60%, altrimenti un indice random tra gli altri."""
+    if not q:
+        return -1
+    if len(q) == 1:
+        return 0
+    r = random.random()
+    if r < PROB_EARLIEST_EXPIRY:
+        return 0
+    # scegli un altro lotto (bias semplice: uniforme tra 1..len-1)
+    return random.randint(1, len(q)-1)
+
+def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date]]:
+    """
+    Sottrae qty dai lotti in-store per shelf_id rispettando:
+      - 60% earliest-expiry
+      - se finisce un lotto, passa al successivo
+    Ritorna lista di (batch_code, allocated_qty, expiry_date).
+    """
+    allocated: List[Tuple[str, int, date]] = []
+    if qty <= 0:
+        return allocated
+
+    with batches_lock:
+        q = batch_state.get(shelf_id)
+        if not q or len(q) == 0:
+            # niente stato → nessuna allocazione batch (caller potrà inviare senza batch_code)
+            return allocated
+
+        remaining = qty
+        while remaining > 0 and q:
+            # ripulisci fronti esauriti
+            while q and q[0]["qty_store"] <= 0:
+                q.popleft()
+            if not q:
+                break
+
+            idx = _choose_batch_index(q)
+            if idx < 0:
+                break
+
+            # prendi riferimento al batch scelto
+            # Deque non supporta accesso diretto efficiente a idx >0 per pop; usiamo lista temporanea
+            tmp = list(q)
+            b = tmp[idx]
+            take = min(remaining, b["qty_store"])
+            if take <= 0:
+                # se quel lotto è vuoto, rimuovilo
+                if b["qty_store"] <= 0:
+                    del tmp[idx]
+                    q = deque(tmp)
+                    batch_state[shelf_id] = q
+                    continue
+                else:
+                    break
+
+            # aggiorna quantità
+            b["qty_store"] -= take
+            remaining -= take
+
+            allocated.append((b["batch_code"], take, b["expiry_date"]))
+
+            # rimetti nella deque mantenendo l'ordine per expiry (la expiry non cambia)
+            tmp[idx] = b
+            # rimuovi batch con qty=0
+            tmp = [x for x in tmp if x["qty_store"] > 0]
+            # garantisci ordinamento per expiry
+            tmp.sort(key=lambda x: x["expiry_date"])
+            q = deque(tmp)
+            batch_state[shelf_id] = q
+
+        return allocated
+
+# ========================
+# Checkout
+# ========================
 def emit_pos_transaction(customer_id: str, timestamp: datetime):
+    global producer, rconn
+
+    # snapshot carrello
     with carts_lock:
         items_map = dict(carts.get(customer_id, {}))
 
     if not items_map and not FORCE_CHECKOUT_IF_EMPTY:
-        print(f"[pos] Checkout {customer_id}: cart empty → skip.")
+        log.info(f"[pos] Checkout {customer_id}: cart empty → skip.")
+        return
+
+    # Costruisci scontrino con possibili split per batch
+    tx_items = []
+    for item_id, qty in items_map.items():
+        if qty <= 0:
+            continue
+
+        # prova a allocare dai lotti
+        allocations = _allocate_from_batches(item_id, int(qty))
+        allocated_total = sum(a[1] for a in allocations)
+
+        # se qualche pezzo rimane non allocato (manca stato), vendilo senza batch_code
+        unallocated = max(0, int(qty) - allocated_total)
+        unit_price = round(_price_for(item_id), 2)
+        discount   = round(_discount_for(item_id), 2)
+
+        for batch_code, qalloc, exp in allocations:
+            line_total = round(qalloc * unit_price * (1 - discount), 2)
+            tx_items.append({
+                "item_id": item_id,
+                "batch_code": batch_code,
+                "quantity": int(qalloc),
+                "unit_price": unit_price,
+                "discount": discount,
+                "total_price": line_total,
+                "expiry_date": exp.isoformat()
+            })
+
+        if unallocated > 0:
+            line_total = round(unallocated * unit_price * (1 - discount), 2)
+            tx_items.append({
+                "item_id": item_id,
+                "quantity": int(unallocated),
+                "unit_price": unit_price,
+                "discount": discount,
+                "total_price": line_total
+                # niente batch_code/expiry se non allocato
+            })
+
+    if not tx_items and not FORCE_CHECKOUT_IF_EMPTY:
+        log.info(f"[pos] Checkout {customer_id}: no valid item → skip.")
         return
 
     transaction = {
@@ -154,30 +360,21 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
         "transaction_id": str(uuid.uuid4()),
         "customer_id": customer_id,
         "timestamp": timestamp.isoformat(),
-        "items": []
+        "items": tx_items
     }
 
-    for item_id, qty in items_map.items():
-        if qty <= 0:
-            continue
-        unit_price = round(_price_for(item_id), 2)
-        discount   = round(_discount_for(item_id), 2)
-        total_price = round(qty * unit_price * (1 - discount), 2)
-        transaction["items"].append({
-            "item_id": item_id,
-            "quantity": int(qty),
-            "unit_price": unit_price,
-            "discount": discount,
-            "total_price": total_price
-        })
+    # 1) Redis buffer first
+    try:
+        if rconn is not None:
+            rconn.xadd(REDIS_STREAM, {"data": json.dumps(transaction)}, maxlen=20000, approximate=True)
+    except Exception as e:
+        log.warning(f"[pos] Redis XADD failed: {e}")
 
-    if not transaction["items"] and not FORCE_CHECKOUT_IF_EMPTY:
-        print(f"[pos] Checkout {customer_id}: no valid item → skip.")
-        return
-
+    # 2) Kafka
     producer.send(POS_TOPIC, value=transaction)
-    print(f"[pos] POS transaction emitted: {transaction}")
+    log.info(f"[pos] POS transaction emitted: {transaction}")
 
+    # cleanup
     with carts_lock:
         carts.pop(customer_id, None)
     with timers_lock:
@@ -209,7 +406,7 @@ def schedule_checkout(customer_id: str, exit_time: datetime):
         t.daemon = True
         t.start()
         timers[customer_id] = t
-        print(f"[pos] Checkout for {customer_id} in {round(delay, 2)}s.")
+        log.info(f"[pos] Checkout for {customer_id} in {round(delay, 2)}s.")
 
 # ========================
 # Consumers
@@ -223,7 +420,7 @@ def shelf_consumer_loop():
         auto_offset_reset='latest',
         enable_auto_commit=True
     )
-    print(f"[pos] Listening shelf events on '{SHELF_TOPIC}'")
+    log.info(f"[pos] Listening shelf events on '{SHELF_TOPIC}'")
 
     for msg in consumer:
         evt = msg.value
@@ -234,12 +431,12 @@ def shelf_consumer_loop():
         if etype not in ("pickup", "putback") or not customer_id or not item_id:
             continue
 
-        qty = evt.get("quantity", 1)
+        qty = int(evt.get("quantity", 1))
         with carts_lock:
             if etype == "pickup":
-                carts[customer_id][item_id] += int(qty)
+                carts[customer_id][item_id] += qty
             elif etype == "putback":
-                carts[customer_id][item_id] = max(0, carts[customer_id][item_id] - int(qty))
+                carts[customer_id][item_id] = max(0, carts[customer_id][item_id] - qty)
 
 def foot_consumer_loop():
     consumer = KafkaConsumer(
@@ -250,7 +447,7 @@ def foot_consumer_loop():
         auto_offset_reset='earliest',
         enable_auto_commit=True
     )
-    print(f"[pos] Listening foot traffic on '{FOOT_TOPIC}'")
+    log.info(f"[pos] Listening foot traffic on '{FOOT_TOPIC}'")
 
     for msg in consumer:
         evt = msg.value
@@ -276,18 +473,22 @@ def janitor_loop():
                 if (now - ent).total_seconds() > MAX_SESSION_AGE_SEC:
                     stale.append(cid)
         for cid in stale:
-            print(f"[pos] Janitor: forcing checkout for stale customer {cid}")
+            log.info(f"[pos] Janitor: forcing checkout for stale customer {cid}")
             emit_pos_transaction(cid, timestamp=now)
 
 # ========================
 # Main
 # ========================
 def main():
+    global producer, rconn
+    producer = build_producer()
+    rconn = build_redis()
+
     threading.Thread(target=shelf_consumer_loop, daemon=True).start()
     threading.Thread(target=foot_consumer_loop, daemon=True).start()
     threading.Thread(target=janitor_loop, daemon=True).start()
 
-    print("[pos] POS Producer started (building carts, scheduling checkouts).")
+    log.info("[pos] POS Producer started (building carts, scheduling checkouts).")
     while True:
         time.sleep(3600)
 

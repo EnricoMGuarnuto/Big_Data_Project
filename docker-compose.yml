@@ -40,8 +40,13 @@ services:
     container_name: kafka-producer-foot-traffic
     depends_on:
       - kafka
+      - redis
     environment:
       KAFKA_BROKER: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_STREAM: foot_traffic
     restart: unless-stopped
   
   kafka-producer-pos:
@@ -51,8 +56,13 @@ services:
     container_name: kafka-producer-pos
     depends_on:
       - kafka
+      - redis
     environment:
       KAFKA_BROKER: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_STREAM: pos_transactions
     volumes:
       - ./data:/data:ro
     restart: unless-stopped
@@ -64,8 +74,31 @@ services:
     container_name: kafka-producer-shelf
     depends_on:
       - kafka
+      - redis
     environment:
       KAFKA_BROKER: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_STREAM: shelf_events
+    volumes:
+      - ./data:/data:ro
+    restart: unless-stopped
+
+  kafka-producer-wh_shelf:
+    build:
+      context: ./kafka-components/kafka-producer-wh_shelf
+      dockerfile: Dockerfile
+    container_name: kafka-producer-wh_shelf
+    depends_on:
+      - kafka
+      - redis
+    environment:
+      KAFKA_BROKER: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_STREAM: wh_events
     volumes:
       - ./data:/data:ro
     restart: unless-stopped
