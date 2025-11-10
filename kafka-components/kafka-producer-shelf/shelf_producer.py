@@ -155,8 +155,6 @@ def main():
 
     discounts_by_item = {}
     discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
-    discounts_by_item.update(load_discounts_from_json("/data/current_near_expiry.json"))
-
 
     df["discount"] = df["shelf_id"].map(lambda sid: max(0.0, min(discounts_by_item.get(sid, 0.0), 0.95)))
     df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
