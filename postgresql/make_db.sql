@@ -9,14 +9,14 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- -------------------------
 -- SCHEMAS
 -- -------------------------
-CREATE SCHEMA IF NOT EXISTS config;
-CREATE SCHEMA IF NOT EXISTS state;
-CREATE SCHEMA IF NOT EXISTS ops;
-CREATE SCHEMA IF NOT EXISTS ref;
+CREATE SCHEMA IF NOT EXISTS config;   -- alert rules, shelf profiles, batch catalog
+CREATE SCHEMA IF NOT EXISTS state; -- wh_state, shelf_state, shelf_batch_state, wh_batch_state
+CREATE SCHEMA IF NOT EXISTS ops;  -- alerts, shelf_restock_plan, wh_events, pos_transactions, wh_supplier_plan
+CREATE SCHEMA IF NOT EXISTS ref;  -- snapshots from parquet (store_inventory, warehouse_inventory, batches)
 CREATE SCHEMA IF NOT EXISTS analytics;
 
 -- -------------------------
--- ENUMS
+-- ENUMS 
 -- -------------------------
 DO $$
 BEGIN
@@ -75,6 +75,17 @@ CREATE TABLE IF NOT EXISTS config.shelf_profiles (
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- batch catalog (optional reference data for batches)
+CREATE TABLE IF NOT EXISTS config.batch_catalog (
+  batch_code        TEXT PRIMARY KEY,
+  shelf_id          TEXT NULL,
+  item_category     TEXT NULL,
+  item_subcategory  TEXT NULL,
+  -- qty_per_batch     INTEGER NULL,               -------------------------------------------------------
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ======================================================
 -- STATE (compacted mirrors you can also materialize from Spark)
 -- These tables mirror your compacted Kafka topics for convenient querying.
@@ -86,15 +97,14 @@ CREATE TABLE IF NOT EXISTS state.shelf_state (
   shelf_id        TEXT PRIMARY KEY,
   current_stock   INTEGER NOT NULL,
   shelf_weight    NUMERIC(12,3) NULL,
-  maximum_stock   INTEGER NULL,
   last_update_ts  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Current warehouse state (from wh_events aggregation)
 CREATE TABLE IF NOT EXISTS state.wh_state (
-  shelf_id        TEXT PRIMARY KEY,
-  warehouse_stock INTEGER NOT NULL,
-  last_update_ts  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  shelf_id         TEXT PRIMARY KEY,
+  wh_current_stock INTEGER NOT NULL,
+  last_update_ts   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- In-store batches (per batch; mirrors `shelf_batch_state`)
@@ -138,20 +148,18 @@ CREATE TABLE IF NOT EXISTS state.product_total_state (
 -- These are append-only (or status-updated) tables fed by your services.
 -- ======================================================
 
--- Warehouse restock plan (Spark output, also mirrored on Kafka `wh_restock_plan`)
-CREATE TABLE IF NOT EXISTS ops.wh_restock_plan (
+-- Warehouse restock plan (Spark output, also mirrored on Kafka `shelf_restock_plan`)
+CREATE TABLE IF NOT EXISTS ops.shelf_restock_plan (
   plan_id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   shelf_id           TEXT NOT NULL,
   suggested_qty      INTEGER NOT NULL CHECK (suggested_qty >= 0),
-  reason             TEXT NULL,              -- e.g., "low_stock", "campaign", etc.
-  source_job         TEXT NULL,              -- e.g., "wh_restock_state", "alert_engine"
   status             plan_status NOT NULL DEFAULT 'pending',
   created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS ix_wh_restock_plan_status
-  ON ops.wh_restock_plan (status, created_at);
+CREATE INDEX IF NOT EXISTS ix_shelf_restock_plan_status
+  ON ops.shelf_restock_plan (status, created_at);
 
 -- Warehouse events (executor output, also on Kafka `wh_events`)
 CREATE TABLE IF NOT EXISTS ops.wh_events (
@@ -160,7 +168,6 @@ CREATE TABLE IF NOT EXISTS ops.wh_events (
   shelf_id                       TEXT NOT NULL,
   batch_code                     TEXT NULL,
   qty                            INTEGER NOT NULL CHECK (qty >= 0),
-  unit                           TEXT NOT NULL DEFAULT 'ea',
   timestamp                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   plan_id                        UUID NULL,                -- link back to plan or alert
   reason                         TEXT NULL,                -- 'plan_restock', 'alert_restock', 'plan_inbound', ...
@@ -181,11 +188,23 @@ CREATE INDEX IF NOT EXISTS ix_wh_events_plan
 CREATE INDEX IF NOT EXISTS ix_wh_events_shelf
   ON ops.wh_events (shelf_id, timestamp);
 
+-- Supplier restock plan 
+CREATE TABLE IF NOT EXISTS ops.wh_supplier_plan (
+  supplier_plan_id     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shelf_id             TEXT NOT NULL,
+  suggested_qty        INTEGER NOT NULL CHECK (suggested_qty >= 0),
+  -- qty_per_batch     INTEGER NULL,               -------------------------------------------------------
+  status               plan_status NOT NULL DEFAULT 'pending',
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Alerts (Alert Engine output, also on Kafka `alerts`)
 CREATE TABLE IF NOT EXISTS ops.alerts (
   alert_id        UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  event_type      TEXT NOT NULL,            -- e.g., 'refill_request','near_expiry','overstock'
+  event_type      TEXT NOT NULL,            -- e.g., 'refill_request','near_expiry', 'supplier_request'
   shelf_id        TEXT NULL,
+  location        TEXT NULL,            -- 'store' | 'warehouse' 
   severity        severity_level NOT NULL DEFAULT 'medium',
   -- payload (optional, for refill_request)
   current_stock   INTEGER NULL,
@@ -211,7 +230,7 @@ CREATE TABLE IF NOT EXISTS ops.pos_transactions (
   timestamp        TIMESTAMPTZ NOT NULL,
   -- denormalized totals (optional)
   total_items      INTEGER NULL,
-  total_amount     NUMERIC(12,2) NULL
+  total_amount     NUMERIC(12,2) NULL. --price
 );
 
 -- POS line items (supports batch_code for FIFO auditing)
@@ -263,6 +282,7 @@ CREATE TABLE IF NOT EXISTS ref.store_batches_snapshot (
   batch_quantity_total      INTEGER NULL,
   batch_quantity_store      INTEGER NULL,
   batch_quantity_warehouse  INTEGER NULL,
+  -- qty_per_batch          INTEGER NULL,               -------------------------------------------------------
   location                  TEXT NULL,   -- 'in-store' or 'warehouse'
   PRIMARY KEY (snapshot_ts, shelf_id, batch_code)
 );
@@ -294,6 +314,7 @@ CREATE TABLE IF NOT EXISTS ref.warehouse_batches_snapshot (
   batch_quantity_total      INTEGER NULL,
   batch_quantity_store      INTEGER NULL,
   batch_quantity_warehouse  INTEGER NULL,
+  -- qty_per_batch          INTEGER NULL,               -------------------------------------------------------
   location                  TEXT NULL,   -- 'warehouse'
   PRIMARY KEY (snapshot_ts, shelf_id, batch_code)
 );
@@ -341,9 +362,9 @@ BEGIN
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_wh_restock_plan_set_updated_at') THEN
-    CREATE TRIGGER tr_wh_restock_plan_set_updated_at
-    BEFORE UPDATE ON ops.wh_restock_plan
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_shelf_restock_plan_set_updated_at') THEN
+    CREATE TRIGGER tr_shelf_restock_plan_set_updated_at
+    BEFORE UPDATE ON ops.shelf_restock_plan
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 
