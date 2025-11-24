@@ -41,7 +41,7 @@ GROUP_ID_FOOT  = os.getenv("GROUP_ID_FOOT", "pos-simulator-foot")
 
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
-STORE_BATCHED_PARQUET = os.getenv("STORE_BATCHED_PARQUET", "/data/store_batched.parquet")
+STORE_BATCHES_PARQUET = os.getenv("STORE_BATCHES_PARQUET", "/data/store_batches.parquet")
 
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
@@ -137,12 +137,12 @@ entries_lock = threading.Lock()
 
 def load_store_batches(path: str) -> Dict[str, Deque[Dict]]:
     """
-    Bootstrap da store_batched.parquet
+    Bootstrap da store_batches.parquet
     Richieste colonne:
       shelf_id, batch_code, expiry_date, batch_quantity_store
     """
     if not os.path.exists(path):
-        log.warning(f"[pos] store_batched parquet not found: {path}")
+        log.warning(f"[pos] store_batches parquet not found: {path}")
         return {}
     df = pd.read_parquet(path)
     required = {"shelf_id","batch_code","expiry_date","batch_quantity_store"}
@@ -181,7 +181,7 @@ discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
 
 # Bootstrap batches
 try:
-    batch_state = load_store_batches(STORE_BATCHED_PARQUET)
+    batch_state = load_store_batches(STORE_BATCHES_PARQUET)
 except Exception as e:
     log.error(f"[pos] ERROR loading store batches: {e}")
     batch_state = {}
