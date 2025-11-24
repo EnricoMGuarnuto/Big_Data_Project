@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS config.batch_catalog (
   shelf_id          TEXT NULL,
   item_category     TEXT NULL,
   item_subcategory  TEXT NULL,
-  -- qty_per_batch     INTEGER NULL,               -------------------------------------------------------
+  batch_quantity_standard   INTEGER NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS ops.wh_supplier_plan (
   supplier_plan_id     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   shelf_id             TEXT NOT NULL,
   suggested_qty        INTEGER NOT NULL CHECK (suggested_qty >= 0),
-  -- qty_per_batch     INTEGER NULL,               -------------------------------------------------------
+  batch_quantity_standard   INTEGER NULL,
   status               plan_status NOT NULL DEFAULT 'pending',
   created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -282,7 +282,7 @@ CREATE TABLE IF NOT EXISTS ref.store_batches_snapshot (
   batch_quantity_total      INTEGER NULL,
   batch_quantity_store      INTEGER NULL,
   batch_quantity_warehouse  INTEGER NULL,
-  -- qty_per_batch          INTEGER NULL,               -------------------------------------------------------
+  batch_quantity_standard   INTEGER NULL,             
   location                  TEXT NULL,   -- 'in-store' or 'warehouse'
   PRIMARY KEY (snapshot_ts, shelf_id, batch_code)
 );
@@ -314,7 +314,7 @@ CREATE TABLE IF NOT EXISTS ref.warehouse_batches_snapshot (
   batch_quantity_total      INTEGER NULL,
   batch_quantity_store      INTEGER NULL,
   batch_quantity_warehouse  INTEGER NULL,
-  -- qty_per_batch          INTEGER NULL,               -------------------------------------------------------
+  batch_quantity_standard   INTEGER NULL,
   location                  TEXT NULL,   -- 'warehouse'
   PRIMARY KEY (snapshot_ts, shelf_id, batch_code)
 );

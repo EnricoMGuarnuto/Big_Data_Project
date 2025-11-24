@@ -443,46 +443,138 @@ product_hierarchy = {
     }
 }
 
-# Function to generate the product catalog DataFrame
+# -------------------------------------------------------------------
+# Helper: compute a realistic standard batch size per product
+# -------------------------------------------------------------------
 
+def compute_standard_batch_size(category, subcategory, item_weight):
+    """
+    Ritorna una dimensione standard del lotto (numero di pezzi)
+    coerente con il tipo di prodotto e il suo peso.
+    """
+    # Beverage-like: multiple of 6
+    beverage_like_categories = {
+        'BEVERAGES', 'BEERS', 'WINES', 'LONG-LIFE DAIRY',
+        'HOT BEVERAGES', 'VINEGAR AND OIL'
+    }
+
+    # Perishable categories (they usually have smaller batch sizes)
+    perishable_categories = {
+        'FRUITS AND VEGETABLES',
+        'REFRIGERATED',
+        'FROZEN',
+        'MEAT',
+        'FISH'
+    }
+
+    # -------------------------------
+    # 1) Beverage-like products
+    # -------------------------------
+    if category in beverage_like_categories:
+        # tipicamente pacchi da 6, 12 o 24
+        return int(np.random.choice([18, 24, 30, 36, 42, 48, 60]))
+
+    # -------------------------------
+    # 2) Perishable products
+    # -------------------------------
+    if category in perishable_categories: 
+
+        # Frutta e verdura: lotti medio-piccoli, non 200 pezzi
+        if category == 'FRUITS AND VEGETABLES':
+            if item_weight <= 80:          # ciliegie, frutti piccoli
+                return int(np.random.choice([20, 25, 30, 35, 40]))
+            elif item_weight <= 300:       # mele, arance, ecc.
+                return int(np.random.choice([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]))
+            elif item_weight <= 1000:      # verdura medio-grande
+                return int(np.random.choice([8, 9, 10, 11, 12]))
+            else:                          # angurie, zucche, meloni...
+                return int(np.random.choice([8, 9, 10, 11, 12]))
+        # 2b) Altri deperibili (frigo, surgelato, carne, pesce)
+        #    → lotti piccoli, per non riempire troppo il magazzino
+        if item_weight <= 300:
+            return int(np.random.choice([15, 20, 25, 30, 35, 40]))
+        elif item_weight <= 800:
+            return int(np.random.choice([8, 10, 11, 12, 14, 15, 16, 18, 20]))
+        elif item_weight <= 1500:
+            return int(np.random.choice([8, 10, 11, 12, 14, 15]))
+        else:
+            return int(np.random.choice([5, 6, 8, 10, 12]))
+
+    # Default per the rest of products 
+    if item_weight <= 200:
+        return int(np.random.choice([20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]))
+    if item_weight <= 500:
+        return int(np.random.choice([20, 25, 30, 35, 40, 45, 50, 55, 60]))
+    elif item_weight <= 1000:
+        return int(np.random.choice([15, 20, 25, 30, 35, 40]))
+    elif item_weight <= 2000:
+        return int(np.random.choice([10, 15, 20, 25, 30]))
+    else:
+        return int(np.random.choice([5, 10, 15, 20]))
+
+# -------------------------------------------------------------------
+# Product catalog generation
+# -------------------------------------------------------------------
 def generate_product_catalog(product_hierarchy):
     catalog_data = []
-    shelf_id_counters = {cat: {sub: 0 for sub in cat_props['subcategories'].keys()} 
-                         for cat, cat_props in product_hierarchy.items()}
+    # Counter to generate unique shelf_ids per (category, subcategory)
+    shelf_id_counters = {
+        cat: {sub: 0 for sub in cat_props['subcategories'].keys()}
+        for cat, cat_props in product_hierarchy.items()
+    }
 
     for category, cat_props in product_hierarchy.items():
         aisle = cat_props['aisle']
         for subcategory, sub_props in cat_props['subcategories'].items():
             for i in range(sub_props['count']):
                 shelf_id_counters[category][subcategory] += 1
-                
+
                 shelf_id_prefix = category.replace(' ', '')[:3].upper()
                 subcategory_prefix = subcategory.replace(' ', '')[:3].upper()
                 shelf_id = f"{shelf_id_prefix}{subcategory_prefix}{shelf_id_counters[category][subcategory]}"
 
+                # Choose item weight either from discrete options or from a range
                 if 'weight_options' in sub_props:
                     item_weight = np.random.choice(sub_props['weight_options'])
                 else:
                     item_weight = np.random.randint(sub_props['weight_range'][0], sub_props['weight_range'][1])
-                
+
+                # Random item price within the configured range
                 item_price = round(np.random.uniform(sub_props['price_range'][0], sub_props['price_range'][1]), 2)
-                
+
+                # Compute standard batch size for this product
+                standard_batch_size = compute_standard_batch_size(category, subcategory, item_weight)
+
                 catalog_data.append({
                     'shelf_id': shelf_id,
                     'aisle': aisle,
                     'item_category': category,
                     'item_subcategory': subcategory,
                     'item_weight': item_weight,
-                    'item_price': item_price
+                    'item_price': item_price,
+                    'standard_batch_size': standard_batch_size
                 })
     return pd.DataFrame(catalog_data)
 
 
-# Function to generate inventory DataFrame
-
 def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, store_max_stock_data=None):
+    """
+    Generate an inventory dataframe for either:
+      - inventory_type = 'store'
+      - inventory_type = 'warehouse'
+
+    Rules:
+      * Store:
+          - maximum_stock taken from the store_max_stock_range of the product
+            (not forced to be a multiple of the batch size)
+          - current_stock = percentage of maximum_stock (more granular, can be partially consumed)
+      * Warehouse:
+          - maximum_stock is a multiple of standard_batch_size
+          - capacity must fit at least 2 full batches
+          - current_stock = SMALL number of FULL batches (e.g. 1–3) → fewer batches
+    """
     data = []
-    
+
     for _, product_row in product_catalog.iterrows():
         shelf_id = product_row['shelf_id']
         aisle = product_row['aisle']
@@ -490,33 +582,110 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
         subcategory = product_row['item_subcategory']
         item_weight = product_row['item_weight']
         item_price = product_row['item_price']
-        
+        standard_batch_size = product_row['standard_batch_size']
+
         cat_props = product_hierarchy[category]
         sub_props = cat_props['subcategories'][subcategory]
         is_perishable = 'current_stock_probabilities' in sub_props
 
-        # Logic for maximum stock of warehouse and store
+        # Minimum number of full batches we want the warehouse to be able to hold
+        min_batches_capacity = 2
+
+        # -------------------------------------------------
+        # Maximum stock
+        #   - STORE: random within configured store_max_stock_range
+        #   - WAREHOUSE: multiple of standard_batch_size, at least 2 full batches
+        # -------------------------------------------------
         if inventory_type == 'warehouse':
+            # Case 1: warehouse_max_stock should be similar to store's, but aligned to batch size
             if 'warehouse_max_stock_equal_store' in sub_props and sub_props['warehouse_max_stock_equal_store']:
-                maximum_stock = store_max_stock_data.loc[store_max_stock_data['shelf_id'] == shelf_id, 'maximum_stock'].iloc[0]
+                store_max = store_max_stock_data.loc[
+                    store_max_stock_data['shelf_id'] == shelf_id, 'maximum_stock'
+                ].iloc[0]
+                base_max = max(store_max, min_batches_capacity * standard_batch_size)
+                # Round up to the next multiple of standard_batch_size
+                maximum_stock = int(
+                    ((base_max + standard_batch_size - 1) // standard_batch_size) * standard_batch_size
+                )
+
+            # Case 2: specific warehouse_max_stock_range
             elif 'warehouse_max_stock_range' in sub_props:
-                maximum_stock = np.random.randint(sub_props['warehouse_max_stock_range'][0], sub_props['warehouse_max_stock_range'][1])
+                base_max = np.random.randint(
+                    sub_props['warehouse_max_stock_range'][0],
+                    sub_props['warehouse_max_stock_range'][1]
+                )
+                base_max = max(base_max, min_batches_capacity * standard_batch_size)
+                # Round down to a multiple of standard_batch_size, ensure at least 2 batches
+                maximum_stock = (base_max // standard_batch_size) * standard_batch_size
+                if maximum_stock < min_batches_capacity * standard_batch_size:
+                    maximum_stock = min_batches_capacity * standard_batch_size
+
+            # Case 3: fallback – warehouse capacity is a fraction of store capacity
             else:
-                store_max = store_max_stock_data.loc[store_max_stock_data['shelf_id'] == shelf_id, 'maximum_stock'].iloc[0]
-                maximum_stock = int(np.random.uniform(0.1, 0.4) * store_max)
-                maximum_stock = max(1, maximum_stock)
-        else:
-            maximum_stock = np.random.randint(sub_props['store_max_stock_range'][0], sub_props['store_max_stock_range'][1])
-        
-        # Logic for current stock based on maximum stock and perishability
-        if inventory_type == 'warehouse' and is_perishable:
-            current_stock = 0
-        elif is_perishable:
-            current_stock = np.random.choice(sub_props['current_stock_probabilities'])
-            current_stock = min(current_stock, maximum_stock)
-        else:
-            current_stock_ratio = np.random.uniform(sub_props['current_stock_percent'][0], sub_props['current_stock_percent'][1])
-            current_stock = int(maximum_stock * current_stock_ratio)
+                store_max = store_max_stock_data.loc[
+                    store_max_stock_data['shelf_id'] == shelf_id, 'maximum_stock'
+                ].iloc[0]
+                base_max = int(np.random.uniform(0.1, 0.4) * store_max)
+                base_max = max(base_max, min_batches_capacity * standard_batch_size)
+                maximum_stock = (base_max // standard_batch_size) * standard_batch_size
+                if maximum_stock < min_batches_capacity * standard_batch_size:
+                    maximum_stock = min_batches_capacity * standard_batch_size
+
+        else:  # STORE
+            base_max = np.random.randint(
+                sub_props['store_max_stock_range'][0],
+                sub_props['store_max_stock_range'][1]
+            )
+            # Ensure at least enough capacity for 1 full batch
+            if base_max < standard_batch_size:
+                base_max = standard_batch_size
+            maximum_stock = base_max
+
+        # -------------------------------------------------
+        # Current stock
+        #   - Warehouse:
+        #       * Perishables → 0 (not stored in central warehouse)
+        #       * Non-perishables → small number of FULL batches (1–3)
+        #   - Store:
+        #       * Perishables → use sub_props['current_stock_probabilities']
+        #       * Non-perishables → percentage of maximum_stock
+        # -------------------------------------------------
+        if inventory_type == 'warehouse':
+            if is_perishable:
+                # Perishable items are not stored in the warehouse
+                current_stock = 0
+            else:
+                # Compute how many full batches the warehouse could hold
+                max_full_batches_possible = maximum_stock // standard_batch_size
+
+                if max_full_batches_possible == 0:
+                    current_stock = 0
+                else:
+                    # Limit the number of batches actually present in the warehouse
+                    max_full_batches_in_warehouse = 3  # <-- tune this to 2, 3, 5, ... as you prefer
+                    n_full_batches = np.random.randint(
+                        1, min(max_full_batches_in_warehouse, max_full_batches_possible) + 1
+                    )
+                    # Warehouse keeps only FULL batches (no partially consumed batches here)
+                    current_stock = n_full_batches * standard_batch_size
+
+        else:  # STORE
+            if is_perishable:
+                # Use the product-specific probability model (e.g. fruits & vegetables)
+                raw_current = np.random.choice(sub_props['current_stock_probabilities'])
+                current_stock = min(raw_current, maximum_stock)
+            else:
+                # Non-perishables in store: percentage of maximum_stock
+                current_stock_ratio = np.random.uniform(
+                    sub_props['current_stock_percent'][0],
+                    sub_props['current_stock_percent'][1]
+                )
+                current_stock = int(maximum_stock * current_stock_ratio)
+                if current_stock > maximum_stock:
+                    current_stock = maximum_stock
+                if current_stock == 0:
+                    # Ensure at least some stock if capacity exists
+                    current_stock = min(standard_batch_size, maximum_stock)
 
         shelf_weight = item_weight * maximum_stock
         item_visibility = round(np.random.uniform(0.05, 0.2), 6) if inventory_type == 'store' else None
@@ -529,6 +698,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
             'shelf_weight': shelf_weight,
             'item_category': category,
             'item_subcategory': subcategory,
+            'standard_batch_size': standard_batch_size,  # kept in the DF for batch generation
             'maximum_stock': maximum_stock,
             'current_stock': current_stock,
             'item_price': item_price,
@@ -536,129 +706,141 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
         }
         if inventory_type == 'store':
             row['item_visibility'] = item_visibility
-        
+
         data.append(row)
 
     df = pd.DataFrame(data)
-    
+
     if inventory_type == 'store':
-        cols = ['shelf_id', 'aisle', 'item_weight', 'shelf_weight', 'item_category', 'item_subcategory', 
-                'item_visibility', 'maximum_stock', 'current_stock', 'item_price', 'time_stamp']
+        cols = [
+            'shelf_id', 'aisle', 'item_weight', 'shelf_weight',
+            'item_category', 'item_subcategory', 'item_visibility',
+            # NOTE: standard_batch_size is kept in the dataframe
+            # but will be dropped before saving the store parquet file
+            'standard_batch_size',
+            'maximum_stock', 'current_stock',
+            'item_price', 'time_stamp'
+        ]
     else:
-        cols = ['shelf_id', 'aisle', 'item_weight', 'shelf_weight', 'item_category', 'item_subcategory', 
-                'maximum_stock', 'current_stock', 'item_price', 'time_stamp']
-    
+        cols = [
+            'shelf_id', 'aisle', 'item_weight', 'shelf_weight',
+            'item_category', 'item_subcategory',
+            'standard_batch_size',
+            'maximum_stock', 'current_stock',
+            'item_price', 'time_stamp'
+        ]
+
     return df[cols]
 
-# Function to generate batches data DataFrame
 
+
+# -------------------------------------------------------------------
+# Batches generation (store / warehouse)
+# -------------------------------------------------------------------
 def generate_batches_data(inventory_df, product_hierarchy, location_type):
+    """
+    Generate batches for store or warehouse.
+
+    For each (shelf_id, location_type):
+      - standard_batch_size is taken from the inventory dataframe
+      - each batch_quantity_total <= standard_batch_size
+      - the sum of batch_quantity_total equals current_stock
+    """
     batches_data = []
-    
+
     for _, row in inventory_df.iterrows():
         shelf_id = row['shelf_id']
         current_stock = row['current_stock']
         category = row['item_category']
         subcategory = row['item_subcategory']
-        
-        # Skip if current stock is zero
+        standard_batch_size = row['standard_batch_size']
+
+        # Skip if there is no stock
         if current_stock == 0:
             continue
 
-        # Decide number of batches 
-        if current_stock > 1:
-            num_batches = np.random.choice([1, 2], p=[0.7, 0.3])
-        else:
-             num_batches = 1
+        # Number of full batches + one possibly partially consumed batch
+        full_batches = current_stock // standard_batch_size
+        remainder = current_stock % standard_batch_size
 
-        # Generate batch data
-        if num_batches == 1:
-            batch_qty_store = current_stock if location_type == 'in-store' else 0
-            batch_qty_warehouse = current_stock if location_type == 'warehouse' else 0
-            
-            is_perishable = 'current_stock_probabilities' in product_hierarchy[category]['subcategories'][subcategory]
+        num_batches = full_batches + (1 if remainder > 0 else 0)
 
-            if is_perishable:
-                expiry_delta = timedelta(days=np.random.randint(2, 15))
+        # Determine if the item is perishable (to set different expiry dates)
+        is_perishable = 'current_stock_probabilities' in product_hierarchy[category]['subcategories'][subcategory]
+
+        for batch_index in range(num_batches):
+            if batch_index < full_batches:
+                batch_qty_total = standard_batch_size
             else:
-                expiry_delta = timedelta(days=np.random.randint(365, 730))
-            
+                batch_qty_total = remainder
+
+            if batch_qty_total <= 0:
+                continue
+            if batch_qty_total > standard_batch_size:
+                # Safety check: never allow a batch bigger than the standard size
+                batch_qty_total = standard_batch_size
+
+            if location_type == 'in-store':
+                batch_qty_store = batch_qty_total
+                batch_qty_warehouse = 0
+            else:  # warehouse
+                batch_qty_store = 0
+                batch_qty_warehouse = batch_qty_total
+
+            # Expiry dates:
+            #   - for perishables: closer expiry, older batches expire earlier
+            #   - for non-perishables: long shelf life, older batches expire earlier
+            if is_perishable:
+                min_days = 2 + batch_index
+                max_days = 15
+                expiry_delta = timedelta(days=np.random.randint(min_days, max_days))
+            else:
+                min_days = 365 + 100 * batch_index
+                max_days = min_days + 365
+                expiry_delta = timedelta(days=np.random.randint(min_days, max_days))
+
+            # Received date: batches with lower index are older (received earlier)
+            days_ago = np.random.randint(0, 3) + max(0, (num_batches - 1 - batch_index))
+            received_date = datetime.now() - timedelta(days=days_ago)
+
             batches_data.append({
                 'shelf_id': shelf_id,
                 'batch_code': f'B-{np.random.randint(1000, 9999)}',
                 'item_category': category,
                 'item_subcategory': subcategory,
-                'received_date': (datetime.now() - timedelta(days=np.random.randint(0, 3))).strftime('%Y-%m-%d'),
+                'standard_batch_size': standard_batch_size,
+                'received_date': received_date.strftime('%Y-%m-%d'),
                 'expiry_date': (datetime.now() + expiry_delta).strftime('%Y-%m-%d'),
-                'batch_quantity_total': current_stock,
+                'batch_quantity_total': batch_qty_total,
                 'batch_quantity_store': batch_qty_store,
                 'batch_quantity_warehouse': batch_qty_warehouse,
                 'location': location_type,
                 'time_stamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             })
-        else:
-            split_point = np.random.randint(1, current_stock)
-            
-            batch1_qty_store = split_point if location_type == 'in-store' else 0
-            batch1_qty_warehouse = split_point if location_type == 'warehouse' else 0
-            
-            batch2_qty_store = (current_stock - split_point) if location_type == 'in-store' else 0
-            batch2_qty_warehouse = (current_stock - split_point) if location_type == 'warehouse' else 0
-            
-            # Determine perishability
-            is_perishable = 'current_stock_probabilities' in product_hierarchy[category]['subcategories'][subcategory]
 
-            if is_perishable:
-                expiry_delta1 = timedelta(days=np.random.randint(2, 10))
-                expiry_delta2 = timedelta(days=np.random.randint(8, 15))
-            else:
-                expiry_delta1 = timedelta(days=np.random.randint(365, 730))
-                expiry_delta2 = timedelta(days=np.random.randint(730, 1095))
-
-            batches_data.append({
-                'shelf_id': shelf_id,
-                'batch_code': f'B-{np.random.randint(1000, 9999)}',
-                'item_category': category,
-                'item_subcategory': subcategory,
-                'received_date': (datetime.now() - timedelta(days=np.random.randint(4, 7))).strftime('%Y-%m-%d'),
-                'expiry_date': (datetime.now() + expiry_delta1).strftime('%Y-%m-%d'),
-                'batch_quantity_total': split_point,
-                'batch_quantity_store': batch1_qty_store,
-                'batch_quantity_warehouse': batch1_qty_warehouse,
-                'location': location_type,
-                'time_stamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-            
-            batches_data.append({
-                'shelf_id': shelf_id,
-                'batch_code': f'B-{np.random.randint(1000, 9999)}',
-                'item_category': category,
-                'item_subcategory': subcategory,
-                'received_date': (datetime.now() - timedelta(days=np.random.randint(0, 3))).strftime('%Y-%m-%d'),
-                'expiry_date': (datetime.now() + expiry_delta2).strftime('%Y-%m-%d'),
-                'batch_quantity_total': current_stock - split_point,
-                'batch_quantity_store': batch2_qty_store,
-                'batch_quantity_warehouse': batch2_qty_warehouse,
-                'location': location_type,
-                'time_stamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-    
     return pd.DataFrame(batches_data)
 
-# main
 
+# -------------------------------------------------------------------
+# MAIN
+# -------------------------------------------------------------------
 print("Generating product catalog...")
 product_catalog = generate_product_catalog(product_hierarchy)
 
 print("Generating store inventory...")
 store_inventory_df = generate_inventory_df(product_catalog, product_hierarchy, 'store')
-store_inventory_df.to_parquet('data/store_inventory_final.parquet', index=False)
+
+# Save store inventory WITHOUT standard_batch_size
+store_inventory_to_save = store_inventory_df.drop(columns=['standard_batch_size'])
+store_inventory_to_save.to_parquet('data/store_inventory_final.parquet', index=False)
 print("Store inventory saved successfully!")
 
 print("Generating warehouse inventory...")
-warehouse_inventory_df = generate_inventory_df(product_catalog, product_hierarchy, 'warehouse', store_max_stock_data=store_inventory_df)
+warehouse_inventory_df = generate_inventory_df(
+    product_catalog, product_hierarchy, 'warehouse', store_max_stock_data=store_inventory_df
+)
 warehouse_inventory_df.to_parquet('data/warehouse_inventory_final.parquet', index=False)
-print("Wharehouse inventory saved successfully!")
+print("Warehouse inventory saved successfully!")
 
 print("Generating batches dataset for the store...")
 store_batches_df = generate_batches_data(store_inventory_df, product_hierarchy, 'in-store')
@@ -670,4 +852,4 @@ warehouse_batches_df = generate_batches_data(warehouse_inventory_df, product_hie
 warehouse_batches_df.to_parquet('data/warehouse_batches.parquet', index=False)
 print("Batches dataset for the warehouse saved successfully!")
 
-print("\n All datasets generated and saved successfully!")
+print("\nAll datasets generated and saved successfully!")
