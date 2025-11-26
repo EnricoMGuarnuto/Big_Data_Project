@@ -827,10 +827,11 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
 print("Generating product catalog...")
 product_catalog = generate_product_catalog(product_hierarchy)
 
+
+
+# Saving db in parquet
 print("Generating store inventory...")
 store_inventory_df = generate_inventory_df(product_catalog, product_hierarchy, 'store')
-
-# Save store inventory WITHOUT standard_batch_size
 store_inventory_to_save = store_inventory_df.drop(columns=['standard_batch_size'])
 store_inventory_to_save.to_parquet('data/store_inventory_final.parquet', index=False)
 print("Store inventory saved successfully!")
@@ -851,5 +852,22 @@ print("Generating batches dataset for the warehouse...")
 warehouse_batches_df = generate_batches_data(warehouse_inventory_df, product_hierarchy, 'warehouse')
 warehouse_batches_df.to_parquet('data/warehouse_batches.parquet', index=False)
 print("Batches dataset for the warehouse saved successfully!")
+
+print("\nAll datasets generated and saved successfully!")
+
+# Saving db in csv
+store_inventory_to_save.to_csv('data/db_csv/store_inventory_final.csv', index=False)
+print("Store inventory csv saved successfully!")
+
+warehouse_inventory_df.to_csv('data/db_csv/warehouse_inventory_final.csv', index=False)
+print("Warehouse inventory csv saved successfully!")
+
+store_batches_df.to_csv('data/db_csv/store_batches.csv', index=False)
+print("Batches dataset csv for the store saved successfully!")
+
+warehouse_batches_df.to_csv('data/db_csv/warehouse_batches.csv', index=False)
+print("Batches dataset csv for the warehouse saved successfully!")
+
+
 
 print("\nAll datasets generated and saved successfully!")
