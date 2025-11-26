@@ -689,7 +689,6 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
 
         shelf_weight = item_weight * maximum_stock
         item_visibility = round(np.random.uniform(0.05, 0.2), 6) if inventory_type == 'store' else None
-        time_stamp = datetime.now() - timedelta(minutes=np.random.randint(0, 10))
 
         row = {
             'shelf_id': shelf_id,
@@ -701,8 +700,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
             'standard_batch_size': standard_batch_size,  # kept in the DF for batch generation
             'maximum_stock': maximum_stock,
             'current_stock': current_stock,
-            'item_price': item_price,
-            'time_stamp': time_stamp.strftime('%Y-%m-%d %H:%M:%S')
+            'item_price': item_price
         }
         if inventory_type == 'store':
             row['item_visibility'] = item_visibility
@@ -719,7 +717,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
             # but will be dropped before saving the store parquet file
             'standard_batch_size',
             'maximum_stock', 'current_stock',
-            'item_price', 'time_stamp'
+            'item_price'
         ]
     else:
         cols = [
@@ -727,7 +725,7 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
             'item_category', 'item_subcategory',
             'standard_batch_size',
             'maximum_stock', 'current_stock',
-            'item_price', 'time_stamp'
+            'item_price'
         ]
 
     return df[cols]
@@ -814,8 +812,7 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
                 'batch_quantity_total': batch_qty_total,
                 'batch_quantity_store': batch_qty_store,
                 'batch_quantity_warehouse': batch_qty_warehouse,
-                'location': location_type,
-                'time_stamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                'location': location_type
             })
 
     return pd.DataFrame(batches_data)
