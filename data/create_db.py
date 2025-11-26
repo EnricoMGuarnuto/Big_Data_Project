@@ -732,16 +732,14 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
 # -------------------------------------------------------------------
 # Batches generation (store / warehouse)
 # -------------------------------------------------------------------
-def generate_batches_data(inventory_df, product_hierarchy, location_type):
+def generate_batches_data(inventory_df, product_hierarchy, location_type, start_counter=0):
     """
-    Generate batches for store or warehouse.
-
-    For each (shelf_id, location_type):
-      - standard_batch_size is taken from the inventory dataframe
-      - each batch_quantity_total <= standard_batch_size
-      - the sum of batch_quantity_total equals current_stock
+    Ritorna:
+      - batches_df
+      - last_counter usato
     """
     batches_data = []
+    batch_counter = start_counter
 
     for _, row in inventory_df.iterrows():
         shelf_id = row['shelf_id']
@@ -750,17 +748,13 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
         subcategory = row['item_subcategory']
         standard_batch_size = row['standard_batch_size']
 
-        # Skip if there is no stock
         if current_stock == 0:
             continue
 
-        # Number of full batches + one possibly partially consumed batch
         full_batches = current_stock // standard_batch_size
         remainder = current_stock % standard_batch_size
-
         num_batches = full_batches + (1 if remainder > 0 else 0)
 
-        # Determine if the item is perishable (to set different expiry dates)
         is_perishable = 'current_stock_probabilities' in product_hierarchy[category]['subcategories'][subcategory]
 
         for batch_index in range(num_batches):
@@ -772,19 +766,16 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
             if batch_qty_total <= 0:
                 continue
             if batch_qty_total > standard_batch_size:
-                # Safety check: never allow a batch bigger than the standard size
                 batch_qty_total = standard_batch_size
 
             if location_type == 'in-store':
                 batch_qty_store = batch_qty_total
                 batch_qty_warehouse = 0
-            else:  # warehouse
+            else:
                 batch_qty_store = 0
                 batch_qty_warehouse = batch_qty_total
 
-            # Expiry dates:
-            #   - for perishables: closer expiry, older batches expire earlier
-            #   - for non-perishables: long shelf life, older batches expire earlier
+            # expiry date
             if is_perishable:
                 min_days = 2 + batch_index
                 max_days = 15
@@ -794,13 +785,16 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
                 max_days = min_days + 365
                 expiry_delta = timedelta(days=np.random.randint(min_days, max_days))
 
-            # Received date: batches with lower index are older (received earlier)
             days_ago = np.random.randint(0, 3) + max(0, (num_batches - 1 - batch_index))
             received_date = datetime.now() - timedelta(days=days_ago)
 
+            # batch_code globale
+            batch_counter += 1
+            batch_code = f"B{batch_counter:07d}"   # B0000001, B0000002, ...
+
             batches_data.append({
                 'shelf_id': shelf_id,
-                'batch_code': f'B-{np.random.randint(1000, 9999)}',
+                'batch_code': batch_code,
                 'item_category': category,
                 'item_subcategory': subcategory,
                 'standard_batch_size': standard_batch_size,
@@ -812,7 +806,7 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type):
                 'location': location_type
             })
 
-    return pd.DataFrame(batches_data)
+    return pd.DataFrame(batches_data), batch_counter
 
 
 # -------------------------------------------------------------------
@@ -839,14 +833,25 @@ warehouse_inventory_to_save.to_parquet('data/warehouse_inventory_final.parquet',
 print("Warehouse inventory saved successfully!")
 
 print("Generating batches dataset for the store...")
-store_batches_df = generate_batches_data(store_inventory_df, product_hierarchy, 'in-store')
+store_batches_df, last_counter = generate_batches_data(
+    store_inventory_df,
+    product_hierarchy,
+    'in-store',
+    start_counter=0   # per ora parti da 0
+)
 store_batches_df.to_parquet('data/store_batches.parquet', index=False)
 print("Batches dataset for the store saved successfully!")
 
 print("Generating batches dataset for the warehouse...")
-warehouse_batches_df = generate_batches_data(warehouse_inventory_df, product_hierarchy, 'warehouse')
+warehouse_batches_df, last_counter = generate_batches_data(
+    warehouse_inventory_df,
+    product_hierarchy,
+    'warehouse',
+    start_counter=last_counter    # continui la numerazione
+)
 warehouse_batches_df.to_parquet('data/warehouse_batches.parquet', index=False)
 print("Batches dataset for the warehouse saved successfully!")
+
 
 print("\nAll datasets generated and saved successfully!")
 
