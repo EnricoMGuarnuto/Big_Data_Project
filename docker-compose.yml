@@ -46,7 +46,6 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./postgresql:/docker-entrypoint-initdb.d:ro
       - ./data/db_csv:/import/csv:ro
-      - ./load_ref_from_csv.sql:/import/load_ref_from_csv.sql:ro
     restart: unless-stopped
 
   
