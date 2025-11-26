@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS config.batch_catalog (
   shelf_id          TEXT NULL,
   item_category     TEXT NULL,
   item_subcategory  TEXT NULL,
-  batch_quantity_standard   INTEGER NULL,
+  standard_batch_size   INTEGER NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS ops.wh_supplier_plan (
   supplier_plan_id     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   shelf_id             TEXT NOT NULL,
   suggested_qty        INTEGER NOT NULL CHECK (suggested_qty >= 0),
-  batch_quantity_standard   INTEGER NULL,
+  standard_batch_size   INTEGER NULL,
   status               plan_status NOT NULL DEFAULT 'pending',
   created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS ref.store_inventory_snapshot (
   shelf_weight     NUMERIC(12,3) NULL,
   item_category    TEXT NULL,
   item_subcategory TEXT NULL,
+  item_visibility  NUMERIC(10,6) NULL,
   maximum_stock    INTEGER NULL,
   current_stock    INTEGER NULL,
   item_price       NUMERIC(10,2) NULL,
@@ -277,12 +278,12 @@ CREATE TABLE IF NOT EXISTS ref.store_batches_snapshot (
   batch_code                TEXT NOT NULL,
   item_category             TEXT NULL,
   item_subcategory          TEXT NULL,
+  standard_batch_size       INTEGER NULL,
   received_date             DATE NULL,
   expiry_date               DATE NULL,
   batch_quantity_total      INTEGER NULL,
   batch_quantity_store      INTEGER NULL,
   batch_quantity_warehouse  INTEGER NULL,
-  batch_quantity_standard   INTEGER NULL,             
   location                  TEXT NULL,   -- 'in-store' or 'warehouse'
   PRIMARY KEY (snapshot_ts, shelf_id, batch_code)
 );
@@ -309,12 +310,12 @@ CREATE TABLE IF NOT EXISTS ref.warehouse_batches_snapshot (
   batch_code                TEXT NOT NULL,
   item_category             TEXT NULL,
   item_subcategory          TEXT NULL,
+  standard_batch_size       INTEGER NULL,
   received_date             DATE NULL,
   expiry_date               DATE NULL,
   batch_quantity_total      INTEGER NULL,
   batch_quantity_store      INTEGER NULL,
   batch_quantity_warehouse  INTEGER NULL,
-  batch_quantity_standard   INTEGER NULL,
   location                  TEXT NULL,   -- 'warehouse'
   PRIMARY KEY (snapshot_ts, shelf_id, batch_code)
 );
