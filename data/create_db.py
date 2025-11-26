@@ -515,34 +515,29 @@ def compute_standard_batch_size(category, subcategory, item_weight):
 # -------------------------------------------------------------------
 # Product catalog generation
 # -------------------------------------------------------------------
+
 def generate_product_catalog(product_hierarchy):
     catalog_data = []
-    # Counter to generate unique shelf_ids per (category, subcategory)
-    shelf_id_counters = {
-        cat: {sub: 0 for sub in cat_props['subcategories'].keys()}
-        for cat, cat_props in product_hierarchy.items()
-    }
+    global_counter = 0
 
     for category, cat_props in product_hierarchy.items():
         aisle = cat_props['aisle']
+        shelf_id_prefix = category.replace(' ', '').replace('-', '')[:3].upper()
+
         for subcategory, sub_props in cat_props['subcategories'].items():
+            subcategory_prefix = subcategory.replace(' ', '').replace('-', '')[:3].upper()
+
             for i in range(sub_props['count']):
-                shelf_id_counters[category][subcategory] += 1
+                global_counter += 1
+                # es: WINSPA0001, WINSPA0002, ...
+                shelf_id = f"{shelf_id_prefix}{subcategory_prefix}{global_counter:04d}"
 
-                shelf_id_prefix = category.replace(' ', '')[:3].upper()
-                subcategory_prefix = subcategory.replace(' ', '')[:3].upper()
-                shelf_id = f"{shelf_id_prefix}{subcategory_prefix}{shelf_id_counters[category][subcategory]}"
-
-                # Choose item weight either from discrete options or from a range
                 if 'weight_options' in sub_props:
                     item_weight = np.random.choice(sub_props['weight_options'])
                 else:
                     item_weight = np.random.randint(sub_props['weight_range'][0], sub_props['weight_range'][1])
 
-                # Random item price within the configured range
-                item_price = round(np.random.uniform(sub_props['price_range'][0], sub_props['price_range'][1]), 2)
-
-                # Compute standard batch size for this product
+                item_price = round(np.random.uniform(*sub_props['price_range']), 2)
                 standard_batch_size = compute_standard_batch_size(category, subcategory, item_weight)
 
                 catalog_data.append({
@@ -554,7 +549,9 @@ def generate_product_catalog(product_hierarchy):
                     'item_price': item_price,
                     'standard_batch_size': standard_batch_size
                 })
+
     return pd.DataFrame(catalog_data)
+
 
 
 def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, store_max_stock_data=None):
