@@ -230,7 +230,7 @@ CREATE TABLE IF NOT EXISTS ops.pos_transactions (
   timestamp        TIMESTAMPTZ NOT NULL,
   -- denormalized totals (optional)
   total_items      INTEGER NULL,
-  total_amount     NUMERIC(12,2) NULL. --price
+  total_amount     NUMERIC(12,2) NULL --price
 );
 
 -- POS line items (supports batch_code for FIFO auditing)

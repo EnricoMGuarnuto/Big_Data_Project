@@ -31,6 +31,23 @@ services:
     volumes:
       - redis-data:/data
     restart: unless-stopped
+
+  
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: bdt_user
+      POSTGRES_PASSWORD: bdt_password
+      POSTGRES_DB: smart_shelf
+    ports:
+      - "5432:5432"   
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgresql:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+
+  
   
   # Producers
   kafka-producer-foot-traffic:
@@ -106,4 +123,5 @@ services:
 volumes:
   kafka-data:
   redis-data:
+  postgres-data:
 

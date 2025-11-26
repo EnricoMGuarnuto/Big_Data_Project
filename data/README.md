@@ -1,18 +1,279 @@
-The data are generated with a code made by chatgpt, which was given the followiong prompt:
+# create_db – Synthetic Retail Inventory & Batches Generator
 
-I need your help with a Big Data Technology project. I have a detailed list of products and categories for a supermarket, including refrigerated, frozen, meat, and fish products.
+I need your help with a Big Data Technology project.  
+I have a detailed list of products and categories for a supermarket (beverages, canned goods, refrigerated, frozen, meat, fish, household goods, etc.), with a specific number of item types for each subcategory.
 
-I need you to generate Python code using the Pandas library to create four interconnected CSV datasets:
+I need you to **generate Python code using Pandas and NumPy** to create **four interconnected datasets saved as Parquet files**, following these rules.
 
-1.  **Store Inventory**: This dataset should represent the products on the supermarket shelves. Columns should include `shelf_id`, `aisle`, `item_weight`, `shelf_weight`, `item_category`, `item_subcategory`, `item_visibility`, `maximum_stock`, `current_stock`, `item_price`, and `time_stamp`. The `item_weight` and `item_price` values must be sensible and consistent across all datasets.
+Please use `np.random.seed` for reproducibility and ensure all category and subcategory names are in English.  
+The code should be **self-contained and ready to run**, creating the files under a `data/` directory.
 
-2.  **Warehouse Inventory**: This dataset should represent the inventory in the warehouse. It must use the same `shelf_id`, `aisle`, `item_weight`, `item_price`, `item_category`, and `item_subcategory` as the store inventory. However, the `maximum_stock` for long-shelf-life products (e.g., canned goods, cleaning products) should be much higher than in the store. For perishable goods (refrigerated, frozen, meat, fish), the `maximum_stock` should be identical to the store's `maximum_stock`, while for fruits and vegetables it should be slightly lower. The `current_stock` for perishable items should often be zero, reflecting a just-in-time stocking strategy. The `item_visibility` column should be omitted.
+---
 
-3.  **Store Batches**: This dataset should track product batches for the store. It should include `shelf_id`, `aisle`, `batch_code`, `item_category`, `item_subcategory`, `received_date`, `expiry_date`, `batch_quantity_total`, `batch_quantity_store`, `batch_quantity_warehouse`, `location`, and `time_stamp`. The `batch_quantity_store` for each `shelf_id` should sum up to the `current_stock` from the store inventory. Products should have one or two batches. Expiry dates must be realistic (e.g., short for fresh products, long for canned goods). The `location` column must contain the string "in-store".
+## 1. Product catalog (internal helper, not necessarily saved)
 
-4.  **Warehouse Batches**: This dataset is for the warehouse batches. It should follow the same rules as the store batches, with `batch_quantity_warehouse` matching the warehouse `current_stock`. The `location` column must contain the string "warehouse".
+First, create an internal **product catalog** (a DataFrame, not necessarily saved to disk) that enumerates all products based on the provided category/subcategory list.
 
-The generated code should be self-contained and ready to run, producing all four datasets as CSV files. Please use `np.random.seed` for reproducibility and ensure all category and subcategory names are in English.
+Each product in the catalog must have:
+
+- **`shelf_id`**  
+  String, unique per product, encoding category + subcategory + progressive number (e.g. `"BEAWAT1"`).  
+  This is the **primary key** that links all datasets.
+
+- **`aisle`**  
+  Integer, representing the aisle where the product is located in-store (fixed per macro category).
+
+- **`item_category`**  
+  High-level category (e.g. `"BEVERAGES"`, `"CANNED GOODS"`, `"FRUITS AND VEGETABLES"`, `"REFRIGERATED"`, `"MEAT"`, etc.).
+
+- **`item_subcategory`**  
+  More granular subcategory (e.g. `"Water"`, `"Yogurt"`, `"Beef"`).
+
+- **`item_weight`**  
+  Net weight / volume of a single unit (e.g. 500, 1000, etc.), in grams or millilitres depending on product type.  
+  Drawn from either discrete `weight_options` or a numeric `weight_range` per subcategory.
+
+- **`item_price`**  
+  Unit price in euros, drawn uniformly from a sensible `price_range` specific to each subcategory.
+
+- **`standard_batch_size`**  
+  Integer representing the *logical* standard size (in units/pieces) of a batch for that product.  
+  It must be:
+  - Coherent with the product type (e.g., beverages often multiples of 6, fresh products smaller batches, heavy items smaller batches, etc.).
+  - Used later to constrain warehouse capacity and batch generation.
+
+This catalog is then used to generate both **inventory** and **batches** datasets.
+
+---
+
+## 2. Store Inventory  
+**Output file:** `data/store_inventory_final.parquet`
+
+This dataset represents the stock **on the supermarket shelves** (in-store).  
+Each row must correspond to one `shelf_id` from the product catalog.
+
+Columns:
+
+- **`shelf_id`**  
+  Unique product identifier, as in the product catalog.
+
+- **`aisle`**  
+  Integer aisle number where the shelf is located.
+
+- **`item_weight`**  
+  Weight/volume of a single item, copied from the catalog.
+
+- **`shelf_weight`**  
+  Total potential weight of the shelf **at maximum capacity**, computed as  
+  `shelf_weight = item_weight * maximum_stock`.
+
+- **`item_category`**  
+  Product macro category.
+
+- **`item_subcategory`**  
+  Product subcategory.
+
+- **`item_visibility`**  
+  Float in \[0.05, 0.20], representing the fraction of customer foot traffic that “sees” this shelf (synthetic visibility score; only defined for in-store).
+
+- **`maximum_stock`**  
+  Integer, the **maximum number of units** that fit on the store shelf for that `shelf_id`.  
+  - Drawn from a `store_max_stock_range` per subcategory.  
+  - Must be at least `standard_batch_size` (so that one full batch fits).
+
+- **`current_stock`**  
+  Integer, the **current number of units** on the shelf.  
+  - For **non-perishable / long-shelf-life products** (e.g. canned goods, cleaning products, long-life fruit, many grocery items):  
+    `current_stock` is a random percentage of `maximum_stock`, drawn from a subcategory-specific `current_stock_percent` range (e.g. 70–100%).  
+  - For **perishable categories** (e.g. fruits and vegetables, refrigerated, frozen, meat, fish), use a specific rule per subcategory (e.g. `current_stock_probabilities`) to simulate just-in-time replenishment and stock-outs.  
+  - Always ensure `0 < current_stock <= maximum_stock` when capacity is non-zero (if a rule would give 0 but capacity exists, force at least some minimal stock).
+
+- **`item_price`**  
+  Unit price in euros, copied from the product catalog.
+
+- **`time_stamp`**  
+  String timestamp of when the inventory snapshot is generated, in the format  
+  `"YYYY-MM-DD HH:MM:SS"`.
+
+ 
+> It is kept only in the internal DataFrame for batch and warehouse logic.
+
+---
+
+## 3. Warehouse Inventory  
+**Output file:** `data/warehouse_inventory_final.parquet`
+
+This dataset represents the **central/backshelf warehouse stock** for the same products.  
+It must reuse the **same `shelf_id`, `aisle`, `item_weight`, `item_price`, `item_category`, and `item_subcategory`** as the store inventory.
+
+Columns:
+
+- `shelf_id`  
+- `aisle`  
+- `item_weight`  
+- `shelf_weight`  
+- `item_category`  
+- `item_subcategory`  
+- `standard_batch_size`  
+- `maximum_stock`  
+- `current_stock`  
+- `item_price`  
+- `time_stamp`  
+
+(Only `item_visibility` is **not** present in the warehouse inventory.)
+
+Semantics and constraints:
+
+- **`standard_batch_size`**  
+  Same value as in the product catalog. Here it is **saved** in the parquet file because warehouse logic is batch-driven.
+
+- **`maximum_stock` (warehouse)**  
+  Integer, **always a multiple of `standard_batch_size`** and represents total warehouse capacity in units.  
+
+  Rules:
+  - For categories flagged to have `warehouse_max_stock_equal_store`:  
+    - Start from store `maximum_stock`, ensure at least `2 * standard_batch_size`, then round **up** to a multiple of `standard_batch_size`.
+  - For categories with a `warehouse_max_stock_range`:  
+    - Draw `base_max` in that range, ensure at least `2 * standard_batch_size`, then round **down** to a multiple of `standard_batch_size`. If rounding down breaks the 2-batch rule, fix it.
+  - Otherwise (fallback):  
+    - Use a fraction of store `maximum_stock` (e.g. 10–40%), ensure at least `2 * standard_batch_size`, then round to a multiple of `standard_batch_size`.
+
+- **`current_stock` (warehouse)**  
+  Integer.  
+  - For **perishable products** (where we use `current_stock_probabilities` in the hierarchy):  
+    `current_stock = 0` → they are not stored in the central warehouse.  
+  - For **non-perishables**:  
+    `current_stock = n_full_batches * standard_batch_size`, with:
+    - `n_full_batches` randomly chosen in a small range (e.g. 1–3).
+    - `n_full_batches * standard_batch_size <= maximum_stock`.  
+    Warehouse stock is thus **in full batches only** (no partial batch).
+
+- **`shelf_weight`**  
+  Computed as `item_weight * maximum_stock`.
+
+- **`time_stamp`**  
+  Same format and semantics as in the store inventory: `"YYYY-MM-DD HH:MM:SS"`.
+
+---
+
+## 4. Store Batches  
+**Output file:** `data/store_batches.parquet`
+
+This dataset tracks **product batches in the store**.  
+Each row is a batch, associated with one `shelf_id`.
+
+Columns:
+
+- **`shelf_id`**  
+  Links the batch to a product in store/warehouse inventories.
+
+- **`batch_code`**  
+  String batch identifier (e.g. `"B-1234"`).
+
+- **`item_category`**  
+  Category of the product (copied from inventory).
+
+- **`item_subcategory`**  
+  Subcategory of the product (copied from inventory).
+
+- **`standard_batch_size`**  
+  From the product catalog / inventory, reused here to keep batch semantics explicit.
+
+- **`received_date`**  
+  Date (string `"YYYY-MM-DD"`) when this batch arrived in-store.  
+  Batches with lower index are **older**, and must have earlier `received_date`.
+
+- **`expiry_date`**  
+  Date (string `"YYYY-MM-DD"`) when this batch expires.  
+  - For **perishable products**: short shelf life (e.g. 2–15 days), older batches expire earlier.  
+  - For **non-perishable products**: long shelf life (e.g. 1–3 years), again with older batches expiring earlier.
+
+- **`batch_quantity_total`**  
+  Integer, total units in this batch (still available at the time of the snapshot).  
+  Must satisfy:
+  - `0 < batch_quantity_total <= standard_batch_size`  
+  - For each `shelf_id`, the sum over all its batches equals the corresponding `current_stock` from the **store inventory**.
+
+- **`batch_quantity_store`**  
+  Integer, number of units of this batch that are currently **physically in-store**.  
+  - In the **store batches dataset**, set  
+    `batch_quantity_store = batch_quantity_total`.
+
+- **`batch_quantity_warehouse`**  
+  Integer, number of units for this batch in the warehouse.  
+  - In the **store batches dataset**, this must always be `0`.
+
+- **`location`**  
+  String location tag, must be exactly `"in-store"` for all rows in this dataset.
+
+- **`time_stamp`**  
+  String `"YYYY-MM-DD HH:MM:SS"` representing when this batch record was generated.
+
+For each `shelf_id` in the **store inventory**, create one or more batches (typically 1–2, but more are allowed) such that:
+
+\[
+\sum_{\text{batches of that shelf}} batch\_quantity\_store = current\_stock_{\text{store}}
+\]
+
+---
+
+## 5. Warehouse Batches  
+**Output file:** `data/warehouse_batches.parquet`
+
+This dataset mirrors the store batches, but for the **warehouse**.
+
+Columns (same schema as store batches):
+
+- `shelf_id`  
+- `batch_code`  
+- `item_category`  
+- `item_subcategory`  
+- `standard_batch_size`  
+- `received_date`  
+- `expiry_date`  
+- `batch_quantity_total`  
+- `batch_quantity_store`  
+- `batch_quantity_warehouse`  
+- `location`  
+- `time_stamp`  
+
+Differences in semantics:
+
+- **`batch_quantity_store`**  
+  Must always be `0` in this dataset.
+
+- **`batch_quantity_warehouse`**  
+  Holds the actual batch quantity for the warehouse. For each `shelf_id`:
+
+\[
+\sum_{\text{batches of that shelf}} batch\_quantity\_warehouse = current\_stock_{\text{warehouse}}
+\]
+
+- **`location`**  
+  Must always be `"warehouse"`.
+
+All other fields (`shelf_id`, `batch_code`, `item_category`, `item_subcategory`, `standard_batch_size`, `received_date`, `expiry_date`, `batch_quantity_total`, `time_stamp`) follow the same logic as in the store batches dataset, with expiry logic consistent between store and warehouse for the same product type.
+
+---
+
+## 6. General requirements
+
+- Use **Pandas** and **NumPy** only.
+- Use `np.random.seed(42)` for reproducibility.
+- Save all four datasets in **Parquet format** under a `data/` folder with these exact filenames:
+  - `data/store_inventory_final.parquet`
+  - `data/warehouse_inventory_final.parquet`
+  - `data/store_batches.parquet`
+  - `data/warehouse_batches.parquet`
+- Ensure:
+  - `item_weight` and `item_price` are consistent across **all** datasets for the same `shelf_id`.
+  - `shelf_id` is the **join key** across catalog, inventories, and batches.
+  - Stock and batch quantities respect all constraints described above:
+    - Sum of batches = current stock for each `shelf_id` and location.
+    - `batch_quantity_total <= standard_batch_size`.
+    - Warehouse stock in **full batches only** for non-perishables.
+    - Perishable items mostly managed only in-store, with warehouse stock often 0.
+
 
 
 ## Product List
