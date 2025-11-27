@@ -22,7 +22,7 @@ CSV HEADER;
 
 -- ============================
 -- STORE BATCHES SNAPSHOT
--- ============================
+-- ===========================
 COPY ref.store_batches_snapshot (
   shelf_id,
   batch_code,

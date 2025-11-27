@@ -41,9 +41,9 @@ END$$;
 -- CONFIG / RULES (owned and edited by humans or services)
 -- ======================================================
 
--- Alert rules managed in the UI and synced to Kafka `alert_rules`
-CREATE TABLE IF NOT EXISTS config.alert_rules (
-  rule_id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+-- Shelf policies managed in the UI and synced to Kafka `alert_rules`
+CREATE TABLE IF NOT EXISTS config.shelf_policies (
+  policy_id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   -- Scope: by shelf, category, or global
   shelf_id          TEXT NULL,
   item_category     TEXT NULL,
@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS config.alert_rules (
   -- Thresholds / logic
   threshold_pct     NUMERIC(5,2) NULL,       -- e.g. trigger when stock < threshold% of max
   min_qty           INTEGER NULL,            -- absolute floor
-  target_pct        NUMERIC(5,2) NULL,       -- target refill level (e.g. 80)
-  hysteresis_pct    NUMERIC(5,2) NULL,       -- to avoid alert flapping
+  -- target_pct        NUMERIC(5,2) NULL,       -- target refill level (e.g. 80)
+  -- hysteresis_pct    NUMERIC(5,2) NULL,       -- to avoid alert flapping
   severity          severity_level NOT NULL DEFAULT 'medium',
   active            BOOLEAN NOT NULL DEFAULT TRUE,
   notes             TEXT NULL,
@@ -60,30 +60,44 @@ CREATE TABLE IF NOT EXISTS config.alert_rules (
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS ix_alert_rules_scope
-  ON config.alert_rules (shelf_id, item_category, item_subcategory)
+CREATE INDEX IF NOT EXISTS ix_shelf_policies_scope
+  ON config.shelf_policies (shelf_id, item_category, item_subcategory)
   WHERE active = TRUE;
+
+
+CREATE TABLE IF NOT EXISTS config.wh_policies (
+  policy_id        UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shelf_id         TEXT NULL,
+  item_category    TEXT NULL,
+  item_subcategory TEXT NULL,
+
+  reorder_point_qty  INTEGER NULL,       -- oppure soglia in pezzi assoluti
+
+  active           BOOLEAN NOT NULL DEFAULT TRUE,
+  notes            TEXT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+
 
 -- Optional reference of shelf profiles/metadata (for planner)
 CREATE TABLE IF NOT EXISTS config.shelf_profiles (
   shelf_id          TEXT PRIMARY KEY,
-  aisle             INTEGER NULL,
-  maximum_stock     INTEGER NULL,
-  item_category     TEXT NULL,
-  item_subcategory  TEXT NULL,
+  item_weight       NUMERIC(10,3) NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- batch catalog (optional reference data for batches)
 CREATE TABLE IF NOT EXISTS config.batch_catalog (
-  batch_code        TEXT PRIMARY KEY,
-  shelf_id          TEXT NULL,
-  item_category     TEXT NULL,
-  item_subcategory  TEXT NULL,
-  standard_batch_size   INTEGER NULL,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  batch_code          TEXT PRIMARY KEY,
+  shelf_id            TEXT NULL,
+  expiry_date         DATE NULL,
+  standard_batch_size INTEGER NULL,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ======================================================
@@ -347,38 +361,38 @@ CREATE TABLE IF NOT EXISTS analytics.features_store (
 -- ======================================================
 -- HOUSEKEEPING TRIGGERS (auto-update updated_at)
 -- ======================================================
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- CREATE OR REPLACE FUNCTION set_updated_at()
+-- RETURNS TRIGGER AS $$
+-- BEGIN
+--   NEW.updated_at = NOW();
+--   RETURN NEW;
+-- END;
+-- $$ LANGUAGE plpgsql;
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_alert_rules_set_updated_at') THEN
-    CREATE TRIGGER tr_alert_rules_set_updated_at
-    BEFORE UPDATE ON config.alert_rules
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-  END IF;
+-- DO $$
+-- BEGIN
+--   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_alert_rules_set_updated_at') THEN
+--     CREATE TRIGGER tr_alert_rules_set_updated_at
+--     BEFORE UPDATE ON config.alert_rules
+--     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+--   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_shelf_restock_plan_set_updated_at') THEN
-    CREATE TRIGGER tr_shelf_restock_plan_set_updated_at
-    BEFORE UPDATE ON ops.shelf_restock_plan
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-  END IF;
+--   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_shelf_restock_plan_set_updated_at') THEN
+--     CREATE TRIGGER tr_shelf_restock_plan_set_updated_at
+--     BEFORE UPDATE ON ops.shelf_restock_plan
+--     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+--   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_alerts_set_updated_at') THEN
-    CREATE TRIGGER tr_alerts_set_updated_at
-    BEFORE UPDATE ON ops.alerts
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-  END IF;
+--   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_alerts_set_updated_at') THEN
+--     CREATE TRIGGER tr_alerts_set_updated_at
+--     BEFORE UPDATE ON ops.alerts
+--     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+--   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_shelf_profiles_set_updated_at') THEN
-    CREATE TRIGGER tr_shelf_profiles_set_updated_at
-    BEFORE UPDATE ON config.shelf_profiles
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-  END IF;
-END$$;
+--   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr_shelf_profiles_set_updated_at') THEN
+--     CREATE TRIGGER tr_shelf_profiles_set_updated_at
+--     BEFORE UPDATE ON config.shelf_profiles
+--     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+--   END IF;
+-- END$$;
 
