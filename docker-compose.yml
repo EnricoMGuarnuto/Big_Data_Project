@@ -121,6 +121,25 @@ services:
       - ./data:/data:ro
     restart: unless-stopped
 
+  spark-init-delta:
+    build:
+      context: ./spark-apps/deltalake
+      dockerfile: Dockerfile
+    container_name: spark-init-delta
+    environment:
+      DELTA_ROOT: /delta
+      SPARK_WAREHOUSE_DIR: /tmp/spark-warehouse
+      PYSPARK_SUBMIT_ARGS: >
+        --packages io.delta:delta-spark_2.12:3.2.0
+        --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
+        --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+        pyspark-shell
+    volumes:
+      - ./delta:/delta
+      - ./spark-apps/deltalake/init_delta.py:/app/init_delta.py:ro
+    command: ["python","-u","/app/init_delta.py"]
+    restart: "no"
+
 volumes:
   kafka-data:
   redis-data:
