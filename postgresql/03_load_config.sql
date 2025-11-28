@@ -19,8 +19,6 @@ SET
   updated_at  = NOW();
 
 
-
-
 -- ============================
 -- 2) BATCH CATALOG
 -- ============================
@@ -62,27 +60,18 @@ SET
 
 
 -- ============================
--- 3) SHELF POLICIES (STORE)              <---- QUESTO !!!
+-- 3) SHELF POLICIES (STORE)
 -- ============================
 
--- 3.1 Regola globale (fallback)
+-- fallback global
 INSERT INTO config.shelf_policies (
-  shelf_id,
-  item_category,
-  item_subcategory,
-  threshold_pct,
-  min_qty,
-  severity,
-  notes
+  shelf_id, item_category, item_subcategory,
+  threshold_pct, min_qty, severity, active, notes
 )
 SELECT
-  NULL AS shelf_id,
-  NULL AS item_category,
-  NULL AS item_subcategory,
-  30.00 AS threshold_pct,     -- alert sotto il 30% del max
-  1     AS min_qty,           -- ma almeno 1 pezzo
-  'medium'::severity_level AS severity,
-  'Global default shelf policy' AS notes
+  NULL, NULL, NULL,
+  30.00, 1, 'medium'::severity_level, TRUE,
+  'Global default shelf policy (auto-created)'
 WHERE NOT EXISTS (
   SELECT 1
   FROM config.shelf_policies p
@@ -91,6 +80,42 @@ WHERE NOT EXISTS (
     AND p.item_subcategory IS NULL
 );
 
+WITH latest_store_snapshot AS (
+  SELECT MAX(snapshot_ts) AS snapshot_ts
+  FROM ref.store_inventory_snapshot
+),
+store_rows AS (
+  SELECT s.*
+  FROM ref.store_inventory_snapshot s
+  JOIN latest_store_snapshot l
+    ON s.snapshot_ts = l.snapshot_ts
+)
+
+INSERT INTO config.shelf_policies (
+  shelf_id,
+  item_category,
+  item_subcategory,
+  threshold_pct,
+  min_qty,
+  severity,
+  active,
+  notes
+)
+SELECT
+  s.shelf_id,
+  s.item_category,
+  s.item_subcategory,
+  30.00                        AS threshold_pct,   -- 30% default
+  1                            AS min_qty,         -- minimo assoluto
+  'medium'::severity_level     AS severity,
+  TRUE                         AS active,
+  'Per-shelf policy auto-generated from latest store snapshot' AS notes
+FROM store_rows s
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM config.shelf_policies p
+  WHERE p.shelf_id = s.shelf_id
+);
 
 
 -- ============================
