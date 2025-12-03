@@ -46,8 +46,8 @@ def pg_jdbc_url():
 
 # ---------- SOURCE (Postgres -> Kafka) -----------
 def source_alert_rules():
-    # Produce su topic "alert_rules" (compacted metadata)
-    # Uso table.whitelist + RegexRouter per togliere il prefix di schema ("config.")
+    # Produce on topic "alert_rules" (compacted metadata)
+    # Use table.whitelist + RegexRouter to strip the schema prefix ("config.")
     return {
       "name": "pg-source-alert-rules",
       "config": {
@@ -58,7 +58,7 @@ def source_alert_rules():
         "table.whitelist": "config.alert_rules",
         "mode": "timestamp",
         "timestamp.column.name": "updated_at",
-        "topic.prefix": "config.",       # produce "config.alert_rules"
+        "topic.prefix": "config.",       # creates "config.alert_rules"
         "poll.interval.ms": "10000",
         "numeric.mapping": "best_fit",
         "validate.non.null": "false",
@@ -130,7 +130,7 @@ def source_shelf_profiles():
 
 # ---------- SINK (Kafka -> Postgres) -------------
 def sink_upsert(topic, table, pk_fields):
-    """Upsert generico su PK in record_value (json)."""
+    """Generic upsert on PK fields coming from record_value (json)."""
     return {
       "name": f"pg-sink-{topic}",
       "config": {
@@ -154,7 +154,7 @@ def sink_upsert(topic, table, pk_fields):
     }
 
 def sink_insert(topic, table):
-    """Append-only (es. wh_events)."""
+    """Append-only mode (e.g., wh_events)."""
     return {
       "name": f"pg-sink-{topic}",
       "config": {
@@ -192,8 +192,10 @@ def main():
         sink_upsert("wh_batch_state",       "state.wh_batch_state",       ["shelf_id","batch_code"]),
         sink_upsert("daily_discounts",      "analytics.daily_discounts",  ["shelf_id","week"]),
         sink_upsert("wh_restock_plan",      "ops.shelf_restock_plan",     ["plan_id"]),
-        # Append-only (facoltativo)
+        # Append-only
         sink_insert("wh_events",            "ops.wh_events"),
+        sink_insert("pos_transactions",     "ops.pos_transactions"),
+        sink_insert("alerts",             "ops.alerts")
     ]
     for s in sinks:
         upsert_connector(s["name"], s["config"])

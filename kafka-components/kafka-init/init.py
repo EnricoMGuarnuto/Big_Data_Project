@@ -6,16 +6,16 @@ from kafka.errors import TopicAlreadyExistsError, NoBrokersAvailable
 
 BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 
-# --- Parametri generali ---
+# --- General parameters ---
 DEFAULT_PARTITIONS = int(os.getenv("DEFAULT_PARTITIONS", "3"))
 DEFAULT_RF = int(os.getenv("DEFAULT_RF", "1"))
 
-# Retention di base per append-only (7 giorni)
+# Base retention for append-only (7 days)
 APPEND_RETENTION_MS = int(os.getenv("APPEND_RETENTION_MS", str(7 * 24 * 60 * 60 * 1000)))
-# Retention di base per compacted + delete (solo per segmenti vecchi)
+# Base retention for compacted + delete (only older segments)
 COMPACT_DELETE_RETENTION_MS = int(os.getenv("COMPACT_DELETE_RETENTION_MS", str(24 * 60 * 60 * 1000)))
 
-# --- Gruppi di topic ---
+# --- Topic groups ---
 
 # Append-only (event streams)
 APPEND_ONLY: Dict[str, Dict[str, str]] = {
@@ -34,8 +34,8 @@ COMPACTED: Dict[str, Dict[str, str]] = {
     "product_total_state": {},
     "shelf_batch_state": {},
     "wh_batch_state": {},
-    "daily_discounts": {},         # output del Discount Manager (last per key)
-    "wh_restock_plan": {},         # planner: ultimo piano per shelf_id
+    "daily_discounts": {},         # Discount Manager output (last per key)
+    "wh_restock_plan": {},         # planner: latest plan per shelf_id
 
     # Metadata / rules topics
     "alert_rules": {},
@@ -43,7 +43,7 @@ COMPACTED: Dict[str, Dict[str, str]] = {
     "shelf_profiles": {},
 }
 
-# Config base per i due profili
+# Base config shared by both profiles
 BASE_APPEND_CFG = {
     "cleanup.policy": "delete",
     "retention.ms": str(APPEND_RETENTION_MS),
@@ -84,7 +84,7 @@ def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]]
                 topic_configs=cfg
             ))
         else:
-            # prova ad allineare la config se già esiste
+            # try to align config when topic already exists
             try:
                 res = ConfigResource(ConfigResourceType.TOPIC, name, configs=cfg)
                 admin.alter_configs([res])

@@ -199,6 +199,29 @@ services:
     command: ["python","-u","/app/init_delta.py"]
     restart: "no"
 
+  spark-shelf-aggregator:
+    build:
+      context: ./spark-apps/shelf-aggregator
+      dockerfile: Dockerfile
+    container_name: spark-shelf-aggregator
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_SHELF_EVENTS: shelf_events
+      TOPIC_SHELF_PROFILES: shelf_profiles
+      TOPIC_SHELF_STATE: shelf_state
+      JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
+      JDBC_PG_USER: bdt_user
+      JDBC_PG_PASSWORD: bdt_password
+      BOOTSTRAP_FROM_PG: "1"         # "1" per abilitare, "0" per saltare
+      DELTA_ROOT: /delta
+      STARTING_OFFSETS: earliest         # al primo giro; poi metti "latest"
+      CHECKPOINT_ROOT: /delta/_checkpoints/shelf_aggregator
+    volumes:
+      - ./delta:/delta
+    restart: unless-stopped
+
 volumes:
   kafka-data:
   redis-data:
