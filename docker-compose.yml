@@ -32,7 +32,67 @@ services:
       - redis-data:/data
     restart: unless-stopped
 
+ 
+  kafka-init:
+    build:
+      context: ./kafka-components/kafka-init
+      dockerfile: Dockerfile
+    container_name: kafka-init
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:9092
+    # opzionali:
+    # DEFAULT_PARTITIONS: "3"
+    # DEFAULT_RF: "1"
+    # APPEND_RETENTION_MS: "604800000"         # 7 giorni
+    # COMPACT_DELETE_RETENTION_MS: "86400000"  # 1 giorno
+    restart: "no"
   
+  kafka-connect:
+    build:
+      context: ./kafka-components/kafka-connect
+      dockerfile: Dockerfile
+    container_name: kafka-connect
+    depends_on:
+      - kafka
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka:9092"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      CONNECT_GROUP_ID: "connect-cluster-1"
+      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+    ports:
+      - "8083:8083"   # REST (utile per debug)
+    restart: unless-stopped
+  
+  connect-init:
+    build:
+      context: ./kafka-components/kafka-connect/connect-init
+      dockerfile: Dockerfile
+    container_name: connect-init
+    depends_on:
+      - kafka-connect
+      - postgres
+      - kafka-init
+    environment:
+      CONNECT_URL: "http://kafka-connect:8083"
+      KAFKA_BROKER: "kafka:9092"
+      PG_HOST: "postgres"
+      PG_PORT: "5432"
+      PG_DB: "smart_shelf"
+      PG_USER: "bdt_user"
+      PG_PASS: "bdt_password"
+    restart: "no"
+
   postgres:
     image: postgres:16
     container_name: postgres
@@ -48,8 +108,7 @@ services:
       - ./data/db_csv:/import/csv:ro
     restart: unless-stopped
 
-  
-  
+
   # Producers
   kafka-producer-foot-traffic:
     build:
