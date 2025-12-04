@@ -3,7 +3,7 @@ from datetime import datetime
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, DoubleType,
-    TimestampType, DateType, BooleanType
+    TimestampType, DateType, BooleanType, ArrayType
 )
 
 # ========= Config =========
@@ -36,12 +36,22 @@ schema_shelf_events = StructType([
     StructField("timestamp",     TimestampType(), True),
 ])
 
+items_schema = ArrayType(StructType([
+    StructField("item_id",     StringType(),  True),
+    StructField("batch_code",  StringType(),  True),
+    StructField("quantity",    IntegerType(), True),
+    StructField("unit_price",  DoubleType(),  True),
+    StructField("discount",    DoubleType(),  True),
+    StructField("total_price", DoubleType(),  True),
+    StructField("expiry_date", StringType(),  True),
+]))
+
 schema_pos_transactions = StructType([
     StructField("event_type",     StringType(), True),
     StructField("transaction_id", StringType(), True),
     StructField("customer_id",    StringType(), True),
     StructField("timestamp",      TimestampType(), True),
-    StructField("items",          StringType(), True),  # JSON string semplificato
+    StructField("items",          items_schema, True),  
 ])
 
 schema_foot_traffic = StructType([
@@ -49,6 +59,7 @@ schema_foot_traffic = StructType([
     StructField("customer_id", StringType(), True),
     StructField("entry_time",  TimestampType(), True),
     StructField("exit_time",   TimestampType(), True),
+    StructField("trip_duration_minutes",        IntegerType(),      True),
     StructField("weekday",     StringType(), True),
     StructField("time_slot",   StringType(), True),
 ])
@@ -63,8 +74,8 @@ schema_wh_events = StructType([
     StructField("unit",        StringType(), True),
     StructField("timestamp",   TimestampType(), True),
     StructField("fifo",        BooleanType(), True),
-    StructField("received_date", DateType(), True),
-    StructField("expiry_date",   DateType(), True),
+    StructField("received_date", StringType(), True),
+    StructField("expiry_date",   StringType(), True),
     StructField("batch_quantity_warehouse_after", IntegerType(), True),
     StructField("batch_quantity_store_after",     IntegerType(), True),
     StructField("shelf_warehouse_qty_after",      IntegerType(), True),

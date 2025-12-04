@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from datetime import datetime
 from pyspark.sql import SparkSession, functions as F, types as T, Window
 from delta.tables import DeltaTable
@@ -21,11 +22,11 @@ DELTA_ROOT            = os.getenv("DELTA_ROOT", "/delta")
 RAW_PATH              = f"{DELTA_ROOT}/raw/shelf_events"
 STATE_PATH            = f"{DELTA_ROOT}/cleansed/shelf_state"
 
-CHECKPOINT_ROOT       = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/checkpoints/shelf_aggregator")
+CHECKPOINT_ROOT       = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/_checkpoints/shelf_aggregator")
 CKP_RAW               = f"{CHECKPOINT_ROOT}/raw"
 CKP_AGG               = f"{CHECKPOINT_ROOT}/agg"
 
-STARTING_OFFSETS      = os.getenv("STARTING_OFFSETS", "earliest")  # primo run: earliest; poi i checkpoint governano
+STARTING_OFFSETS      = os.getenv("STARTING_OFFSETS", "earliest")  # first run: earliest; afterward checkpoints govern progress
 
 # =========================
 # Spark Session (Delta)
@@ -39,14 +40,16 @@ spark = (
 spark.sparkContext.setLogLevel("WARN")
 
 # =========================
-# Schemi
+# Schemas
 # =========================
 schema_shelf_events = T.StructType([
     T.StructField("event_type",   T.StringType()),
     T.StructField("customer_id",  T.StringType()),
-    T.StructField("item_id",      T.StringType()),  # sarà mappato a shelf_id
+    T.StructField("item_id",      T.StringType()),
+    T.StructField("shelf_id",     T.StringType()),
     T.StructField("weight",       T.DoubleType()),
     T.StructField("quantity",     T.IntegerType()),
+    T.StructField("delta_weight", T.DoubleType()),
     T.StructField("timestamp",    T.StringType()),
 ])
 
@@ -56,7 +59,7 @@ schema_profiles = T.StructType([
 ])
 
 # =========================
-# 0) Snapshot statico profili (compacted)
+# 0) Static snapshot of shelf profiles (compacted)
 # =========================
 profiles_kafka_df = (
     spark.read.format("kafka")
@@ -92,34 +95,48 @@ profiles_latest = (
 )
 
 # =========================
-# Bootstrap dallo snapshot Postgres (una tantum)
+# Bootstrap from the Postgres snapshot (one-off)
 # =========================
 def bootstrap_state_if_missing():
     if DeltaTable.isDeltaTable(spark, STATE_PATH):
-        print(f"[bootstrap] Delta state già presente: {STATE_PATH} → salto bootstrap.")
-        return
+        existing = spark.read.format("delta").load(STATE_PATH)
+        if existing.limit(1).count() > 0:
+            print(f"[bootstrap] Delta state already present: {STATE_PATH} -> skip bootstrap.")
+            return
+        else:
+            print(f"[bootstrap] Delta state exists but is empty: {STATE_PATH} -> running bootstrap.")
 
     if not BOOTSTRAP_FROM_PG:
-        print("[bootstrap] BOOTSTRAP_FROM_PG=0 → salto bootstrap (nessuno stato iniziale creato).")
+        print("[bootstrap] BOOTSTRAP_FROM_PG=0 -> skip bootstrap (no initial state created).")
         return
 
     if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
         raise RuntimeError("Parametri JDBC mancanti per bootstrap: JDBC_PG_URL, JDBC_PG_USER, JDBC_PG_PASSWORD.")
 
-    base_df = (
-        spark.read.format("jdbc")
-        .option("url", JDBC_PG_URL)
-        .option("dbtable", """
-            (
-              SELECT shelf_id, aisle, item_weight, shelf_weight, item_category, item_subcategory,
-                     maximum_stock, current_stock, item_price, snapshot_ts
-              FROM ref.store_inventory_snapshot
-            ) AS t
-        """)
-        .option("user", JDBC_PG_USER)
-        .option("password", JDBC_PG_PASSWORD)
-        .load()
-    )
+    last_err = None
+    for attempt in range(1, 10):
+        try:
+            base_df = (
+                spark.read.format("jdbc")
+                .option("url", JDBC_PG_URL)
+                .option("dbtable", """
+                    (
+                      SELECT shelf_id, aisle, item_weight, shelf_weight, item_category, item_subcategory,
+                             maximum_stock, current_stock, item_price, snapshot_ts
+                      FROM ref.store_inventory_snapshot
+                    ) AS t
+                """)
+                .option("user", JDBC_PG_USER)
+                .option("password", JDBC_PG_PASSWORD)
+                .load()
+            )
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[bootstrap] Postgres read failed (attempt {attempt}/5): {e}")
+            time.sleep(5)
+    else:
+        raise RuntimeError("Unable to read ref.store_inventory_snapshot from Postgres") from last_err
 
     w = Window.partitionBy("shelf_id").orderBy(F.col("snapshot_ts").desc())
     latest = (
@@ -128,16 +145,16 @@ def bootstrap_state_if_missing():
                .select(
                    F.col("shelf_id"),
                    F.col("current_stock").cast("int").alias("current_stock"),
-                   # N.B. salviamo nel campo shelf_weight il peso unitario (item_weight)
+                   # Note: store the unit weight (item_weight) inside shelf_weight column
                    F.col("item_weight").cast("double").alias("shelf_weight"),
                    F.current_timestamp().alias("last_update_ts")
                )
     )
 
-    # Scrivi Delta stato iniziale
+    # Write initial Delta state
     latest.write.format("delta").mode("overwrite").save(STATE_PATH)
 
-    # Pubblica su topic compacted `shelf_state` (key=shelf_id)
+    # Publish to compacted topic `shelf_state` (key=shelf_id)
     to_publish = (
         latest.withColumn(
             "value_json",
@@ -157,7 +174,7 @@ def bootstrap_state_if_missing():
         .option("topic", TOPIC_SHELF_STATE) \
         .save()
 
-    print(f"[bootstrap] Stato iniziale creato da Postgres e pubblicato su {TOPIC_SHELF_STATE}.")
+    print(f"[bootstrap] Initial state created from Postgres and published on {TOPIC_SHELF_STATE}.")
 
 bootstrap_state_if_missing()
 
@@ -184,32 +201,49 @@ events = (
     .select(
         F.col("value_json.event_type").alias("event_type"),
         F.col("value_json.customer_id").alias("customer_id"),
-        F.col("value_json.item_id").alias("shelf_id"),
+        F.col("value_json.item_id").alias("item_id"),
+        F.coalesce(F.col("value_json.shelf_id"), F.col("value_json.item_id")).alias("shelf_id"),
         F.col("value_json.weight").alias("weight"),
         F.col("value_json.quantity").alias("quantity"),
+        F.col("value_json.delta_weight").alias("delta_weight"),
         F.to_timestamp("value_json.timestamp").alias("event_ts"),
         "topic","partition","offset"
     )
 )
 
-# Salvataggio RAW append su Delta
+raw_events = (
+    events
+    .select(
+        "event_type",
+        "customer_id",
+        "item_id",
+        "shelf_id",
+        "quantity",
+        "weight",
+        "delta_weight",
+        F.col("event_ts").alias("timestamp")
+    )
+)
+
+# Persist RAW append-only stream into Delta
 raw_query = (
-    events.writeStream
+    raw_events.writeStream
     .format("delta")
     .outputMode("append")
     .option("checkpointLocation", CKP_RAW)
+    .option("mergeSchema", "true")
     .option("path", RAW_PATH)
     .start()
 )
 
 # =========================
-# 2) Aggregazione verso shelf_state (Delta + Kafka compacted)
+# 2) Aggregate into shelf_state (Delta + Kafka compacted)
 # =========================
 def upsert_and_publish(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty():
         return
 
-    # Delta corretto: pickup = -qty, putback = +qty
+    # Stock delta logic: pickup = -qty, putback = +qty
     deltas = (
         batch_df.groupBy("shelf_id")
         .agg(
@@ -223,29 +257,31 @@ def upsert_and_publish(batch_df, batch_id: int):
         .filter(F.col("delta_qty").isNotNull())
     )
 
-    # arricchisci con profiles (peso unitario)
+    # Enrich with profiles (unit weight)
     enriched = deltas.join(F.broadcast(profiles_latest), on="shelf_id", how="left")
 
-    # MERGE sullo stato
+    # Merge into the state table
     if DeltaTable.isDeltaTable(spark, STATE_PATH):
         updates = (
             enriched
             .withColumn("last_update_ts", F.current_timestamp())
             .select("shelf_id","delta_qty","last_event_ts","item_weight","last_update_ts")
         )
-        updates.createOrReplaceTempView("updates_view")
 
-        spark.sql(f"""
-            MERGE INTO delta.`{STATE_PATH}` AS t
-            USING updates_view AS s
-            ON t.shelf_id = s.shelf_id
-            WHEN MATCHED THEN UPDATE SET
-              t.current_stock    = COALESCE(t.current_stock, 0) + s.delta_qty,
-              t.shelf_weight     = COALESCE(s.item_weight, t.shelf_weight),
-              t.last_update_ts   = GREATEST(t.last_update_ts, s.last_event_ts, s.last_update_ts)
-            WHEN NOT MATCHED THEN INSERT (shelf_id, current_stock, shelf_weight, last_update_ts)
-              VALUES (s.shelf_id, s.delta_qty, s.item_weight, s.last_update_ts)
-        """)
+        delta_table = DeltaTable.forPath(spark, STATE_PATH)
+        delta_table.alias("t").merge(
+            updates.alias("s"),
+            "t.shelf_id = s.shelf_id"
+        ).whenMatchedUpdate(set={
+            "current_stock": F.expr("COALESCE(t.current_stock, 0) + s.delta_qty"),
+            "shelf_weight":  F.expr("COALESCE(s.item_weight, t.shelf_weight)"),
+            "last_update_ts": F.expr("GREATEST(t.last_update_ts, s.last_event_ts, s.last_update_ts)")
+        }).whenNotMatchedInsert(values={
+            "shelf_id":      F.col("s.shelf_id"),
+            "current_stock": F.col("s.delta_qty"),
+            "shelf_weight":  F.col("s.item_weight"),
+            "last_update_ts":F.col("s.last_update_ts")
+        }).execute()
     else:
         initial_state = (
             enriched
@@ -255,7 +291,7 @@ def upsert_and_publish(batch_df, batch_id: int):
         )
         initial_state.write.format("delta").mode("overwrite").save(STATE_PATH)
 
-    # Pubblica solo le chiavi toccate
+    # Publish only the keys touched in this batch
     updated_keys = deltas.select("shelf_id").distinct()
     state_df = spark.read.format("delta").load(STATE_PATH)
 
