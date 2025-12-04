@@ -1,7 +1,5 @@
 import os
-import logging
 import time
-from datetime import datetime
 from pyspark.sql import SparkSession, functions as F, types as T, Window
 from delta.tables import DeltaTable
 

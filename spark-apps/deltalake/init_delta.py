@@ -95,6 +95,15 @@ schema_wh_state = StructType([
     StructField("last_update_ts",   TimestampType(), False),
 ])
 
+schema_shelf_batch_state = StructType([
+    StructField("shelf_id",             StringType(), False),
+    StructField("batch_code",           StringType(), False),
+    StructField("received_date",        DateType(),   False),
+    StructField("expiry_date",          DateType(),   False),
+    StructField("batch_quantity_store", IntegerType(), False),
+    StructField("last_update_ts",       TimestampType(), False),
+])
+
 schema_wh_batch_state = StructType([
     StructField("shelf_id",                   StringType(), False),
     StructField("batch_code",                 StringType(), False),
@@ -158,6 +167,7 @@ create_empty_delta(path("raw", "wh_events"),         schema_wh_events)
 # CLEANSED
 create_empty_delta(path("cleansed", "shelf_state"),    schema_shelf_state)
 create_empty_delta(path("cleansed", "wh_state"),       schema_wh_state)
+create_empty_delta(path("cleansed", "shelf_batch_state"), schema_shelf_batch_state)
 create_empty_delta(path("cleansed", "wh_batch_state"), schema_wh_batch_state)
 create_empty_delta(path("cleansed", "alerts"),         schema_alerts)
 

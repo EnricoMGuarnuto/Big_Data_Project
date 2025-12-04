@@ -1,2 +1,3 @@
 spark-checkpoints/.DS_Store
 spark-checkpoints
+delta/_checkpoints/
