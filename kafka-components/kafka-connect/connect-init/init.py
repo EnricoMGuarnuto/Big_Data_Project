@@ -44,21 +44,24 @@ def upsert_connector(name, config):
 def pg_jdbc_url():
     return f"jdbc:postgresql://{PG_HOST}:{PG_PORT}/{PG_DB}"
 
-# ---------- SOURCE (Postgres -> Kafka) -----------
-def source_alert_rules():
-    # Produce on topic "alert_rules" (compacted metadata)
-    # Use table.whitelist + RegexRouter to strip the schema prefix ("config.")
+# ---------- SOURCES (Postgres -> Kafka, compacted metadata) -----------
+
+def source_shelf_policies():
+    """
+    Pubblica su topic 'shelf_policies' (compacted).
+    Chiave = policy_id (UUID); il valore contiene tutti i campi della tabella.
+    """
     return {
-      "name": "pg-source-alert-rules",
+      "name": "pg-source-shelf-policies",
       "config": {
         "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
         "connection.url": pg_jdbc_url(),
         "connection.user": PG_USER,
         "connection.password": PG_PASS,
-        "table.whitelist": "config.alert_rules",
+        "table.whitelist": "config.shelf_policies",
         "mode": "timestamp",
         "timestamp.column.name": "updated_at",
-        "topic.prefix": "config.",       # creates "config.alert_rules"
+        "topic.prefix": "config.",
         "poll.interval.ms": "10000",
         "numeric.mapping": "best_fit",
         "validate.non.null": "false",
@@ -68,9 +71,40 @@ def source_alert_rules():
         "transforms": "R,Key",
         "transforms.R.type": "org.apache.kafka.connect.transforms.RegexRouter",
         "transforms.R.regex": "config\\.(.*)",
-        "transforms.R.replacement": "$1",                 # -> "alert_rules"
+        "transforms.R.replacement": "$1",                 # -> topic 'shelf_policies'
         "transforms.Key.type": "org.apache.kafka.connect.transforms.ValueToKey",
-        "transforms.Key.fields": "rule_id"                # key = rule_id (UUID string)
+        "transforms.Key.fields": "policy_id"              # key = policy_id
+      }
+    }
+
+def source_wh_policies():
+    """
+    Pubblica su topic 'wh_policies' (compacted).
+    Chiave = policy_id (UUID).
+    """
+    return {
+      "name": "pg-source-wh-policies",
+      "config": {
+        "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+        "connection.url": pg_jdbc_url(),
+        "connection.user": PG_USER,
+        "connection.password": PG_PASS,
+        "table.whitelist": "config.wh_policies",
+        "mode": "timestamp",
+        "timestamp.column.name": "updated_at",
+        "topic.prefix": "config.",
+        "poll.interval.ms": "10000",
+        "numeric.mapping": "best_fit",
+        "validate.non.null": "false",
+        "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": "false",
+        "transforms": "R,Key",
+        "transforms.R.type": "org.apache.kafka.connect.transforms.RegexRouter",
+        "transforms.R.regex": "config\\.(.*)",
+        "transforms.R.replacement": "$1",                 # -> topic 'wh_policies'
+        "transforms.Key.type": "org.apache.kafka.connect.transforms.ValueToKey",
+        "transforms.Key.fields": "policy_id"              # key = policy_id
       }
     }
 
@@ -95,7 +129,7 @@ def source_batch_catalog():
         "transforms": "R,Key",
         "transforms.R.type": "org.apache.kafka.connect.transforms.RegexRouter",
         "transforms.R.regex": "config\\.(.*)",
-        "transforms.R.replacement": "$1",                 # -> "batch_catalog"
+        "transforms.R.replacement": "$1",                 # -> 'batch_catalog'
         "transforms.Key.type": "org.apache.kafka.connect.transforms.ValueToKey",
         "transforms.Key.fields": "batch_code"
       }
@@ -122,13 +156,14 @@ def source_shelf_profiles():
         "transforms": "R,Key",
         "transforms.R.type": "org.apache.kafka.connect.transforms.RegexRouter",
         "transforms.R.regex": "config\\.(.*)",
-        "transforms.R.replacement": "$1",                 # -> "shelf_profiles"
+        "transforms.R.replacement": "$1",                 # -> 'shelf_profiles'
         "transforms.Key.type": "org.apache.kafka.connect.transforms.ValueToKey",
         "transforms.Key.fields": "shelf_id"
       }
     }
 
-# ---------- SINK (Kafka -> Postgres) -------------
+# ---------- SINKS (Kafka -> Postgres) -------------
+
 def sink_upsert(topic, table, pk_fields):
     """Generic upsert on PK fields coming from record_value (json)."""
     return {
@@ -154,7 +189,7 @@ def sink_upsert(topic, table, pk_fields):
     }
 
 def sink_insert(topic, table):
-    """Append-only mode (e.g., wh_events)."""
+    """Append-only mode"""
     return {
       "name": f"pg-sink-{topic}",
       "config": {
@@ -179,7 +214,13 @@ def main():
     wait_for_connect()
 
     # Sources (Postgres -> Kafka, compacted metadata)
-    for src in [source_alert_rules(), source_batch_catalog(), source_shelf_profiles()]:
+    sources = [
+        source_shelf_policies(),
+        source_wh_policies(),
+        source_batch_catalog(),
+        source_shelf_profiles(),
+    ]
+    for src in sources:
         upsert_connector(src["name"], src["config"])
 
     # Sinks (Kafka -> Postgres)
@@ -187,15 +228,15 @@ def main():
         # STATE compacted
         sink_upsert("shelf_state",          "state.shelf_state",          ["shelf_id"]),
         sink_upsert("wh_state",             "state.wh_state",             ["shelf_id"]),
-        sink_upsert("product_total_state",  "state.product_total_state",  ["shelf_id"]),
         sink_upsert("shelf_batch_state",    "state.shelf_batch_state",    ["shelf_id","batch_code"]),
         sink_upsert("wh_batch_state",       "state.wh_batch_state",       ["shelf_id","batch_code"]),
         sink_upsert("daily_discounts",      "analytics.daily_discounts",  ["shelf_id","week"]),
-        sink_upsert("wh_restock_plan",      "ops.shelf_restock_plan",     ["plan_id"]),
+        sink_upsert("shelf_restock_plan",   "ops.shelf_restock_plan",     ["plan_id"]),
+        sink_upsert("wh_supplier_plan",     "ops.wh_supplier_plan",       ["supplier_plan_id"]),
         # Append-only
         sink_insert("wh_events",            "ops.wh_events"),
         sink_insert("pos_transactions",     "ops.pos_transactions"),
-        sink_insert("alerts",             "ops.alerts")
+        sink_insert("alerts",               "ops.alerts"),
     ]
     for s in sinks:
         upsert_connector(s["name"], s["config"])

@@ -31,14 +31,15 @@ COMPACTED: Dict[str, Dict[str, str]] = {
     # STATE topics
     "shelf_state": {},
     "wh_state": {},
-    "product_total_state": {},
     "shelf_batch_state": {},
     "wh_batch_state": {},
     "daily_discounts": {},         # Discount Manager output (last per key)
-    "wh_restock_plan": {},         # planner: latest plan per shelf_id
+    "shelf_restock_plan": {},         # planner: latest plan per shelf_id
+    "wh_supplier_plan": {},         # planner: latest plan per batch_id::expiry_date
 
     # Metadata / rules topics
-    "alert_rules": {},
+    "shelf_policies": {},
+    "wh_policies": {},
     "batch_catalog": {},
     "shelf_profiles": {},
 }
@@ -63,9 +64,9 @@ def build_admin() -> KafkaAdminClient:
     for attempt in range(1, 11):
         try:
             return KafkaAdminClient(bootstrap_servers=BROKER, client_id="kafka-init")
-        except NoBrokersAvailable as e:
+        except (NoBrokersAvailable, Exception) as e:
             last = e
-            print(f"[init] Broker non disponibile ({attempt}/10). Riprovo tra 3s…")
+            print(f"[init] Broker non disponibile ({attempt}/10). Riprovo tra 3s… ({e})")
             time.sleep(3)
     raise RuntimeError(f"Kafka non raggiungibile: {last}")
 

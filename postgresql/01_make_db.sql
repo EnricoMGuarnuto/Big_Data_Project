@@ -41,7 +41,7 @@ END$$;
 -- CONFIG / RULES (owned and edited by humans or services)
 -- ======================================================
 
--- Shelf policies managed in the UI and synced to Kafka `alert_rules`
+-- Shelf policies managed in the UI and synced to Kafka `shelf_policies`
 CREATE TABLE IF NOT EXISTS config.shelf_policies (
   policy_id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   -- Scope: by shelf, category, or global
@@ -150,19 +150,12 @@ CREATE TABLE IF NOT EXISTS state.wh_batch_state (
 CREATE INDEX IF NOT EXISTS ix_wh_batch_state_expiry
   ON state.wh_batch_state (expiry_date);
 
--- Optional: product total (store + warehouse) for quick dashboards
-CREATE TABLE IF NOT EXISTS state.product_total_state (
-  shelf_id         TEXT PRIMARY KEY,
-  total_stock      INTEGER NOT NULL,
-  last_update_ts   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 -- ======================================================
 -- OPS: operational facts (plans, events, alerts)
 -- These are append-only (or status-updated) tables fed by your services.
 -- ======================================================
 
--- Warehouse restock plan (Spark output, also mirrored on Kafka `shelf_restock_plan`)
+-- Shelf restock plan (Spark output, also mirrored on Kafka `shelf_restock_plan`)
 CREATE TABLE IF NOT EXISTS ops.shelf_restock_plan (
   plan_id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   shelf_id           TEXT NOT NULL,

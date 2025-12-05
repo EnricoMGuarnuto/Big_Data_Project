@@ -1,10 +1,12 @@
 services:
+# Kafka and Zookeeper
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
     restart: unless-stopped
+
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: kafka
@@ -22,6 +24,8 @@ services:
     volumes:
     - kafka-data:/var/lib/kafka/data
     restart: unless-stopped
+
+# Redis
   redis:
     image: redis:7
     container_name: redis
@@ -32,6 +36,8 @@ services:
     volumes:
     - redis-data:/data
     restart: unless-stopped
+
+# Kafka Connect and Init
   kafka-init:
     build:
       context: ./kafka-components/kafka-init
@@ -42,6 +48,7 @@ services:
     environment:
       KAFKA_BROKER: kafka:9092
     restart: 'no'
+
   kafka-connect:
     build:
       context: ./kafka-components/kafka-connect
@@ -66,6 +73,7 @@ services:
     ports:
     - 8083:8083
     restart: unless-stopped
+
   connect-init:
     build:
       context: ./kafka-components/kafka-connect/connect-init
@@ -84,6 +92,8 @@ services:
       PG_USER: bdt_user
       PG_PASS: bdt_password
     restart: 'no'
+
+# PostgreSQL Database
   postgres:
     image: postgres:16
     container_name: postgres
@@ -98,6 +108,8 @@ services:
     - ./postgresql:/docker-entrypoint-initdb.d:ro
     - ./data/db_csv:/import/csv:ro
     restart: unless-stopped
+
+# Kafka Producers
   kafka-producer-foot-traffic:
     build:
       context: ./kafka-components/kafka-producer-foot_traffic
@@ -115,6 +127,7 @@ services:
       SLEEP: '0.125'
       TIME_SCALE: '4.0'
     restart: unless-stopped
+
   kafka-producer-pos:
     build:
       context: ./kafka-components/kafka-producer-pos
@@ -134,6 +147,7 @@ services:
     volumes:
     - ./data:/data:ro
     restart: unless-stopped
+
   kafka-producer-shelf:
     build:
       context: ./kafka-components/kafka-producer-shelf
@@ -152,23 +166,8 @@ services:
     volumes:
     - ./data:/data:ro
     restart: unless-stopped
-  kafka-producer-wh_shelf:
-    build:
-      context: ./kafka-components/kafka-producer-wh_shelf
-      dockerfile: Dockerfile
-    container_name: kafka-producer-wh_shelf
-    depends_on:
-    - kafka
-    - redis
-    environment:
-      KAFKA_BROKER: kafka:9092
-      REDIS_HOST: redis
-      REDIS_PORT: '6379'
-      REDIS_DB: '0'
-      REDIS_STREAM: wh_events
-    volumes:
-    - ./data:/data:ro
-    restart: unless-stopped
+  
+#Spark Applications
   spark-init-delta:
     build:
       context: ./spark-apps/deltalake
@@ -179,9 +178,7 @@ services:
       SPARK_WAREHOUSE_DIR: /tmp/spark-warehouse
       PYSPARK_SUBMIT_ARGS: '--packages io.delta:delta-spark_2.12:3.2.0 --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
         --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
-        pyspark-shell
-
-        '
+        pyspark-shell'
     volumes:
     - ./delta:/delta
     - ./spark-apps/deltalake/init_delta.py:/app/init_delta.py:ro
@@ -190,6 +187,7 @@ services:
     - -u
     - /app/init_delta.py
     restart: 'no'
+
   spark-shelf-aggregator:
     build:
       context: ./spark-apps/shelf-aggregator
@@ -212,6 +210,7 @@ services:
     volumes:
     - ./delta:/delta
     restart: unless-stopped
+
   batch-state-updater:
     build:
       context: ./spark-apps/batch-state-updater
@@ -231,6 +230,175 @@ services:
     depends_on:
     - kafka
     - postgres
+
+  shelf-alert-engine:
+    build:
+      context: ./spark-apps/shelf-alert-engine
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_SHELF_STATE: shelf_state
+      TOPIC_SHELF_BATCH_STATE: shelf_batch_state
+      TOPIC_SHELF_POLICIES: shelf_policies
+      TOPIC_ALERTS: alerts
+      TOPIC_SHELF_RESTOCK: shelf_restock_plan
+      DELTA_ROOT: /delta
+      DL_SHELF_STATE_PATH: /delta/cleansed/shelf_state
+      DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
+      DL_ALERTS_PATH: /delta/ops/alerts
+      DL_RESTOCK_PATH: /delta/ops/shelf_restock_plan
+      CHECKPOINT_ROOT: /delta/_checkpoints/shelf_alert_engine
+      STARTING_OFFSETS: earliest
+      NEAR_EXPIRY_DAYS: "5"
+      DEFAULT_TARGET_PCT: "80.0"
+      LOAD_MAX_FROM_PG: "1"
+      JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
+      JDBC_PG_USER: bdt_user
+      JDBC_PG_PASSWORD: bdt_password
+      MAX_STOCK_TABLE: ref.store_inventory_snapshot
+      BOOTSTRAP_POLICIES_FROM_PG: "1"
+      POLICIES_PG_TABLE: config.shelf_policies
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+      - postgres
+    restart: unless-stopped
+
+  wh-alert-engine:
+    build:
+      context: ./spark-apps/wh-alert-engine
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_WH_STATE: wh_state
+      TOPIC_WH_BATCH_STATE: wh_batch_state
+      TOPIC_WH_POLICIES: wh_policies
+      TOPIC_ALERTS: alerts
+      TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
+      DELTA_ROOT: /delta
+      DL_WH_STATE_PATH: /delta/cleansed/wh_state
+      DL_WH_BATCH_PATH: /delta/cleansed/wh_batch_state
+      DL_ALERTS_PATH: /delta/ops/alerts
+      DL_SUPPLIER_PLAN_PATH: /delta/ops/wh_supplier_plan
+      CHECKPOINT_ROOT: /delta/_checkpoints/wh_alert_engine
+      STARTING_OFFSETS: earliest
+      NEAR_EXPIRY_DAYS: "10"
+      DEFAULT_MULTIPLIER: "1"
+      BOOTSTRAP_WH_POLICIES_FROM_PG: "1"
+      JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
+      JDBC_PG_USER: bdt_user
+      JDBC_PG_PASSWORD: bdt_password
+      WH_POLICIES_PG_TABLE: config.wh_policies
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+      - postgres
+    restart: unless-stopped
+
+  alerts-sink:
+    build:
+      context: ./spark-apps/alerts-sink
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_ALERTS: alerts
+      STARTING_OFFSETS: earliest
+
+      DELTA_ROOT: /delta
+      DL_ALERTS_PATH: /delta/ops/alerts
+      CHECKPOINT: /delta/_checkpoints/alerts_sink
+      # Postgres sink (optional)
+      WRITE_TO_PG: "1"
+      JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
+      JDBC_PG_USER: bdt_user
+      JDBC_PG_PASSWORD: bdt_password
+      PG_TABLE: ops.alerts
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+      - postgres
+    restart: unless-stopped
+
+  shelf-restock-manager:
+    build:
+      context: ./spark-apps/shelf-restock-manager
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_RESTOCK: shelf_restock_plan
+      TOPIC_WH_EVENTS: wh_events
+      TOPIC_ALERTS: alerts
+      DELTA_ROOT: /delta
+      DL_WH_BATCH_PATH: /delta/cleansed/wh_batch_state
+      DL_RESTOCK_PATH: /delta/ops/shelf_restock_plan
+      CKP_ROOT: /delta/_checkpoints/shelf_restock_manager
+      STARTING_OFFSETS: earliest
+      PLAN_DELAY_SEC: "60"     # attesa di 1 minuto prima di muovere stock
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  wh-aggregator:
+    build:
+      context: ./spark-apps/wh-aggregator
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_WH_EVENTS: wh_events
+      TOPIC_WH_STATE: wh_state
+      DELTA_ROOT: /delta
+      STARTING_OFFSETS: earliest
+      BOOTSTRAP_FROM_PG: "1"
+      JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
+      JDBC_PG_USER: bdt_user
+      JDBC_PG_PASSWORD: bdt_password
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+      - postgres
+    restart: unless-stopped
+
+  wh-batch-state-updater:
+    build:
+      context: ./spark-apps/wh-batch-state-updater
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_WH_EVENTS: wh_events
+      TOPIC_WH_BATCH: wh_batch_state
+      TOPIC_SHELF_BATCH: shelf_batch_state
+      DELTA_ROOT: /delta
+      STARTING_OFFSETS: earliest
+      BOOTSTRAP_FROM_PG: "1"
+      JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
+      JDBC_PG_USER: bdt_user
+      JDBC_PG_PASSWORD: bdt_password
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+      - postgres
+    restart: unless-stopped
+
+  shelf-refill-bridge:
+    build:
+      context: ./spark-apps/shelf-refill-bridge
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_WH_EVENTS: wh_events
+      TOPIC_SHELF_EVENTS: shelf_events
+      TOPIC_SHELF_PROFILES: shelf_profiles
+      DELAY_MINUTES: "3"
+      DELTA_ROOT: /delta
+      PENDING_PATH: /delta/staging/shelf_refill_pending
+      CKP: /delta/_checkpoints/shelf_refill_bridge
+      STARTING_OFFSETS: earliest
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
 volumes:
   kafka-data: null
   redis-data: null
