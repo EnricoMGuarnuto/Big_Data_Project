@@ -1,6 +1,7 @@
 ok ora mancherebbero in spark solo le parti di:
 - spark che elimina da shelf se prodotto è scaduto 
 - spark che se prodotto è in scadenza (1 giorno prima della scadenza) lo mette in sconto
-- spark che popola wh_supplier_plan
 - spark che gestisce wh_supplier_plan 
 - spark che aggiunge in deltalake pos_transactions, foot_traffic
+- modello
+- streamlit
