@@ -399,6 +399,30 @@ services:
       - kafka
     restart: unless-stopped
 
+
+  daily-discount-manager:
+    build:
+      context: ./spark-apps/daily-discount-manager
+      dockerfile: Dockerfile
+    container_name: daily-discount-manager
+    depends_on:
+      - kafka
+    environment:
+      # Kafka
+      KAFKA_BROKER: kafka:9092
+      TOPIC_DAILY_DISCOUNTS: daily_discounts
+      TOPIC_ALERTS: alerts
+
+      # Delta
+      DELTA_ROOT: /delta
+      DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
+      DL_DAILY_DISC_PATH: /delta/analytics/daily_discounts
+    volumes:
+      - ./delta:/delta
+    # Job batch: parte, fa il lavoro, termina. Lo lanci quando vuoi.
+    restart: unless-stopped
+
+
 volumes:
   kafka-data: null
   redis-data: null

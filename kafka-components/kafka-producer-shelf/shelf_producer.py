@@ -5,6 +5,7 @@ import random
 import threading
 import redis
 import logging
+import psycopg2
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -33,6 +34,15 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_STREAM = os.getenv("REDIS_STREAM", "shelf_events")  # stream key
+
+# postgres 
+PG_HOST = os.getenv("PG_HOST", "postgres")
+PG_PORT = int(os.getenv("PG_PORT", "5432"))
+PG_DB   = os.getenv("PG_DB", "smart_shelf")
+PG_USER = os.getenv("PG_USER", "bdt_user")
+PG_PASS = os.getenv("PG_PASS", "bdt_password")
+DAILY_DISCOUNT_TABLE = os.getenv("DAILY_DISCOUNT_TABLE", "analytics.daily_discounts")
+
 
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
@@ -88,6 +98,40 @@ def load_discounts_from_parquet(path: str) -> dict:
     except Exception as e:
         log.warning(f"[shelf] Error reading discounts from {path}: {e}")
         return {}
+    
+def load_daily_discounts_from_pg() -> dict:
+    """
+    Ritorna mappa shelf_id -> daily_discount per oggi da analytics.daily_discounts.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=PG_HOST,
+            port=PG_PORT,
+            dbname=PG_DB,
+            user=PG_USER,
+            password=PG_PASS,
+        )
+        cur = conn.cursor()
+        today = datetime.utcnow().date()
+        cur.execute(
+            f"SELECT shelf_id, discount FROM {DAILY_DISCOUNT_TABLE} WHERE discount_date = %s",
+            (today,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        d = {
+            sid: float(discount)
+            for sid, discount in rows
+            if sid is not None and discount is not None
+        }
+        log.info(f"[shelf] Daily discounts loaded for {today}: {len(d)} rows")
+        return d
+    except Exception as e:
+        log.warning(f"[shelf] Error reading daily discounts from Postgres: {e}")
+        return {}
+
 
 # ========================
 # IO (Kafka / Redis)
@@ -165,8 +209,19 @@ def main():
     if not required_cols.issubset(df.columns):
         raise ValueError(f"Parquet must contain columns: {required_cols}")
 
-    discounts_by_item = {}
-    discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
+    weekly_discounts = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
+    daily_discounts = load_daily_discounts_from_pg()
+
+    def effective_discount(sid: str) -> float:
+        dw = float(weekly_discounts.get(sid, 0.0) or 0.0)
+        dd = float(daily_discounts.get(sid, 0.0) or 0.0)
+        eff = 1.0 - (1.0 - dw) * (1.0 - dd)
+        return max(0.0, min(eff, 0.95))
+
+    df["discount"] = df["shelf_id"].map(effective_discount)
+    df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
+
+
 
     df["discount"] = df["shelf_id"].map(lambda sid: max(0.0, min(discounts_by_item.get(sid, 0.0), 0.95)))
     df["pick_score"] = df["item_visibility"] * (1 + df["discount"])

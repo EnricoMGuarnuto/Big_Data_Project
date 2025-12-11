@@ -6,6 +6,7 @@ import threading
 import redis
 import logging
 import random
+import psycopg2
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, DefaultDict, Optional, Deque, List, Tuple
 from collections import defaultdict, deque
@@ -46,8 +47,19 @@ STORE_BATCHES_PARQUET = os.getenv("STORE_BATCHES_PARQUET", "/data/store_batches.
 FORCE_CHECKOUT_IF_EMPTY = int(os.getenv("FORCE_CHECKOUT_IF_EMPTY", "0")) == 1
 MAX_SESSION_AGE_SEC = int(os.getenv("MAX_SESSION_AGE_SEC", str(3 * 60 * 60)))
 
+#postgres
+PG_HOST = os.getenv("PG_HOST", "postgres")
+PG_PORT = int(os.getenv("PG_PORT", "5432"))
+PG_DB   = os.getenv("PG_DB", "smart_shelf")
+PG_USER = os.getenv("PG_USER", "bdt_user")
+PG_PASS = os.getenv("PG_PASS", "bdt_password")
+DAILY_DISCOUNT_TABLE = os.getenv("DAILY_DISCOUNT_TABLE", "analytics.daily_discounts")
+
+
 # Probabilità di scegliere il lotto con expiry più vicina
 PROB_EARLIEST_EXPIRY = float(os.getenv("PROB_EARLIEST_EXPIRY", "0.60"))
+
+
 
 # Globals inizializzati in main()
 producer: Optional[KafkaProducer] = None
@@ -120,6 +132,40 @@ def load_discounts_from_parquet(path: str) -> Dict[str, float]:
     log.info(f"[pos] Loaded {len(df)} discounts for week {week_str}")
     return dict(zip(df["shelf_id"], df["discount"]))
 
+def load_daily_discounts_from_pg() -> Dict[str, float]:
+    """
+    Ritorna mappa shelf_id -> daily_discount per oggi da analytics.daily_discounts.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=PG_HOST,
+            port=PG_PORT,
+            dbname=PG_DB,
+            user=PG_USER,
+            password=PG_PASS,
+        )
+        cur = conn.cursor()
+        today = datetime.now().date()
+        cur.execute(
+            f"SELECT shelf_id, discount FROM {DAILY_DISCOUNT_TABLE} WHERE discount_date = %s",
+            (today,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        d = {
+            sid: float(discount)
+            for sid, discount in rows
+            if sid is not None and discount is not None
+        }
+        log.info(f"[pos] Loaded {len(d)} daily discounts for {today}")
+        return d
+    except Exception as e:
+        log.warning(f"[pos] ERROR while loading daily discounts from Postgres: {e}")
+        return {}
+
+
 # ========================
 # Stato carrelli + Lotti per shelf
 # ========================
@@ -176,8 +222,12 @@ except Exception as e:
     log.error(f"[pos] ERROR while loading prices {STORE_PARQUET}: {e}")
     price_by_item = {}
 
-discounts_by_item = {}
-discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
+weekly_discounts_by_item: Dict[str, float] = {}
+daily_discounts_by_item: Dict[str, float] = {}
+
+weekly_discounts_by_item.update(load_discounts_from_parquet(DISCOUNT_PARQUET_PATH))
+daily_discounts_by_item.update(load_daily_discounts_from_pg())
+
 
 # Bootstrap batches
 try:
@@ -221,7 +271,15 @@ def _price_for(item_id: str) -> float:
     return float(price_by_item.get(item_id, 5.0))
 
 def _discount_for(item_id: str) -> float:
-    return max(0.0, min(discounts_by_item.get(item_id, 0.0), 0.95))
+    """
+    Combina sconto weekly + daily in modo moltiplicativo:
+      effective = 1 - (1 - dw) * (1 - dd)
+    e clamp a [0, 0.95].
+    """
+    dw = float(weekly_discounts_by_item.get(item_id, 0.0) or 0.0)
+    dd = float(daily_discounts_by_item.get(item_id, 0.0) or 0.0)
+    effective = 1.0 - (1.0 - dw) * (1.0 - dd)
+    return max(0.0, min(effective, 0.95))
 
 # ========================
 # Allocazione lotti (FIFO + 60% earliest-expiry)

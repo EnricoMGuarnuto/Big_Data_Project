@@ -230,7 +230,7 @@ def main():
         sink_upsert("wh_state",             "state.wh_state",             ["shelf_id"]),
         sink_upsert("shelf_batch_state",    "state.shelf_batch_state",    ["shelf_id","batch_code"]),
         sink_upsert("wh_batch_state",       "state.wh_batch_state",       ["shelf_id","batch_code"]),
-        sink_upsert("daily_discounts",      "analytics.daily_discounts",  ["shelf_id","week"]),
+        sink_upsert("daily_discounts",      "analytics.daily_discounts",  ["shelf_id","discount_date"]),
         sink_upsert("shelf_restock_plan",   "ops.shelf_restock_plan",     ["plan_id"]),
         sink_upsert("wh_supplier_plan",     "ops.wh_supplier_plan",       ["supplier_plan_id"]),
         # Append-only

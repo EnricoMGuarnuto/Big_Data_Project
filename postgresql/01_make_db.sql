@@ -333,11 +333,11 @@ CREATE TABLE IF NOT EXISTS ref.warehouse_batches_snapshot (
 
 -- Daily discounts (Spark output; also on Kafka `daily_discounts`)
 CREATE TABLE IF NOT EXISTS analytics.daily_discounts (
-  shelf_id     TEXT NOT NULL,
-  week         TEXT NOT NULL,                 -- e.g. '2025-W46'
-  discount     NUMERIC(5,2) NOT NULL DEFAULT 0.00,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (shelf_id, week)
+  shelf_id       TEXT NOT NULL,
+  discount_date  DATE NOT NULL,               -- es. '2025-12-12'
+  discount       NUMERIC(5,2) NOT NULL DEFAULT 0.00,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (shelf_id, discount_date)
 );
 
 -- Placeholder for curated features (for forecasting/ML)
