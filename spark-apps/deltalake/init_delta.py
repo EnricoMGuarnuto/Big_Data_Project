@@ -152,6 +152,39 @@ schema_predictions = StructType([
     StructField("model_ver",     StringType(),    True),
 ])
 
+schema_wh_supplier_orders = StructType([
+    StructField("order_id",      StringType(), False),   # deterministico o uuid
+    StructField("delivery_date", DateType(),   False),   # prossima consegna (lun/mer/ven)
+    StructField("cutoff_ts",     TimestampType(), False),
+    StructField("shelf_id",      StringType(), False),
+    StructField("suggested_qty", IntegerType(), False),
+    StructField("standard_batch_size", IntegerType(), True),
+    StructField("status",        StringType(), False),   # issued / canceled / ...
+    StructField("created_at",    TimestampType(), False),
+])
+
+schema_wh_inbound_receipts = StructType([
+    StructField("receipt_id",    StringType(), False),
+    StructField("delivery_date", DateType(),   False),
+    StructField("received_ts",   TimestampType(), False),
+    StructField("shelf_id",      StringType(), False),
+    StructField("qty_received",  IntegerType(), False),
+    StructField("batch_code",    StringType(), False),
+    StructField("received_date", DateType(),   False),
+    StructField("expiry_date",   DateType(),   True),
+])
+
+schema_wh_supplier_plan = StructType([
+    StructField("supplier_plan_id", StringType(), False),
+    StructField("shelf_id",         StringType(), False),
+    StructField("suggested_qty",    IntegerType(), False),
+    StructField("standard_batch_size", IntegerType(), True),
+    StructField("status",           StringType(), False),   # pending/issued/completed/...
+    StructField("created_at",       TimestampType(), False),
+    StructField("updated_at",       TimestampType(), False),
+])
+
+
 def create_empty_delta(path_str: str, schema):
     (spark.createDataFrame([], schema)
           .write.format("delta")
@@ -169,12 +202,17 @@ create_empty_delta(path("cleansed", "shelf_state"),    schema_shelf_state)
 create_empty_delta(path("cleansed", "wh_state"),       schema_wh_state)
 create_empty_delta(path("cleansed", "shelf_batch_state"), schema_shelf_batch_state)
 create_empty_delta(path("cleansed", "wh_batch_state"), schema_wh_batch_state)
-create_empty_delta(path("cleansed", "alerts"),         schema_alerts)
 
 # CURATED
 create_empty_delta(path("curated", "product_total_state"), schema_product_total_state)
 create_empty_delta(path("curated", "features_store"),      schema_features_store)
 create_empty_delta(path("curated", "predictions"),         schema_predictions)
+
+# OPS (supplier pipeline)
+create_empty_delta(path("ops", "wh_supplier_plan"),        schema_wh_supplier_plan)
+create_empty_delta(path("ops", "wh_supplier_orders"),      schema_wh_supplier_orders)
+create_empty_delta(path("ops", "wh_inbound_receipts"),     schema_wh_inbound_receipts)
+create_empty_delta(path("ops", "alerts"), schema_alerts)
 
 os.makedirs(path("models", "warehouse_optimizer"), exist_ok=True)
 os.makedirs(path("checkpoints"), exist_ok=True)

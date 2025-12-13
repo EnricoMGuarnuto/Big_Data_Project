@@ -1,7 +1,7 @@
 ok ora mancherebbero in spark solo le parti di:
 - spark che elimina da shelf se prodotto è scaduto (removal_scheduler)
 - spark che se prodotto è in scadenza (1 giorno prima della scadenza) lo mette in sconto (daily_discount_manager)
-- spark che gestisce wh_supplier_plan (wh_supplier_manager)
-- spark che aggiunge in deltalake pos_transactions, foot_traffic
+- spark che gestisce wh_supplier_plan (wh_supplier_manager) ✅
+- spark che aggiunge in deltalake pos_transactions, foot_traffic ✅
 - modello
 - streamlit

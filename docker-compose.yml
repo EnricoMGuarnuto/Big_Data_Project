@@ -231,6 +231,22 @@ services:
     - kafka
     - postgres
 
+  foot-traffic-raw-sink:
+    build:
+      context: ./spark-apps/foot-traffic-raw-sink
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_FOOT_TRAFFIC: foot_traffic
+      STARTING_OFFSETS: earliest
+      DELTA_ROOT: /delta
+      DL_FOOT_TRAFFIC_PATH: /delta/raw/foot_traffic
+      CHECKPOINT: /delta/_checkpoints/foot_traffic_raw_sink
+    volumes:
+    - ./delta:/delta
+    depends_on:
+    - kafka
+    restart: unless-stopped
+
   shelf-alert-engine:
     build:
       context: ./spark-apps/shelf-alert-engine
@@ -420,6 +436,40 @@ services:
     volumes:
       - ./delta:/delta
     # Job batch: parte, fa il lavoro, termina. Lo lanci quando vuoi.
+    restart: unless-stopped
+
+  wh-supplier-manager:
+    build:
+      context: ./spark-apps/wh-supplier-manager
+      dockerfile: Dockerfile
+    container_name: wh-supplier-manager
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
+      TOPIC_WH_EVENTS: wh_events
+
+      DELTA_ROOT: /delta
+      DL_SUPPLIER_PLAN_PATH: /delta/ops/wh_supplier_plan
+      DL_ORDERS_PATH: /delta/ops/wh_supplier_orders
+      DL_RECEIPTS_PATH: /delta/ops/wh_supplier_receipts
+      DL_WH_EVENTS_RAW: /delta/raw/wh_events
+
+      CHECKPOINT_ROOT: /delta/_checkpoints/wh_supplier_manager
+      TICK_MINUTES: "1"
+
+      # Schedule (UTC)
+      CUTOFF_HOUR: "12"
+      CUTOFF_MINUTE: "0"
+      DELIVERY_HOUR: "8"
+      DELIVERY_MINUTE: "0"
+
+      DEFAULT_EXPIRY_DAYS: "365"
+    volumes:
+      - ./delta:/delta
+    depends_on:
+      - kafka
+      - spark-init-delta
+      - wh-alert-engine
     restart: unless-stopped
 
 

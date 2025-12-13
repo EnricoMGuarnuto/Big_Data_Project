@@ -19,6 +19,8 @@ BOOTSTRAP_FROM_PG = os.getenv("BOOTSTRAP_FROM_PG", "0") in ("1", "true", "True")
 DELTA_ROOT = os.getenv("DELTA_ROOT", "/delta")
 BATCH_STATE_PATH = f"{DELTA_ROOT}/cleansed/shelf_batch_state"
 CHECKPOINT_PATH = f"{DELTA_ROOT}/_checkpoints/batch_state_updater"
+POS_RAW_PATH = os.getenv("DL_POS_TRANSACTIONS_PATH", f"{DELTA_ROOT}/raw/pos_transactions")
+POS_RAW_CHECKPOINT = os.getenv("CKP_POS_TRANSACTIONS", f"{CHECKPOINT_PATH}/raw_pos")
 STARTING_OFFSETS = os.getenv("STARTING_OFFSETS", "earliest")
 
 # =========================
@@ -209,6 +211,27 @@ pos_events = (
     .withColumn("json", F.from_json("value", schema_tx))
     .select("json.*")
     .filter(F.col("event_type") == "pos_transaction")
+)
+
+raw_pos_events = (
+    pos_events
+    .select(
+        "event_type",
+        "transaction_id",
+        "customer_id",
+        F.to_timestamp("timestamp").alias("timestamp"),
+        "items"
+    )
+)
+
+raw_query = (
+    raw_pos_events.writeStream
+    .format("delta")
+    .outputMode("append")
+    .option("checkpointLocation", POS_RAW_CHECKPOINT)
+    .option("mergeSchema", "true")
+    .option("path", POS_RAW_PATH)
+    .start()
 )
 
 query = (

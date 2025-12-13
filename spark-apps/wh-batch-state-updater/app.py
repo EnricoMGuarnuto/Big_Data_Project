@@ -1,6 +1,8 @@
 import os, time
 from pyspark.sql import SparkSession, functions as F, types as T
 from delta.tables import DeltaTable
+from pyspark.sql.window import Window
+
 
 KAFKA_BROKER=os.getenv("KAFKA_BROKER","kafka:9092")
 TOPIC_WH_EVENTS=os.getenv("TOPIC_WH_EVENTS","wh_events")
@@ -62,7 +64,6 @@ def bootstrap_from_pg():
                       F.current_timestamp().alias("last_update_ts")))
     s_st.write.format("delta").mode("overwrite").save(DL_SHELF_BATCH)
 
-from pyspark.sql.window import Window
 bootstrap_from_pg()
 
 raw=(spark.readStream.format("kafka")
