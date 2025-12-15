@@ -424,19 +424,41 @@ services:
     depends_on:
       - kafka
     environment:
-      # Kafka
       KAFKA_BROKER: kafka:9092
       TOPIC_DAILY_DISCOUNTS: daily_discounts
       TOPIC_ALERTS: alerts
 
-      # Delta
       DELTA_ROOT: /delta
       DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
       DL_DAILY_DISC_PATH: /delta/analytics/daily_discounts
     volumes:
       - ./delta:/delta
-    # Job batch: parte, fa il lavoro, termina. Lo lanci quando vuoi.
     restart: unless-stopped
+
+  removal-scheduler:
+    build:
+      context: ./spark-apps/removal-scheduler
+      dockerfile: Dockerfile
+    container_name: removal-scheduler
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:9092
+      TOPIC_ALERTS: alerts
+      TOPIC_SHELF_STATE: shelf_state
+      TOPIC_SHELF_BATCH_STATE: shelf_batch_state
+
+      DELTA_ROOT: /delta
+      DL_SHELF_STATE_PATH: /delta/cleansed/shelf_state
+      DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
+
+      # remove next day by default
+      REMOVE_MODE: next_day
+      EMIT_ALERTS: "1"
+    volumes:
+      - ./delta:/delta
+    restart: unless-stopped
+
 
   wh-supplier-manager:
     build:

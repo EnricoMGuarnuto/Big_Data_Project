@@ -220,11 +220,6 @@ def main():
 
     df["discount"] = df["shelf_id"].map(effective_discount)
     df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
-
-
-
-    df["discount"] = df["shelf_id"].map(lambda sid: max(0.0, min(discounts_by_item.get(sid, 0.0), 0.95)))
-    df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
     pick_weights = df["pick_score"].tolist()
 
     rng = random.Random()

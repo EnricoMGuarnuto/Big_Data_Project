@@ -57,7 +57,7 @@ DAILY_DISCOUNT_TABLE = os.getenv("DAILY_DISCOUNT_TABLE", "analytics.daily_discou
 
 
 # Probabilità di scegliere il lotto con expiry più vicina
-PROB_EARLIEST_EXPIRY = float(os.getenv("PROB_EARLIEST_EXPIRY", "0.60"))
+PROB_EARLIEST_EXPIRY = float(os.getenv("PROB_EARLIEST_EXPIRY", "0.80"))
 
 
 
