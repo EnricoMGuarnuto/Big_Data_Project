@@ -11,15 +11,15 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# codice
+# code
 COPY app.py /app/app.py
 
-# directory per persistere modello
+# directory to persist the model
 RUN mkdir -p /app/model
 VOLUME ["/app/model"]
 
-# default: esegui una volta al giorno
-# (puoi passare SLEEP_SECS da compose, default 86400)
+# default: run once per day
+# (you can pass SLEEP_SECS from compose, default 86400)
 ENV SLEEP_SECS=86400
 
 CMD python /app/app.py && sleep ${SLEEP_SECS}

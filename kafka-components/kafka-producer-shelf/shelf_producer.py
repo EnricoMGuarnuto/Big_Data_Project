@@ -101,7 +101,7 @@ def load_discounts_from_parquet(path: str) -> dict:
     
 def load_daily_discounts_from_pg() -> dict:
     """
-    Ritorna mappa shelf_id -> daily_discount per oggi da analytics.daily_discounts.
+    Returns a mapping shelf_id -> daily_discount for today from analytics.daily_discounts.
     """
     try:
         conn = psycopg2.connect(

@@ -53,8 +53,8 @@ def load_features_for_day(d: date) -> pd.DataFrame:
 
 def load_training_hist(cutoff: date) -> pd.DataFrame:
     """
-    Storico etichettato fino a cutoff (escluso).
-    Usiamo future_sales_3d come y.
+    Labeled history up to cutoff (excluded).
+    We use future_sales_3d as the target y.
     """
     q = """
         SELECT *
@@ -77,8 +77,8 @@ def insert_predictions(rows):
 
 def matured_predictions_ids(cutoff_date: date):
     """
-    Ritorna prediction_id per cui l'orizzonte è finito
-    (prediction_date + horizon_days <= cutoff_date) e y_true è NULL
+    Returns prediction_id whose horizon has elapsed
+    (prediction_date + horizon_days <= cutoff_date) and y_true is NULL.
     """
     q = """
         SELECT prediction_id
@@ -135,7 +135,7 @@ def load_or_init_model():
         model  = load(MODEL_PATH)
         scaler = load(SCALER_PATH)
         return model, scaler, True
-    # Inizializza incrementale
+    # Initialize incremental model
     model = SGDRegressor(loss="squared_error", penalty="l2", alpha=1e-4, random_state=42)
     scaler = StandardScaler(with_mean=True, with_std=True)
     return model, scaler, False
@@ -152,22 +152,22 @@ def to_X(df: pd.DataFrame) -> pd.DataFrame:
 
 def warm_start_if_needed(model, scaler, is_fitted: bool, today: date):
     """
-    Se il modello non è ancora fittato, fa bootstrap con lo storico
-    (tutte le righe di feature_demand_forecast etichettate fino a today-HORIZON_DAYS).
+    If the model is not fitted yet, bootstrap it from history
+    (all feature_demand_forecast rows labeled up to today - HORIZON_DAYS).
     """
     if is_fitted:
         return model, scaler, True
 
-    cutoff = today - timedelta(days=HORIZON_DAYS)  # garantiamo che le etichette siano disponibili
+    cutoff = today - timedelta(days=HORIZON_DAYS)  # ensure labels are available
     hist = load_training_hist(cutoff)
     if hist.empty:
-        # Nessuno storico → inizializza “alla cieca”: niente train, il predict userà fallback.
+        # No history → initialize “blindly”: no training; predict will use fallback.
         return model, scaler, False
 
     X = to_X(hist)
     y = hist["future_sales_3d"].astype(float).values
 
-    # scaler + fit iniziale
+    # scaler + initial fit
     scaler.partial_fit(X.values)
     Xs = scaler.transform(X.values)
     model.partial_fit(Xs, y)
@@ -187,20 +187,20 @@ def step_refresh_and_predict(today: date):
         print(f"[{today}] No features available, skipping predictions.")
         return
 
-    # load/init model+scaler (+ warm start se serve)
+    # load/init model+scaler (+ warm start if needed)
     model, scaler, has_files = load_or_init_model()
     model, scaler, fitted = warm_start_if_needed(model, scaler, has_files, today)
 
     X = to_X(df)
 
-    # Manteniamo lo scaler aggiornato ogni giorno (drift‑aware)
+    # Keep the scaler updated daily (drift-aware)
     scaler.partial_fit(X.values)
     Xs = scaler.transform(X.values)
 
-    # Se ancora non fittato (nessuno storico), usiamo un fallback semplice
+    # If still not fitted (no history), use a simple fallback
     y_hat = None
     if not fitted:
-        # Fallback: media ponderata di vendite storiche (esempio semplice)
+        # Fallback: weighted average of historical sales (simple example)
         y_hat = (
             0.5 * df["sales_3d"].fillna(0).values / 3.0 +
             0.3 * df["sales_7d"].fillna(0).values / 7.0 +
@@ -211,7 +211,7 @@ def step_refresh_and_predict(today: date):
         try:
             y_hat = model.predict(Xs)
         except NotFittedError:
-            # estrema difesa (non dovrebbe capitare): usa fallback
+            # last-resort defense (should not happen): use fallback
             y_hat = df["sales_3d"].fillna(0).values / 3.0
 
     # salva predictions con snapshot delle feature
@@ -222,18 +222,18 @@ def step_refresh_and_predict(today: date):
             today,               # prediction_date
             r["shelf_id"],
             HORIZON_DAYS,        # horizon_days
-            float(max(0.0, y)),  # y_hat non negativa
+            float(max(0.0, y)),  # y_hat is non-negative
             MODEL_VERSION,
             json.dumps(feat_snapshot)
         ))
     insert_predictions(rows)
-    # persistiamo scaler (e modello se era stato warm‑startato)
+    # persist scaler (and model if it was warm-started)
     save_model(model, scaler)
     print(f"[{today}] Stored {len(rows)} predictions.")
 
 def step_label_and_online_learn(cutoff_date: date, epsilon=1e-6):
     """
-    cutoff_date: oggi -> tutte le previsioni con finestra conclusa fino a oggi vengono etichettate.
+    cutoff_date: today -> label all predictions whose window is completed up to today.
     """
     pred_ids = matured_predictions_ids(cutoff_date)
     if not pred_ids:
@@ -290,9 +290,9 @@ def step_label_and_online_learn(cutoff_date: date, epsilon=1e-6):
 if __name__ == "__main__":
     today = date.today()
 
-    # 1) refresh + predict per oggi
+    # 1) refresh + predict for today
     step_refresh_and_predict(today)
 
-    # 2) etichetta e aggiorna modello per previsioni con finestra conclusa
+    # 2) label and update model for predictions with a completed window
     cutoff = today
     step_label_and_online_learn(cutoff)

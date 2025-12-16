@@ -3,7 +3,7 @@ import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events
 
 # =====================
-# 1. Dizionario categorie e sottocategorie
+# 1. Categories and subcategories dictionary
 # =====================
 categories = {
     "BEVERAGES": {
@@ -234,17 +234,17 @@ categories = {
 
 
 # =====================
-# 2. Stato (mock: in seguito prenderemo da Postgres)
+# 2. Status (mock: later we will read from Postgres)
 # =====================
 def get_status():
     status = {}
     for cat, subs in categories.items():
-        # simuliamo: se almeno una sottocategoria ha <20 prodotti → rosso
+        # simulate: if at least one subcategory has <20 products → red
         status[cat] = "red" if any(v < 20 for v in subs.values()) else "green"
     return status
 
 # =====================
-# 3. Funzione per disegnare rettangoli dinamici
+# 3. Function to draw dynamic rectangles
 # =====================
 def draw_rectangles(labels, colors, level_name):
     fig = go.Figure()
@@ -263,7 +263,7 @@ def draw_rectangles(labels, colors, level_name):
     return fig
 
 # =====================
-# 4. Navigazione multilivello
+# 4. Multi-level navigation
 # =====================
 if "level" not in st.session_state:
     st.session_state.level = "aisles"   # aisles → subcategories → shelves
@@ -274,7 +274,7 @@ if "selected_subcat" not in st.session_state:
 
 st.title("🛒 Supermarket Interactive Map")
 
-# ---- Livello 1: Corsie ----
+# ---- Level 1: Aisles ----
 if st.session_state.level == "aisles":
     aisle_status = get_status()
     fig = draw_rectangles(list(categories.keys()), aisle_status, "corsia")
@@ -287,7 +287,7 @@ if st.session_state.level == "aisles":
         st.session_state.level = "subcategories"
         st.experimental_rerun()
 
-# ---- Livello 2: Sottocategorie ----
+# ---- Level 2: Subcategories ----
 elif st.session_state.level == "subcategories":
     aisle = st.session_state.selected_aisle
     st.subheader(f"Corsia: {aisle}")
@@ -307,7 +307,7 @@ elif st.session_state.level == "subcategories":
         st.session_state.level = "shelves"
         st.experimental_rerun()
 
-# ---- Livello 3: Shelf ----
+# ---- Level 3: Shelves ----
 elif st.session_state.level == "shelves":
     aisle = st.session_state.selected_aisle
     subcat = st.session_state.selected_subcat
@@ -317,7 +317,7 @@ elif st.session_state.level == "shelves":
     shelves = [f"Shelf-{i+1}" for i in range(num_shelves)]
     shelf_status = {s: ("red" if i % 7 == 0 else "green") for i, s in enumerate(shelves)}
 
-    fig = draw_rectangles(shelves[:15], shelf_status, "shelf")  # mostro max 15 alla volta
+    fig = draw_rectangles(shelves[:15], shelf_status, "shelf")  # show max 15 at a time
     st.plotly_chart(fig)
 
     if st.button("⬅️ Torna alle sottocategorie"):

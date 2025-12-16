@@ -10,13 +10,13 @@ from delta.tables import DeltaTable
 KAFKA_BROKER          = os.getenv("KAFKA_BROKER", "kafka:9092")
 
 TOPIC_DAILY_DISCOUNTS = os.getenv("TOPIC_DAILY_DISCOUNTS", "daily_discounts")
-TOPIC_ALERTS          = os.getenv("TOPIC_ALERTS", "alerts")            # opzionale
+TOPIC_ALERTS          = os.getenv("TOPIC_ALERTS", "alerts")            # optional
 
 DELTA_ROOT            = os.getenv("DELTA_ROOT", "/delta")
 DL_SHELF_BATCH_PATH   = os.getenv("DL_SHELF_BATCH_PATH", f"{DELTA_ROOT}/cleansed/shelf_batch_state")
 DL_DAILY_DISC_PATH    = os.getenv("DL_DAILY_DISC_PATH", f"{DELTA_ROOT}/analytics/daily_discounts")
 
-# range extra sconto per prodotti in scadenza
+# extra discount range for near-expiry products
 DISCOUNT_MIN          = float(os.getenv("DISCOUNT_MIN", "0.30"))   # 30%
 DISCOUNT_MAX          = float(os.getenv("DISCOUNT_MAX", "0.50"))   # 50%
 
@@ -38,7 +38,7 @@ def delta_exists(path: str) -> bool:
         return False
 
 # =========================
-# 1) Leggi stato lotti di store da Delta
+# 1) Read store batch state from Delta
 # =========================
 shelf_batches = spark.read.format("delta").load(DL_SHELF_BATCH_PATH)
 
@@ -48,13 +48,13 @@ if missing:
     raise RuntimeError(f"[daily_discount_manager] shelf_batch_state missing columns: {missing}")
 
 # =========================
-# 2) Oggi, domani
+# 2) Today, tomorrow
 # =========================
 today_col     = F.current_date()
 tomorrow_col  = F.date_add(today_col, 1)
 
 # =========================
-# 3) Shelf con lotti che scadono oggi o domani (in store)
+# 3) Shelves with batches expiring today or tomorrow (in store)
 # =========================
 shelf_expiring = (
     shelf_batches
@@ -69,15 +69,15 @@ shelf_expiring = (
 )
 
 if shelf_expiring.rdd.isEmpty():
-    print("[daily_discount_manager] Nessun lotto in scadenza oggi/domani. Stop.")
+    print("[daily_discount_manager] No batches expiring today/tomorrow. Exiting.")
     spark.stop()
     raise SystemExit(0)
 
 # =========================
-# 4) Calcolo delle (shelf_id, discount_date) da scontare
-#    Regole:
-#      - se expiry = oggi        -> discount_date = oggi
-#      - se expiry = domani      -> discount_date = oggi e domani
+# 4) Compute (shelf_id, discount_date) pairs to discount
+#    Rules:
+#      - if expiry = today       -> discount_date = today
+#      - if expiry = tomorrow    -> discount_date = today and tomorrow
 # =========================
 exp_today = (
     shelf_expiring
@@ -104,7 +104,7 @@ candidates = (
 )
 
 # =========================
-# 5) Eventuali sconti già presenti per quelle date
+# 5) Existing discounts (if any) for those dates
 # =========================
 if delta_exists(DL_DAILY_DISC_PATH):
     existing_all = spark.read.format("delta").load(DL_DAILY_DISC_PATH)
@@ -120,12 +120,12 @@ else:
         T.StructField("base_discount", T.DoubleType()),
     ]))
 
-# HACK seed fixo per ripetibilità
+# HACK: fixed seed for reproducibility
 steps = int(round((DISCOUNT_MAX - DISCOUNT_MIN) / 0.10)) + 1
 
 discounts = (
     candidates
-    # extra sconto random in {DISCOUNT_MIN, DISCOUNT_MIN+0.1, ..., DISCOUNT_MAX}
+    # random extra discount in {DISCOUNT_MIN, DISCOUNT_MIN+0.1, ..., DISCOUNT_MAX}
     .withColumn(
         "extra_discount",
         F.round(
@@ -144,7 +144,7 @@ discounts = (
 )
 
 # =========================
-# 6) Scrivi su Kafka: daily_discounts (compacted, key = shelf_id)
+# 6) Write to Kafka: daily_discounts (compacted, key = shelf_id)
 # =========================
 to_kafka = (
     discounts
@@ -164,7 +164,7 @@ to_kafka.write \
     .option("topic", TOPIC_DAILY_DISCOUNTS) \
     .save()
 
-print(f"[daily_discount_manager] Scritti {discounts.count()} daily discounts su {TOPIC_DAILY_DISCOUNTS}")
+print(f"[daily_discount_manager] Wrote {discounts.count()} daily discounts to {TOPIC_DAILY_DISCOUNTS}")
 
 # =========================
 # 7) Mirror Delta con upsert su (shelf_id, discount_date)
@@ -195,7 +195,7 @@ else:
 print(f"[daily_discount_manager] Delta mirror aggiornato in {DL_DAILY_DISC_PATH}")
 
 # =========================
-# 8) (Opzionale) Alert near_expiry_discount
+# 8) (Optional) near_expiry_discount alert
 # =========================
 alerts = (
     discounts

@@ -52,7 +52,7 @@ def bootstrap_from_pg():
                       F.coalesce(F.col("batch_quantity_store"),F.lit(0)).cast("int").alias("batch_quantity_store"),
                       F.current_timestamp().alias("last_update_ts")))
     s_wh.write.format("delta").mode("overwrite").save(DL_WH_BATCH)
-    # STORE (batches presenti in negozio)
+    # STORE (batches present in store)
     st = (spark.read.format("jdbc")
           .option("url", JDBC_PG_URL).option("user", JDBC_PG_USER).option("password", JDBC_PG_PASSWORD)
           .option("dbtable","(select shelf_id,batch_code,received_date,expiry_date,batch_quantity_store,snapshot_ts from ref.store_batches_snapshot) t")
@@ -79,7 +79,7 @@ ev=(raw.select(F.col("value").cast("string").alias("v"))
 def apply_events(batch_df, batch_id:int):
     if batch_df.rdd.isEmpty(): return
 
-    # Aggiorna WH batches
+    # Update WH batches
     wh_delta = (batch_df.groupBy("shelf_id","batch_code","received_date","expiry_date")
                 .agg(F.sum(F.when(F.col("event_type")=="wh_in", F.col("qty"))
                            .when(F.col("event_type")=="wh_out", -F.col("qty"))
@@ -112,7 +112,7 @@ def apply_events(batch_df, batch_id:int):
                  "last_update_ts")
          .write.format("delta").mode("overwrite").save(DL_WH_BATCH))
 
-    # Se wh_out, aumenta store batches
+    # If wh_out, increase store batches
     to_store = (batch_df.filter(F.col("event_type")=="wh_out")
                 .groupBy("shelf_id","batch_code","received_date","expiry_date")
                 .agg(F.sum("qty").alias("d_store"), F.max("timestamp").alias("ts")))

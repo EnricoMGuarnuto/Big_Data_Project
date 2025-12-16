@@ -30,7 +30,7 @@ schema_plan = T.StructType([
     T.StructField("status", T.StringType()),
     T.StructField("created_at", T.TimestampType()),
     T.StructField("updated_at", T.TimestampType()),
-    # opzionale: se il tuo alert_engine la popola
+    # optional: if your alert_engine populates it
     T.StructField("alert_id", T.StringType()),
 ])
 
@@ -50,7 +50,7 @@ plans = (raw
 def foreach_batch(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty(): return
 
-    # Prendi i piani candidati (vecchi almeno PLAN_DELAY_SEC e status='pending')
+    # Take candidate plans (at least PLAN_DELAY_SEC old and status='pending')
     candidates = (batch_df
         .withColumn("now_ts", F.current_timestamp())
         .filter( (F.col("status") == F.lit("pending")) &
@@ -60,17 +60,17 @@ def foreach_batch(batch_df, batch_id: int):
     )
     if candidates.rdd.isEmpty(): return
 
-    # Stato warehouse per FIFO (Delta mirror aggiornato da wh-batch-state-updater)
+    # Warehouse state for FIFO (Delta mirror updated by wh-batch-state-updater)
     wh = spark.read.format("delta").load(DL_WH_BATCH_PATH) \
             .select("shelf_id","batch_code","received_date","expiry_date","batch_quantity_warehouse") \
             .filter(F.col("batch_quantity_warehouse") > 0)
 
-    # Join piano x shelf con lotti WH
+    # Join plan x shelf with WH batches
     j = (candidates.alias("pl").join(wh.alias("w"), on="shelf_id", how="left"))
 
     if j.rdd.isEmpty(): return
 
-    # Ordina FIFO: received_date asc, expiry_date asc
+    # FIFO order: received_date asc, expiry_date asc
     w = Window.partitionBy("plan_id").orderBy(F.col("received_date").asc(), F.col("expiry_date").asc(), F.col("batch_code").asc())
     alloc = (j
         .withColumn("qty", F.col("w.batch_quantity_warehouse"))
@@ -90,7 +90,7 @@ def foreach_batch(batch_df, batch_id: int):
 
     if alloc.rdd.isEmpty(): return
 
-    # Emetti wh_events (wh_out) su Kafka
+    # Emit wh_events (wh_out) to Kafka
     wh_out = (alloc
         .withColumn("event_type", F.lit("wh_out"))
         .withColumn("event_id", F.expr("uuid()"))
@@ -114,7 +114,7 @@ def foreach_batch(batch_df, batch_id: int):
         .option("topic", TOPIC_WH_EVENTS) \
         .save()
 
-    # Aggiorna plan -> issued nella Delta (mirror)
+    # Update plan -> issued in Delta (mirror)
     if DeltaTable.isDeltaTable(spark, DL_RESTOCK_PATH):
         tgt = DeltaTable.forPath(spark, DL_RESTOCK_PATH)
         issued = (candidates.select("plan_id")
@@ -128,7 +128,7 @@ def foreach_batch(batch_df, batch_id: int):
             "updated_at": F.col("s.updated_at")
         }).execute()
 
-    # (Opzionale) cambio stato alert: ack/resolved
+    # (Optional) alert status change: ack/resolved
     alerts_updates = (alloc.groupBy("plan_id","alert_id")
                       .agg(F.sum("alloc_qty").alias("moved"))
                       .filter(F.col("alert_id").isNotNull()))
@@ -143,7 +143,7 @@ def foreach_batch(batch_df, batch_id: int):
           .option("kafka.bootstrap.servers", KAFKA_BROKER) \
           .option("topic", TOPIC_ALERTS).save()
 
-# stream piani
+# plan stream
 q = (plans.writeStream
      .foreachBatch(foreach_batch)
      .option("checkpointLocation", f"{CKP_ROOT}/foreach")

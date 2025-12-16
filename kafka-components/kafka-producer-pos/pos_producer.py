@@ -56,7 +56,7 @@ PG_PASS = os.getenv("PG_PASS", "bdt_password")
 DAILY_DISCOUNT_TABLE = os.getenv("DAILY_DISCOUNT_TABLE", "analytics.daily_discounts")
 
 
-# Probabilità di scegliere il lotto con expiry più vicina
+# Probability of choosing the batch with the closest expiry
 PROB_EARLIEST_EXPIRY = float(os.getenv("PROB_EARLIEST_EXPIRY", "0.80"))
 
 
@@ -134,7 +134,7 @@ def load_discounts_from_parquet(path: str) -> Dict[str, float]:
 
 def load_daily_discounts_from_pg() -> Dict[str, float]:
     """
-    Ritorna mappa shelf_id -> daily_discount per oggi da analytics.daily_discounts.
+    Returns a mapping shelf_id -> daily_discount for today from analytics.daily_discounts.
     """
     try:
         conn = psycopg2.connect(
@@ -167,7 +167,7 @@ def load_daily_discounts_from_pg() -> Dict[str, float]:
 
 
 # ========================
-# Stato carrelli + Lotti per shelf
+# Cart state + Batches per shelf
 # ========================
 carts: DefaultDict[str, DefaultDict[str, int]] = defaultdict(lambda: defaultdict(int))
 carts_lock = threading.Lock()
@@ -272,9 +272,9 @@ def _price_for(item_id: str) -> float:
 
 def _discount_for(item_id: str) -> float:
     """
-    Combina sconto weekly + daily in modo moltiplicativo:
+    Combines weekly + daily discounts multiplicatively:
       effective = 1 - (1 - dw) * (1 - dd)
-    e clamp a [0, 0.95].
+    and clamps to [0, 0.95].
     """
     dw = float(weekly_discounts_by_item.get(item_id, 0.0) or 0.0)
     dd = float(daily_discounts_by_item.get(item_id, 0.0) or 0.0)
@@ -282,10 +282,10 @@ def _discount_for(item_id: str) -> float:
     return max(0.0, min(effective, 0.95))
 
 # ========================
-# Allocazione lotti (FIFO + 60% earliest-expiry)
+# Batch allocation (earliest-expiry bias)
 # ========================
 def _choose_batch_index(q: Deque[Dict]) -> int:
-    """Ritorna l'indice da cui prelevare: 0 con prob 60%, altrimenti un indice random tra gli altri."""
+    """Returns the index to pick from: 0 with probability PROB_EARLIEST_EXPIRY, otherwise a random index among the others."""
     if not q:
         return -1
     if len(q) == 1:
@@ -293,15 +293,15 @@ def _choose_batch_index(q: Deque[Dict]) -> int:
     r = random.random()
     if r < PROB_EARLIEST_EXPIRY:
         return 0
-    # scegli un altro lotto (bias semplice: uniforme tra 1..len-1)
+    # choose another batch (simple bias: uniform between 1..len-1)
     return random.randint(1, len(q)-1)
 
 def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date]]:
     """
-    Sottrae qty dai lotti in-store per shelf_id rispettando:
-      - 60% earliest-expiry
-      - se finisce un lotto, passa al successivo
-    Ritorna lista di (batch_code, allocated_qty, expiry_date).
+    Subtracts qty from in-store batches for shelf_id while respecting:
+      - earliest-expiry with probability PROB_EARLIEST_EXPIRY
+      - when a batch runs out, move to the next one
+    Returns a list of (batch_code, allocated_qty, expiry_date).
     """
     allocated: List[Tuple[str, int, date]] = []
     if qty <= 0:
@@ -310,12 +310,12 @@ def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date
     with batches_lock:
         q = batch_state.get(shelf_id)
         if not q or len(q) == 0:
-            # niente stato → nessuna allocazione batch (caller potrà inviare senza batch_code)
+            # no state → no batch allocation (caller can emit without batch_code)
             return allocated
 
         remaining = qty
         while remaining > 0 and q:
-            # ripulisci fronti esauriti
+            # drop exhausted front batches
             while q and q[0]["qty_store"] <= 0:
                 q.popleft()
             if not q:
@@ -325,13 +325,13 @@ def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date
             if idx < 0:
                 break
 
-            # prendi riferimento al batch scelto
+            # take a reference to the chosen batch
             # Deque non supporta accesso diretto efficiente a idx >0 per pop; usiamo lista temporanea
             tmp = list(q)
             b = tmp[idx]
             take = min(remaining, b["qty_store"])
             if take <= 0:
-                # se quel lotto è vuoto, rimuovilo
+                # if that batch is empty, remove it
                 if b["qty_store"] <= 0:
                     del tmp[idx]
                     q = deque(tmp)
@@ -340,17 +340,17 @@ def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date
                 else:
                     break
 
-            # aggiorna quantità
+            # update quantity
             b["qty_store"] -= take
             remaining -= take
 
             allocated.append((b["batch_code"], take, b["expiry_date"]))
 
-            # rimetti nella deque mantenendo l'ordine per expiry (la expiry non cambia)
+            # put back into the deque keeping expiry ordering (expiry doesn't change)
             tmp[idx] = b
-            # rimuovi batch con qty=0
+            # remove batches with qty=0
             tmp = [x for x in tmp if x["qty_store"] > 0]
-            # garantisci ordinamento per expiry
+            # ensure ordering by expiry
             tmp.sort(key=lambda x: x["expiry_date"])
             q = deque(tmp)
             batch_state[shelf_id] = q
@@ -371,17 +371,17 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
         log.info(f"[pos] Checkout {customer_id}: cart empty → skip.")
         return
 
-    # Costruisci scontrino con possibili split per batch
+    # Build receipt lines, possibly split by batch
     tx_items = []
     for item_id, qty in items_map.items():
         if qty <= 0:
             continue
 
-        # prova a allocare dai lotti
+        # try allocating from batches
         allocations = _allocate_from_batches(item_id, int(qty))
         allocated_total = sum(a[1] for a in allocations)
 
-        # se qualche pezzo rimane non allocato (manca stato), vendilo senza batch_code
+        # if some units remain unallocated (missing state), sell them without batch_code
         unallocated = max(0, int(qty) - allocated_total)
         unit_price = round(_price_for(item_id), 2)
         discount   = round(_discount_for(item_id), 2)
@@ -406,7 +406,7 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
                 "unit_price": unit_price,
                 "discount": discount,
                 "total_price": line_total
-                # niente batch_code/expiry se non allocato
+                # no batch_code/expiry when unallocated
             })
 
     if not tx_items and not FORCE_CHECKOUT_IF_EMPTY:

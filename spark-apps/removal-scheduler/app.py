@@ -52,6 +52,11 @@ if not required_state.issubset(set(shelf_state.columns)):
 if not required_batch.issubset(set(shelf_batch.columns)):
     raise RuntimeError(f"shelf_batch_state missing columns: {required_batch - set(shelf_batch.columns)}")
 
+HAS_SHELF_WEIGHT = "shelf_weight" in shelf_state.columns
+HAS_STATE_TS = "last_update_ts" in shelf_state.columns
+HAS_BATCH_TS = "last_update_ts" in shelf_batch.columns
+HAS_RECEIVED_DATE = "received_date" in shelf_batch.columns
+
 today = F.current_date()
 
 if REMOVE_MODE == "same_day_evening":
@@ -61,11 +66,16 @@ else:
     expired_cond = (F.col("expiry_date") < today)
 
 # 1) Find expired batches still on shelf
+batch_select_cols = ["shelf_id", "batch_code"]
+if HAS_RECEIVED_DATE:
+    batch_select_cols.append("received_date")
+batch_select_cols += ["expiry_date", "batch_quantity_store"]
+
 expired_batches = (
     shelf_batch
     .filter(F.col("batch_quantity_store") > 0)
     .filter(expired_cond)
-    .select("shelf_id", "batch_code", "expiry_date", "batch_quantity_store")
+    .select(*batch_select_cols)
     .withColumnRenamed("batch_quantity_store", "qty_to_remove")
 )
 
@@ -83,14 +93,14 @@ removed_per_shelf = (
 
 # 3) Prepare new shelf_state rows (decrement stock, clamp >= 0)
 new_state = (
-    shelf_state.select("shelf_id", "current_stock")
+    shelf_state.select("shelf_id", "current_stock", *(["shelf_weight"] if HAS_SHELF_WEIGHT else []))
     .join(removed_per_shelf, on="shelf_id", how="inner")
     .withColumn("current_stock_new", F.greatest(F.lit(0), F.col("current_stock") - F.col("removed_qty")))
     .withColumn("last_update_ts", F.current_timestamp())
     .select(
         "shelf_id",
         F.col("current_stock_new").alias("current_stock"),
-        F.lit(None).cast("double").alias("shelf_weight"),  # keep null if you don't track it here
+        (F.col("shelf_weight") if HAS_SHELF_WEIGHT else F.lit(None).cast("double")).alias("shelf_weight"),
         "last_update_ts"
     )
 )
@@ -98,9 +108,10 @@ new_state = (
 # 4) Prepare shelf_batch_state updates: set batch_quantity_store = 0 for those expired batches
 batch_updates = (
     expired_batches
+    .withColumn("received_date", F.col("received_date") if HAS_RECEIVED_DATE else F.lit(None).cast("date"))
     .withColumn("batch_quantity_store", F.lit(0))
     .withColumn("last_update_ts", F.current_timestamp())
-    .select("shelf_id", "batch_code", "batch_quantity_store", "last_update_ts")
+    .select("shelf_id", "batch_code", "received_date", "expiry_date", "batch_quantity_store", "last_update_ts")
 )
 
 # =========================
@@ -108,32 +119,31 @@ batch_updates = (
 # =========================
 # shelf_state upsert by shelf_id
 t_state = DeltaTable.forPath(spark, DL_SHELF_STATE)
+state_update_set = {"current_stock": F.col("s.current_stock")}
+state_insert_set = {"shelf_id": F.col("s.shelf_id"), "current_stock": F.col("s.current_stock")}
+if HAS_SHELF_WEIGHT:
+    state_update_set["shelf_weight"] = F.col("s.shelf_weight")
+    state_insert_set["shelf_weight"] = F.col("s.shelf_weight")
+if HAS_STATE_TS:
+    state_update_set["last_update_ts"] = F.col("s.last_update_ts")
+    state_insert_set["last_update_ts"] = F.col("s.last_update_ts")
 (
     t_state.alias("t")
     .merge(new_state.alias("s"), "t.shelf_id = s.shelf_id")
-    .whenMatchedUpdate(set={
-        "current_stock":  F.col("s.current_stock"),
-        "shelf_weight":   F.col("s.shelf_weight"),
-        "last_update_ts": F.col("s.last_update_ts"),
-    })
-    .whenNotMatchedInsert(values={
-        "shelf_id":       F.col("s.shelf_id"),
-        "current_stock":  F.col("s.current_stock"),
-        "shelf_weight":   F.col("s.shelf_weight"),
-        "last_update_ts": F.col("s.last_update_ts"),
-    })
+    .whenMatchedUpdate(set=state_update_set)
+    .whenNotMatchedInsert(values=state_insert_set)
     .execute()
 )
 
 # shelf_batch_state upsert by (shelf_id, batch_code)
 t_batch = DeltaTable.forPath(spark, DL_SHELF_BATCH)
+batch_update_set = {"batch_quantity_store": F.col("s.batch_quantity_store")}
+if HAS_BATCH_TS:
+    batch_update_set["last_update_ts"] = F.col("s.last_update_ts")
 (
     t_batch.alias("t")
     .merge(batch_updates.alias("s"), "t.shelf_id = s.shelf_id AND t.batch_code = s.batch_code")
-    .whenMatchedUpdate(set={
-        "batch_quantity_store": F.col("s.batch_quantity_store"),
-        "last_update_ts":       F.col("s.last_update_ts"),
-    })
+    .whenMatchedUpdate(set=batch_update_set)
     .execute()
 )
 
@@ -145,10 +155,13 @@ print(f"[removal_scheduler] Removed expired stock from {expired_batches.count()}
 # Publish new shelf_state to Kafka topic shelf_state (compacted)
 # NOTE: topic name assumed "shelf_state"; change via env if you want.
 TOPIC_SHELF_STATE = os.getenv("TOPIC_SHELF_STATE", "shelf_state")
+state_struct_cols = ["shelf_id", "current_stock", "shelf_weight"]
+if HAS_STATE_TS:
+    state_struct_cols.append("last_update_ts")
 state_to_kafka = (
     new_state
-    .withColumn("value", F.to_json(F.struct("shelf_id","current_stock","shelf_weight","last_update_ts")))
-    .select(F.col("shelf_id").alias("key"), F.col("value").alias("value"))
+    .withColumn("value", F.to_json(F.struct(*state_struct_cols)))
+    .select(F.col("shelf_id").cast("string").alias("key"), F.col("value").cast("string").alias("value"))
 )
 state_to_kafka.write.format("kafka") \
     .option("kafka.bootstrap.servers", KAFKA_BROKER) \
@@ -157,14 +170,16 @@ state_to_kafka.write.format("kafka") \
 
 # Publish updated shelf_batch_state rows to Kafka topic shelf_batch_state (compacted)
 TOPIC_SHELF_BATCH_STATE = os.getenv("TOPIC_SHELF_BATCH_STATE", "shelf_batch_state")
+batch_struct_cols = ["shelf_id", "batch_code", "received_date", "expiry_date", "batch_quantity_store"]
+if HAS_BATCH_TS:
+    batch_struct_cols.append("last_update_ts")
 batch_to_kafka = (
     batch_updates
-    .withColumn("received_date", F.lit(None).cast("date"))
-    .withColumn("expiry_date",   F.lit(None).cast("date"))
-    .withColumn("value", F.to_json(F.struct(
-        "shelf_id","batch_code","received_date","expiry_date","batch_quantity_store","last_update_ts"
-    )))
-    .select(F.concat_ws("::", F.col("shelf_id"), F.col("batch_code")).alias("key"), F.col("value").alias("value"))
+    .withColumn("value", F.to_json(F.struct(*batch_struct_cols)))
+    .select(
+        F.concat_ws("::", F.col("shelf_id"), F.col("batch_code")).cast("string").alias("key"),
+        F.col("value").cast("string").alias("value")
+    )
 )
 batch_to_kafka.write.format("kafka") \
     .option("kafka.bootstrap.servers", KAFKA_BROKER) \

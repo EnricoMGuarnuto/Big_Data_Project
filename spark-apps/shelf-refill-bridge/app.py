@@ -176,9 +176,9 @@ def foreach_batch(batch_df, batch_id: int):
             .option("topic", TOPIC_SHELF_EVENTS) \
             .save()
 
-    # 5) Aggiorna la pending Delta:
-    #    - scrivi/merge i not_yet (nuovi o aggiornati)
-    #    - mantieni gli still_pending (non maturi) + i nuovi not_yet
+    # 5) Update pending Delta:
+    #    - write/merge not_yet (new or updated)
+    #    - keep still_pending (not mature yet) + new not_yet
     remaining_pending = still_pending.unionByName(not_yet)
 
     if pending_tbl is None:
@@ -207,7 +207,7 @@ def foreach_batch(batch_df, batch_id: int):
             "available_at": "s.available_at"
         }).execute()
 
-        # rimuovi quelli appena emessi (presenti in due_from_pending)
+        # remove the ones just emitted (present in due_from_pending)
         if not due_from_pending.rdd.isEmpty():
             ids = [r["event_id"] for r in due_from_pending.select("event_id").distinct().collect()]
             if ids:
