@@ -20,8 +20,8 @@ DELTA_ROOT = os.getenv("DELTA_ROOT", "/delta")
 BATCH_STATE_PATH = f"{DELTA_ROOT}/cleansed/shelf_batch_state"
 CHECKPOINT_PATH = f"{DELTA_ROOT}/_checkpoints/batch_state_updater"
 POS_RAW_PATH = os.getenv("DL_POS_TRANSACTIONS_PATH", f"{DELTA_ROOT}/raw/pos_transactions")
-POS_RAW_CHECKPOINT = os.getenv("CKP_POS_TRANSACTIONS", f"{CHECKPOINT_PATH}/raw_pos")
 STARTING_OFFSETS = os.getenv("STARTING_OFFSETS", "earliest")
+MAX_OFFSETS_PER_TRIGGER = os.getenv("MAX_OFFSETS_PER_TRIGGER")  # optional throttle for Kafka source
 
 # =========================
 # Spark Session
@@ -202,8 +202,11 @@ kafka_stream = (
     .option("subscribe", TOPIC_POS_TRANSACTIONS)
     .option("startingOffsets", STARTING_OFFSETS)
     .option("failOnDataLoss", "false")
-    .load()
 )
+if MAX_OFFSETS_PER_TRIGGER:
+    kafka_stream = kafka_stream.option("maxOffsetsPerTrigger", MAX_OFFSETS_PER_TRIGGER)
+
+kafka_stream = kafka_stream.load()
 
 pos_events = (
     kafka_stream
@@ -213,30 +216,32 @@ pos_events = (
     .filter(F.col("event_type") == "pos_transaction")
 )
 
-raw_pos_events = (
-    pos_events
-    .select(
-        "event_type",
-        "transaction_id",
-        "customer_id",
-        F.to_timestamp("timestamp").alias("timestamp"),
-        "items"
-    )
-)
+def process_batch_with_raw(batch_df, batch_id: int):
+    if batch_df.rdd.isEmpty():
+        return
 
-raw_query = (
-    raw_pos_events.writeStream
-    .format("delta")
-    .outputMode("append")
-    .option("checkpointLocation", POS_RAW_CHECKPOINT)
-    .option("mergeSchema", "true")
-    .option("path", POS_RAW_PATH)
-    .start()
-)
+    raw_batch = (
+        batch_df.select(
+            "event_type",
+            "transaction_id",
+            "customer_id",
+            F.to_timestamp("timestamp").alias("timestamp"),
+            "items",
+        )
+    )
+
+    (raw_batch.write.format("delta")
+        .mode("append")
+        .option("mergeSchema", "true")
+        .option("txnAppId", "batch_state_updater_raw_pos_transactions")
+        .option("txnVersion", str(batch_id))
+        .save(POS_RAW_PATH))
+
+    process_batch(batch_df, batch_id)
 
 query = (
     pos_events.writeStream
-    .foreachBatch(process_batch)
+    .foreachBatch(process_batch_with_raw)
     .option("checkpointLocation", CHECKPOINT_PATH)
     .start()
 )

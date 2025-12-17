@@ -187,7 +187,7 @@ Principali componenti (vedi i README dentro ogni cartella):
 - `spark-apps/deltalake/`: inizializza le tabelle Delta “vuote” (raw/cleansed/ops/analytics).
 - `spark-apps/foot-traffic-raw-sink/`: Kafka `foot_traffic` → Delta RAW.
 - `spark-apps/shelf-aggregator/`: Kafka `shelf_events` (+ `shelf_profiles`) → Delta RAW + Delta `shelf_state` + topic compatto `shelf_state`.
-- `spark-apps/batch-state-updater/`: `pos_transactions` → Delta `shelf_batch_state` + topic compatto.
+- `spark-apps/batch-state-updater/`: Kafka `pos_transactions` → Delta RAW + Delta `shelf_batch_state` + topic compatto.
 - `spark-apps/wh-aggregator/`: `wh_events` → Delta `wh_state` + topic compatto.
 - `spark-apps/wh-batch-state-updater/`: `wh_events` → Delta `wh_batch_state` (+ mirror store batches) + topic compatti.
 - `spark-apps/shelf-alert-engine/`: `shelf_state` (+ policy + batch mirror) → `alerts` + `shelf_restock_plan` (Kafka + Delta).
@@ -196,6 +196,8 @@ Principali componenti (vedi i README dentro ogni cartella):
 - `spark-apps/shelf-refill-bridge/`: `wh_events` (wh_out) → `shelf_events` (putback/weight_change) con delay.
 - `spark-apps/alerts-sink/`: `alerts` → Delta (+ opzionale Postgres).
 - `spark-apps/daily-discount-manager/`: trova lotti in scadenza e pubblica `daily_discounts`.
+
+Nota: per i consumer Structured Streaming puoi impostare `MAX_OFFSETS_PER_TRIGGER` per evitare micro-batch troppo grandi al primo avvio con `STARTING_OFFSETS=earliest`.
 
 ---
 

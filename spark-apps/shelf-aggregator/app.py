@@ -21,10 +21,10 @@ RAW_PATH              = f"{DELTA_ROOT}/raw/shelf_events"
 STATE_PATH            = f"{DELTA_ROOT}/cleansed/shelf_state"
 
 CHECKPOINT_ROOT       = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/_checkpoints/shelf_aggregator")
-CKP_RAW               = f"{CHECKPOINT_ROOT}/raw"
 CKP_AGG               = f"{CHECKPOINT_ROOT}/agg"
 
 STARTING_OFFSETS      = os.getenv("STARTING_OFFSETS", "earliest")  # first run: earliest; afterward checkpoints govern progress
+MAX_OFFSETS_PER_TRIGGER = os.getenv("MAX_OFFSETS_PER_TRIGGER")  # optional throttle for Kafka source
 
 # =========================
 # Spark Session (Delta)
@@ -179,14 +179,17 @@ bootstrap_state_if_missing()
 # =========================
 # 1) Stream: Kafka -> Delta (/raw/shelf_events)
 # =========================
-kafka_stream = (
+kafka_reader = (
     spark.readStream.format("kafka")
     .option("kafka.bootstrap.servers", KAFKA_BROKER)
     .option("subscribe", TOPIC_SHELF_EVENTS)
     .option("startingOffsets", STARTING_OFFSETS)
     .option("failOnDataLoss", "false")
-    .load()
 )
+if MAX_OFFSETS_PER_TRIGGER:
+    kafka_reader = kafka_reader.option("maxOffsetsPerTrigger", MAX_OFFSETS_PER_TRIGGER)
+
+kafka_stream = kafka_reader.load()
 
 events = (
     kafka_stream
@@ -209,37 +212,34 @@ events = (
     )
 )
 
-raw_events = (
-    events
-    .select(
-        "event_type",
-        "customer_id",
-        "item_id",
-        "shelf_id",
-        "quantity",
-        "weight",
-        "delta_weight",
-        F.col("event_ts").alias("timestamp")
-    )
-)
-
-# Persist RAW append-only stream into Delta
-raw_query = (
-    raw_events.writeStream
-    .format("delta")
-    .outputMode("append")
-    .option("checkpointLocation", CKP_RAW)
-    .option("mergeSchema", "true")
-    .option("path", RAW_PATH)
-    .start()
-)
-
 # =========================
 # 2) Aggregate into shelf_state (Delta + Kafka compacted)
 # =========================
 def upsert_and_publish(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty():
         return
+
+    # Persist RAW (append-only) into Delta with idempotency per microbatch
+    # (avoid duplicates on restart when the same batch_id is reprocessed)
+    raw_batch = (
+        batch_df.select(
+            "event_type",
+            "customer_id",
+            "item_id",
+            "shelf_id",
+            "quantity",
+            "weight",
+            "delta_weight",
+            F.col("event_ts").alias("timestamp"),
+        )
+    )
+
+    (raw_batch.write.format("delta")
+        .mode("append")
+        .option("mergeSchema", "true")
+        .option("txnAppId", "shelf_aggregator_raw_shelf_events")
+        .option("txnVersion", str(batch_id))
+        .save(RAW_PATH))
 
     # Stock delta logic: pickup = -qty, putback = +qty
     deltas = (

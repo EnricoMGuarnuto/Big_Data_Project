@@ -206,6 +206,7 @@ services:
       BOOTSTRAP_FROM_PG: '1'
       DELTA_ROOT: /delta
       STARTING_OFFSETS: earliest
+      MAX_OFFSETS_PER_TRIGGER: "2000"
       CHECKPOINT_ROOT: /delta/_checkpoints/shelf_aggregator
     volumes:
     - ./delta:/delta
@@ -225,11 +226,13 @@ services:
       DELTA_ROOT: /delta
       CHECKPOINT_ROOT: /delta/_checkpoints/batch_state_updater
       STARTING_OFFSETS: earliest
+      MAX_OFFSETS_PER_TRIGGER: "2000"
     volumes:
     - ./delta:/delta
     depends_on:
     - kafka
     - postgres
+    restart: unless-stopped
 
   foot-traffic-raw-sink:
     build:
