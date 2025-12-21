@@ -184,6 +184,15 @@ schema_wh_supplier_plan = StructType([
     StructField("updated_at",       TimestampType(), False),
 ])
 
+schema_shelf_restock_plan = StructType([
+    StructField("plan_id",       StringType(), False),
+    StructField("shelf_id",      StringType(), False),
+    StructField("suggested_qty", IntegerType(), False),
+    StructField("status",        StringType(), False),   # pending/issued/completed/...
+    StructField("created_at",    TimestampType(), False),
+    StructField("updated_at",    TimestampType(), False),
+])
+
 
 def create_empty_delta(path_str: str, schema):
     (spark.createDataFrame([], schema)
@@ -213,6 +222,7 @@ create_empty_delta(path("ops", "wh_supplier_plan"),        schema_wh_supplier_pl
 create_empty_delta(path("ops", "wh_supplier_orders"),      schema_wh_supplier_orders)
 create_empty_delta(path("ops", "wh_inbound_receipts"),     schema_wh_inbound_receipts)
 create_empty_delta(path("ops", "alerts"), schema_alerts)
+create_empty_delta(path("ops", "shelf_restock_plan"), schema_shelf_restock_plan)
 
 os.makedirs(path("models", "warehouse_optimizer"), exist_ok=True)
 os.makedirs(path("checkpoints"), exist_ok=True)
