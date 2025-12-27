@@ -96,7 +96,11 @@ def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]]
     if to_create:
         try:
             admin.create_topics(to_create, validate_only=False, timeout_ms=15000)
-            print(f"[init] Creati {len(to_create)} topic: {[t.topic for t in to_create]}")
+            created_names = [
+                getattr(t, "name", None) or getattr(t, "topic", None) or str(t)
+                for t in to_create
+            ]
+            print(f"[init] Creati {len(to_create)} topic: {created_names}")
         except TopicAlreadyExistsError:
             print("[init] Alcuni topic esistevano già (race condition), ok.")
         except Exception as e:

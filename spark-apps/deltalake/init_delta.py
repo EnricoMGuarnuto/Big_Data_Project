@@ -229,3 +229,4 @@ os.makedirs(path("checkpoints"), exist_ok=True)
 
 print(f"[delta-bootstrap] Initialized under: {DELTA_ROOT}")
 spark.stop()
+print("[delta-bootstrap] Done.")

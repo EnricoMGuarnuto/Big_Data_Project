@@ -18,11 +18,49 @@ STARTING_OFFSETS=os.getenv("STARTING_OFFSETS","earliest")
 JDBC_PG_URL=os.getenv("JDBC_PG_URL"); JDBC_PG_USER=os.getenv("JDBC_PG_USER"); JDBC_PG_PASSWORD=os.getenv("JDBC_PG_PASSWORD")
 BOOTSTRAP_FROM_PG=os.getenv("BOOTSTRAP_FROM_PG","1") in ("1","true","True")
 
+DELTA_WRITE_MAX_RETRIES = int(os.getenv("DELTA_WRITE_MAX_RETRIES", "8"))
+DELTA_WRITE_RETRY_BASE_S = float(os.getenv("DELTA_WRITE_RETRY_BASE_S", "1.0"))
+
 spark=(SparkSession.builder.appName("WH_Batch_State_Updater")
        .config("spark.sql.extensions","io.delta.sql.DeltaSparkSessionExtension")
        .config("spark.sql.catalog.spark_catalog","org.apache.spark.sql.delta.catalog.DeltaCatalog")
        .getOrCreate())
 spark.sparkContext.setLogLevel("WARN")
+
+def _is_delta_conflict(err: Exception) -> bool:
+    name = err.__class__.__name__
+    msg = str(err)
+    return (
+        "Concurrent" in name
+        or "DELTA_CONCURRENT" in msg
+        or "MetadataChangedException" in name
+        or "ProtocolChangedException" in name
+    )
+
+def _delta_has_rows(path: str) -> bool:
+    if not DeltaTable.isDeltaTable(spark, path):
+        return False
+    try:
+        return spark.read.format("delta").load(path).limit(1).count() > 0
+    except Exception:
+        return False
+
+def _with_delta_retries(op_name: str, fn, *, ok_if_table_filled: str | None = None):
+    last = None
+    for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            if ok_if_table_filled and _is_delta_conflict(e) and _delta_has_rows(ok_if_table_filled):
+                print(f"[delta-retry] {op_name}: conflict but table already populated -> continue.")
+                return None
+            if not _is_delta_conflict(e) or attempt == DELTA_WRITE_MAX_RETRIES:
+                raise
+            sleep_s = DELTA_WRITE_RETRY_BASE_S * attempt
+            print(f"[delta-retry] {op_name}: conflict ({attempt}/{DELTA_WRITE_MAX_RETRIES}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last  # pragma: no cover
 
 schema_evt = T.StructType([
     T.StructField("event_type", T.StringType()),  # wh_in | wh_out
@@ -40,6 +78,12 @@ schema_evt = T.StructType([
 def bootstrap_from_pg():
     if not BOOTSTRAP_FROM_PG or not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
         print("[bootstrap] skip"); return
+
+    # If tables already exist and are non-empty, avoid overwriting (prevents concurrent bootstrap clashes).
+    if _delta_has_rows(DL_WH_BATCH) and _delta_has_rows(DL_SHELF_BATCH):
+        print("[bootstrap] delta tables already present -> skip")
+        return
+
     # WH
     wh = (spark.read.format("jdbc")
           .option("url", JDBC_PG_URL).option("user", JDBC_PG_USER).option("password", JDBC_PG_PASSWORD)
@@ -51,7 +95,12 @@ def bootstrap_from_pg():
                       F.coalesce(F.col("batch_quantity_warehouse"),F.lit(0)).cast("int").alias("batch_quantity_warehouse"),
                       F.coalesce(F.col("batch_quantity_store"),F.lit(0)).cast("int").alias("batch_quantity_store"),
                       F.current_timestamp().alias("last_update_ts")))
-    s_wh.write.format("delta").mode("overwrite").save(DL_WH_BATCH)
+    if not _delta_has_rows(DL_WH_BATCH):
+        _with_delta_retries(
+            "bootstrap wh_batch_state overwrite",
+            lambda: s_wh.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(DL_WH_BATCH),
+            ok_if_table_filled=DL_WH_BATCH,
+        )
     # STORE (batches present in store)
     st = (spark.read.format("jdbc")
           .option("url", JDBC_PG_URL).option("user", JDBC_PG_USER).option("password", JDBC_PG_PASSWORD)
@@ -62,7 +111,12 @@ def bootstrap_from_pg():
               .select("shelf_id","batch_code","received_date","expiry_date",
                       F.coalesce(F.col("batch_quantity_store"),F.lit(0)).cast("int").alias("batch_quantity_store"),
                       F.current_timestamp().alias("last_update_ts")))
-    s_st.write.format("delta").mode("overwrite").save(DL_SHELF_BATCH)
+    if not _delta_has_rows(DL_SHELF_BATCH):
+        _with_delta_retries(
+            "bootstrap shelf_batch_state overwrite",
+            lambda: s_st.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(DL_SHELF_BATCH),
+            ok_if_table_filled=DL_SHELF_BATCH,
+        )
 
 bootstrap_from_pg()
 
@@ -88,29 +142,35 @@ def apply_events(batch_df, batch_id:int):
     if DeltaTable.isDeltaTable(spark, DL_WH_BATCH):
         t = DeltaTable.forPath(spark, DL_WH_BATCH)
         upd = (wh_delta.withColumn("last_update_ts", F.current_timestamp()))
-        t.alias("t").merge(upd.alias("s"),
-            "t.shelf_id=s.shelf_id AND t.batch_code=s.batch_code") \
-         .whenMatchedUpdate(set={
-             "received_date": F.coalesce(F.col("s.received_date"), F.col("t.received_date")),
-             "expiry_date": F.coalesce(F.col("s.expiry_date"), F.col("t.expiry_date")),
-             "batch_quantity_warehouse": F.expr("coalesce(t.batch_quantity_warehouse,0)+s.d_wh"),
-             "last_update_ts": F.expr("greatest(t.last_update_ts, s.ts, s.last_update_ts)")
-         }).whenNotMatchedInsert(values={
-             "shelf_id":F.col("s.shelf_id"),
-             "batch_code":F.col("s.batch_code"),
-             "received_date":F.col("s.received_date"),
-             "expiry_date":F.col("s.expiry_date"),
-             "batch_quantity_warehouse":F.col("s.d_wh"),
-             "batch_quantity_store":F.lit(0),
-             "last_update_ts":F.col("s.last_update_ts")
-         }).execute()
+        def _merge_wh():
+            return (t.alias("t").merge(upd.alias("s"),
+                "t.shelf_id=s.shelf_id AND t.batch_code=s.batch_code") \
+             .whenMatchedUpdate(set={
+                 "received_date": F.coalesce(F.col("s.received_date"), F.col("t.received_date")),
+                 "expiry_date": F.coalesce(F.col("s.expiry_date"), F.col("t.expiry_date")),
+                 "batch_quantity_warehouse": F.expr("coalesce(t.batch_quantity_warehouse,0)+s.d_wh"),
+                 "last_update_ts": F.expr("greatest(t.last_update_ts, s.ts, s.last_update_ts)")
+             }).whenNotMatchedInsert(values={
+                 "shelf_id":F.col("s.shelf_id"),
+                 "batch_code":F.col("s.batch_code"),
+                 "received_date":F.col("s.received_date"),
+                 "expiry_date":F.col("s.expiry_date"),
+                 "batch_quantity_warehouse":F.col("s.d_wh"),
+                 "batch_quantity_store":F.lit(0),
+                 "last_update_ts":F.col("s.last_update_ts")
+             }).execute())
+        _with_delta_retries("merge wh_batch_state", _merge_wh)
     else:
-        (wh_delta.withColumn("last_update_ts",F.current_timestamp())
-         .select("shelf_id","batch_code","received_date","expiry_date",
-                 F.col("d_wh").alias("batch_quantity_warehouse"),
-                 F.lit(0).alias("batch_quantity_store"),
-                 "last_update_ts")
-         .write.format("delta").mode("overwrite").save(DL_WH_BATCH))
+        _with_delta_retries(
+            "init wh_batch_state overwrite",
+            lambda: (wh_delta.withColumn("last_update_ts",F.current_timestamp())
+             .select("shelf_id","batch_code","received_date","expiry_date",
+                     F.col("d_wh").alias("batch_quantity_warehouse"),
+                     F.lit(0).alias("batch_quantity_store"),
+                     "last_update_ts")
+             .write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(DL_WH_BATCH)),
+            ok_if_table_filled=DL_WH_BATCH,
+        )
 
     # If wh_out, increase store batches
     to_store = (batch_df.filter(F.col("event_type")=="wh_out")
@@ -120,27 +180,33 @@ def apply_events(batch_df, batch_id:int):
         if DeltaTable.isDeltaTable(spark, DL_SHELF_BATCH):
             t2 = DeltaTable.forPath(spark, DL_SHELF_BATCH)
             upd2 = to_store.withColumn("last_update_ts", F.current_timestamp())
-            t2.alias("t").merge(upd2.alias("s"),
-                "t.shelf_id=s.shelf_id AND t.batch_code=s.batch_code") \
-            .whenMatchedUpdate(set={
-                "received_date": F.coalesce(F.col("s.received_date"), F.col("t.received_date")),
-                "expiry_date": F.coalesce(F.col("s.expiry_date"), F.col("t.expiry_date")),
-                "batch_quantity_store": F.expr("coalesce(t.batch_quantity_store,0)+s.d_store"),
-                "last_update_ts": F.expr("greatest(t.last_update_ts, s.ts, s.last_update_ts)")
-            }).whenNotMatchedInsert(values={
-                "shelf_id":F.col("s.shelf_id"),
-                "batch_code":F.col("s.batch_code"),
-                "received_date":F.col("s.received_date"),
-                "expiry_date":F.col("s.expiry_date"),
-                "batch_quantity_store":F.col("s.d_store"),
-                "last_update_ts":F.col("s.last_update_ts")
-            }).execute()
+            def _merge_store():
+                return (t2.alias("t").merge(upd2.alias("s"),
+                    "t.shelf_id=s.shelf_id AND t.batch_code=s.batch_code") \
+                .whenMatchedUpdate(set={
+                    "received_date": F.coalesce(F.col("s.received_date"), F.col("t.received_date")),
+                    "expiry_date": F.coalesce(F.col("s.expiry_date"), F.col("t.expiry_date")),
+                    "batch_quantity_store": F.expr("coalesce(t.batch_quantity_store,0)+s.d_store"),
+                    "last_update_ts": F.expr("greatest(t.last_update_ts, s.ts, s.last_update_ts)")
+                }).whenNotMatchedInsert(values={
+                    "shelf_id":F.col("s.shelf_id"),
+                    "batch_code":F.col("s.batch_code"),
+                    "received_date":F.col("s.received_date"),
+                    "expiry_date":F.col("s.expiry_date"),
+                    "batch_quantity_store":F.col("s.d_store"),
+                    "last_update_ts":F.col("s.last_update_ts")
+                }).execute())
+            _with_delta_retries("merge shelf_batch_state", _merge_store)
         else:
-            (to_store.withColumn("last_update_ts",F.current_timestamp())
-             .select("shelf_id","batch_code","received_date","expiry_date",
-                     F.col("d_store").alias("batch_quantity_store"),
-                     "last_update_ts")
-             .write.format("delta").mode("overwrite").save(DL_SHELF_BATCH))
+            _with_delta_retries(
+                "init shelf_batch_state overwrite",
+                lambda: (to_store.withColumn("last_update_ts",F.current_timestamp())
+                 .select("shelf_id","batch_code","received_date","expiry_date",
+                         F.col("d_store").alias("batch_quantity_store"),
+                         "last_update_ts")
+                 .write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(DL_SHELF_BATCH)),
+                ok_if_table_filled=DL_SHELF_BATCH,
+            )
 
     # Publish compacted topics for keys touched
     wh_keys = wh_delta.select("shelf_id","batch_code").distinct()

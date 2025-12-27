@@ -203,12 +203,14 @@ Nota: per i consumer Structured Streaming puoi impostare `MAX_OFFSETS_PER_TRIGGE
 
 ## Kafka Connect
 
-I connector vengono registrati da `kafka-components/kafka-connect/connect-init/init.py`:
+I connector vengono registrati da `connect-init` (`kafka-components/kafka-connect/connect-init/init.py`) e il container poi termina.
 
-- **Postgres → Kafka (source, compacted metadata)**: `shelf_policies`, `wh_policies`, `batch_catalog`, `shelf_profiles`
+- **Postgres → Kafka (source, compacted metadata)**: `batch_catalog`, `shelf_profiles`
 - **Kafka → Postgres (sink)**:
-  - upsert state: `shelf_state`, `wh_state`, `shelf_batch_state`, `wh_batch_state`, `daily_discounts`, `shelf_restock_plan`, `wh_supplier_plan`
-  - insert append‑only: `wh_events`, `pos_transactions`, `alerts`
+  - upsert: `shelf_state`, `wh_state`, `shelf_batch_state`, `wh_batch_state`, `daily_discounts`, `shelf_restock_plan`, `wh_supplier_plan`
+  - insert append‑only: `wh_events`
+
+Nota: per evitare doppioni, di default non viene creato il sink `alerts` (lo fa già `alerts-sink` con `WRITE_TO_PG=1`) e non viene creato il sink `pos_transactions` (eventi annidati non mappabili direttamente su `ops.pos_transactions`/`ops.pos_transaction_items` con JDBC sink).
 
 ---
 
@@ -240,12 +242,28 @@ I CSV vengono caricati da `postgresql/02_load_ref_from_csv.sql` e le policy di d
 
 ## Performance
 
-...
+### Avviare solo ciò che serve
+
+Il modo più efficace per ridurre CPU/RAM è non lanciare tutta la pipeline insieme. Esempi:
+
+```bash
+# solo infrastruttura
+docker compose up -d --build zookeeper kafka redis postgres
+
+# aggiungi producer e un sottoinsieme di job Spark
+docker compose up -d --build kafka-producer-shelf spark-shelf-aggregator
+```
+
+### Ridurre carico dei producer e dei consumer
+
+- Producer: aumenta `SLEEP` o diminuisci `TIME_SCALE` nei servizi `kafka-producer-*`.
+- Spark streaming: usa `MAX_OFFSETS_PER_TRIGGER` (già previsto in vari servizi) per evitare micro-batch enormi a `STARTING_OFFSETS=earliest`.
 
 ---
 
 ## Troubleshooting
 
+- Se vuoi rilanciare solo l’inizializzazione dei connector: `docker compose run --rm connect-init`.
 - Se `kafka-init` o `connect-init` falliscono, controllare i log con `docker compose logs -f kafka-init connect-init`.
 - Se Spark non parte durante la build, verificare l’accesso a Internet (download JAR/`--packages`).
 - Se Postgres non carica i CSV, verificare che `data/db_csv/*.csv` esistano e che il volume `./data/db_csv:/import/csv:ro` sia montato correttamente.

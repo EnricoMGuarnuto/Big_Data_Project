@@ -158,6 +158,8 @@ def bootstrap_state_if_missing():
             "value_json",
             F.to_json(F.struct(
                 "shelf_id","current_stock",
+                # Keep both names for compatibility across sinks/consumers
+                F.col("shelf_weight").alias("shelf_weight"),
                 F.col("shelf_weight").alias("item_weight"),
                 "last_update_ts"
             ))
@@ -301,6 +303,8 @@ def upsert_and_publish(batch_df, batch_id: int):
                 F.struct(
                     F.col("shelf_id"),
                     F.col("current_stock"),
+                    # Keep both names for compatibility across sinks/consumers
+                    F.col("shelf_weight").alias("shelf_weight"),
                     F.col("shelf_weight").alias("item_weight"),
                     F.col("last_update_ts")
                 )

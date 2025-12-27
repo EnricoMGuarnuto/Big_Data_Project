@@ -91,6 +91,10 @@ services:
       PG_DB: smart_shelf
       PG_USER: bdt_user
       PG_PASS: bdt_password
+      CONNECT_INIT_ENABLE_SOURCES: "1"
+      CONNECT_INIT_ENABLE_SINKS: "1"
+      # Default OFF to avoid double-writing: `alerts-sink` already writes to Postgres (WRITE_TO_PG=1)
+      CONNECT_INIT_ENABLE_ALERTS_SINK: "0"
     restart: 'no'
 
 # PostgreSQL Database
@@ -210,7 +214,7 @@ services:
       CHECKPOINT_ROOT: /delta/_checkpoints/shelf_aggregator
     volumes:
     - ./delta:/delta
-    restart: unless-stopped
+    restart: 'no'
 
   batch-state-updater:
     build:
@@ -232,7 +236,7 @@ services:
     depends_on:
     - kafka
     - postgres
-    restart: unless-stopped
+    restart: 'no'
 
   foot-traffic-raw-sink:
     build:
@@ -248,7 +252,7 @@ services:
     - ./delta:/delta
     depends_on:
     - kafka
-    restart: unless-stopped
+    restart: 'no'
 
   shelf-alert-engine:
     build:
@@ -281,7 +285,7 @@ services:
     depends_on:
       - kafka
       - postgres
-    restart: unless-stopped
+    restart: 'no'
 
   wh-alert-engine:
     build:
@@ -312,7 +316,7 @@ services:
     depends_on:
       - kafka
       - postgres
-    restart: unless-stopped
+    restart: 'no'
 
   alerts-sink:
     build:
@@ -336,7 +340,7 @@ services:
     depends_on:
       - kafka
       - postgres
-    restart: unless-stopped
+    restart: 'no'
 
   shelf-restock-manager:
     build:
@@ -356,7 +360,7 @@ services:
       - ./delta:/delta
     depends_on:
       - kafka
-    restart: unless-stopped
+    restart: 'no'
 
   wh-aggregator:
     build:
@@ -376,7 +380,7 @@ services:
     depends_on:
       - kafka
       - postgres
-    restart: unless-stopped
+    restart: 'no'
 
   wh-batch-state-updater:
     build:
@@ -397,7 +401,7 @@ services:
     depends_on:
       - kafka
       - postgres
-    restart: unless-stopped
+    restart: 'no'
 
   shelf-refill-bridge:
     build:
@@ -416,7 +420,7 @@ services:
       - ./delta:/delta
     depends_on:
       - kafka
-    restart: unless-stopped
+    restart: 'no'
 
 
   daily-discount-manager:
@@ -436,7 +440,7 @@ services:
       DL_DAILY_DISC_PATH: /delta/analytics/daily_discounts
     volumes:
       - ./delta:/delta
-    restart: unless-stopped
+    restart: 'no'
 
   removal-scheduler:
     build:
@@ -460,7 +464,7 @@ services:
       EMIT_ALERTS: "1"
     volumes:
       - ./delta:/delta
-    restart: unless-stopped
+    restart: 'no'
 
 
   wh-supplier-manager:
@@ -495,7 +499,7 @@ services:
       - kafka
       - spark-init-delta
       - wh-alert-engine
-    restart: unless-stopped
+    restart: 'no'
 
 
 volumes:

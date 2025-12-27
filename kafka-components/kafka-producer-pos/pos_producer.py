@@ -40,6 +40,17 @@ REDIS_STREAM = os.getenv("REDIS_STREAM", "pos_transactions")  # stream key
 GROUP_ID_SHELF = os.getenv("GROUP_ID_SHELF", "pos-simulator-shelf")
 GROUP_ID_FOOT  = os.getenv("GROUP_ID_FOOT", "pos-simulator-foot")
 
+SHELF_AUTO_OFFSET_RESET = os.getenv("SHELF_AUTO_OFFSET_RESET", "latest")
+FOOT_AUTO_OFFSET_RESET = os.getenv("FOOT_AUTO_OFFSET_RESET", "earliest")
+
+# Consumer group stability / offset commits
+CONSUMER_ENABLE_AUTO_COMMIT = os.getenv("CONSUMER_ENABLE_AUTO_COMMIT", "0") in ("1", "true", "True")
+CONSUMER_COMMIT_EVERY_N = int(os.getenv("CONSUMER_COMMIT_EVERY_N", "200"))
+CONSUMER_COMMIT_EVERY_S = float(os.getenv("CONSUMER_COMMIT_EVERY_S", "5"))
+CONSUMER_SESSION_TIMEOUT_MS = int(os.getenv("CONSUMER_SESSION_TIMEOUT_MS", "30000"))
+CONSUMER_HEARTBEAT_INTERVAL_MS = int(os.getenv("CONSUMER_HEARTBEAT_INTERVAL_MS", "10000"))
+CONSUMER_MAX_POLL_INTERVAL_MS = int(os.getenv("CONSUMER_MAX_POLL_INTERVAL_MS", "600000"))
+
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
 STORE_BATCHES_PARQUET = os.getenv("STORE_BATCHES_PARQUET", "/data/store_batches.parquet")
@@ -475,26 +486,44 @@ def shelf_consumer_loop():
         bootstrap_servers=KAFKA_BROKER,
         group_id=GROUP_ID_SHELF,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-        auto_offset_reset='latest',
-        enable_auto_commit=True
+        auto_offset_reset=SHELF_AUTO_OFFSET_RESET,
+        enable_auto_commit=CONSUMER_ENABLE_AUTO_COMMIT,
+        session_timeout_ms=CONSUMER_SESSION_TIMEOUT_MS,
+        heartbeat_interval_ms=CONSUMER_HEARTBEAT_INTERVAL_MS,
+        max_poll_interval_ms=CONSUMER_MAX_POLL_INTERVAL_MS,
     )
     log.info(f"[pos] Listening shelf events on '{SHELF_TOPIC}'")
 
+    processed = 0
+    last_commit = time.time()
     for msg in consumer:
-        evt = msg.value
-        etype = evt.get("event_type")
-        customer_id = evt.get("customer_id")
-        item_id = evt.get("item_id")
+        try:
+            evt = msg.value
+            etype = evt.get("event_type")
+            customer_id = evt.get("customer_id")
+            item_id = evt.get("item_id")
 
-        if etype not in ("pickup", "putback") or not customer_id or not item_id:
-            continue
+            if etype not in ("pickup", "putback") or not customer_id or not item_id:
+                continue
 
-        qty = int(evt.get("quantity", 1))
-        with carts_lock:
-            if etype == "pickup":
-                carts[customer_id][item_id] += qty
-            elif etype == "putback":
-                carts[customer_id][item_id] = max(0, carts[customer_id][item_id] - qty)
+            qty = int(evt.get("quantity", 1))
+            with carts_lock:
+                if etype == "pickup":
+                    carts[customer_id][item_id] += qty
+                elif etype == "putback":
+                    carts[customer_id][item_id] = max(0, carts[customer_id][item_id] - qty)
+        finally:
+            if not CONSUMER_ENABLE_AUTO_COMMIT:
+                processed += 1
+                now = time.time()
+                if processed >= CONSUMER_COMMIT_EVERY_N or (now - last_commit) >= CONSUMER_COMMIT_EVERY_S:
+                    try:
+                        consumer.commit()
+                    except Exception as e:
+                        # Commit can fail during rebalances; we keep running to avoid killing the simulator.
+                        log.warning(f"[pos] consumer commit failed for group {GROUP_ID_SHELF}: {e}")
+                    processed = 0
+                    last_commit = now
 
 def foot_consumer_loop():
     consumer = KafkaConsumer(
@@ -502,24 +531,41 @@ def foot_consumer_loop():
         bootstrap_servers=KAFKA_BROKER,
         group_id=GROUP_ID_FOOT,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-        auto_offset_reset='earliest',
-        enable_auto_commit=True
+        auto_offset_reset=FOOT_AUTO_OFFSET_RESET,
+        enable_auto_commit=CONSUMER_ENABLE_AUTO_COMMIT,
+        session_timeout_ms=CONSUMER_SESSION_TIMEOUT_MS,
+        heartbeat_interval_ms=CONSUMER_HEARTBEAT_INTERVAL_MS,
+        max_poll_interval_ms=CONSUMER_MAX_POLL_INTERVAL_MS,
     )
     log.info(f"[pos] Listening foot traffic on '{FOOT_TOPIC}'")
 
+    processed = 0
+    last_commit = time.time()
     for msg in consumer:
-        evt = msg.value
-        if evt.get("event_type") != "foot_traffic":
-            continue
+        try:
+            evt = msg.value
+            if evt.get("event_type") != "foot_traffic":
+                continue
 
-        customer_id = evt.get("customer_id")
-        entry_time  = datetime.fromisoformat(evt["entry_time"])
-        exit_time   = datetime.fromisoformat(evt["exit_time"])
+            customer_id = evt.get("customer_id")
+            entry_time  = datetime.fromisoformat(evt["entry_time"])
+            exit_time   = datetime.fromisoformat(evt["exit_time"])
 
-        with entries_lock:
-            entries[customer_id] = entry_time
+            with entries_lock:
+                entries[customer_id] = entry_time
 
-        schedule_checkout(customer_id, exit_time)
+            schedule_checkout(customer_id, exit_time)
+        finally:
+            if not CONSUMER_ENABLE_AUTO_COMMIT:
+                processed += 1
+                now = time.time()
+                if processed >= CONSUMER_COMMIT_EVERY_N or (now - last_commit) >= CONSUMER_COMMIT_EVERY_S:
+                    try:
+                        consumer.commit()
+                    except Exception as e:
+                        log.warning(f"[pos] consumer commit failed for group {GROUP_ID_FOOT}: {e}")
+                    processed = 0
+                    last_commit = now
 
 def janitor_loop():
     while True:

@@ -49,6 +49,16 @@ spark = (
 )
 spark.sparkContext.setLogLevel("WARN")
 
+def _delta_field_types(path: str) -> dict:
+    if not DeltaTable.isDeltaTable(spark, path):
+        return {}
+    try:
+        schema = spark.read.format("delta").load(path).schema
+        return {f.name: f.dataType for f in schema.fields}
+    except Exception as e:
+        print(f"[delta-schema] warn reading schema from {path}: {e}")
+        return {}
+
 def kafka_topic_exists(topic_name: str) -> bool:
     """Check if a Kafka topic exists to avoid UnknownTopic errors when reading offsets."""
     try:
@@ -357,6 +367,22 @@ def foreach_batch(batch_df, batch_id: int):
         .withColumn("created_at", F.current_timestamp())
 
     if alerts_df.rdd.isEmpty() is False:
+        # Normalize types to match the existing Delta table schema (prevents DELTA_FAILED_TO_MERGE_FIELDS on int/long).
+        alerts_delta_types = _delta_field_types(DL_ALERTS_PATH)
+        t = lambda name, default: alerts_delta_types.get(name, default)
+        alerts_to_delta = alerts_df.select(
+            F.col("event_type").cast(t("event_type", T.StringType())).alias("event_type"),
+            F.col("shelf_id").cast(t("shelf_id", T.StringType())).alias("shelf_id"),
+            F.col("location").cast(t("location", T.StringType())).alias("location"),
+            F.col("severity").cast(t("severity", T.StringType())).alias("severity"),
+            F.col("current_stock").cast(t("current_stock", T.IntegerType())).alias("current_stock"),
+            F.col("min_qty").cast(t("min_qty", T.IntegerType())).alias("min_qty"),
+            F.col("threshold_pct").cast(t("threshold_pct", T.DoubleType())).alias("threshold_pct"),
+            F.col("stock_pct").cast(t("stock_pct", T.DoubleType())).alias("stock_pct"),
+            F.col("suggested_qty").cast(t("suggested_qty", T.IntegerType())).alias("suggested_qty"),
+            F.col("created_at").cast(t("created_at", T.TimestampType())).alias("created_at"),
+        )
+
         # Kafka append-only
         out = alerts_df.withColumn("value", F.to_json(F.struct(
             "event_type","shelf_id","location","severity",
@@ -364,11 +390,11 @@ def foreach_batch(batch_df, batch_id: int):
         ))).select(F.lit(None).cast("string").alias("key"), "value")
 
         out.write.format("kafka")\
-           .option("kafka.bootstrap.servers", KAFKA_BROKER)\
-           .option("topic", TOPIC_ALERTS)\
-           .save()
+	       .option("kafka.bootstrap.servers", KAFKA_BROKER)\
+	       .option("topic", TOPIC_ALERTS)\
+	       .save()
 
-        (alerts_df.write.format("delta").mode("append").option("mergeSchema","true").save(DL_ALERTS_PATH))
+        (alerts_to_delta.write.format("delta").mode("append").option("mergeSchema","true").save(DL_ALERTS_PATH))
 
     # Supplier plan (compacted): compute suggested_qty when below reorder point
     # If standard_batch_size available, round up to multiples * DEFAULT_MULTIPLIER
