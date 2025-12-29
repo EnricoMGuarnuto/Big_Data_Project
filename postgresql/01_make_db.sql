@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS config.batch_catalog (
 -- Current shelf state (from shelf_events aggregation)
 CREATE TABLE IF NOT EXISTS state.shelf_state (
   shelf_id        TEXT PRIMARY KEY,
+  category        TEXT NULL,
+  subcategory     TEXT NULL,
   current_stock   INTEGER NOT NULL,
   shelf_weight    NUMERIC(12,3) NULL,
   last_update_ts  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -117,6 +119,8 @@ CREATE TABLE IF NOT EXISTS state.shelf_state (
 -- Current warehouse state (from wh_events aggregation)
 CREATE TABLE IF NOT EXISTS state.wh_state (
   shelf_id         TEXT PRIMARY KEY,
+  category         TEXT NULL,
+  subcategory      TEXT NULL,
   wh_current_stock INTEGER NOT NULL,
   last_update_ts   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -125,6 +129,8 @@ CREATE TABLE IF NOT EXISTS state.wh_state (
 CREATE TABLE IF NOT EXISTS state.shelf_batch_state (
   shelf_id                    TEXT NOT NULL,
   batch_code                  TEXT NOT NULL,
+  category                   TEXT NULL,
+  subcategory                TEXT NULL,
   received_date               DATE NOT NULL,
   expiry_date                 DATE NOT NULL,
   batch_quantity_store        INTEGER NOT NULL DEFAULT 0,
@@ -139,6 +145,8 @@ CREATE INDEX IF NOT EXISTS ix_shelf_batch_state_expiry
 CREATE TABLE IF NOT EXISTS state.wh_batch_state (
   shelf_id                    TEXT NOT NULL,
   batch_code                  TEXT NOT NULL,
+  category                   TEXT NULL,
+  subcategory                TEXT NULL,
   received_date               DATE NOT NULL,
   expiry_date                 DATE NOT NULL,
   batch_quantity_warehouse    INTEGER NOT NULL DEFAULT 0,

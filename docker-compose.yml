@@ -501,6 +501,36 @@ services:
       - wh-alert-engine
     restart: 'no'
 
+# Dashboard Service
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      INVENTORY_CSV: "data/store_inventory_final.csv"
+      LAYOUT_YAML: "dashboard/store_layout.yaml"
+      DELTA_EVENTS_PATH: "delta/weight_events"
+      DELTA_TIMESTAMP_COL: "event_ts"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "smart_shelf"
+      POSTGRES_USER: "bdt_user"
+      POSTGRES_PASSWORD: "bdt_password"
+      ALERTS_TABLE: "ops.alerts"
+      DASH_REFRESH_MS: "1000"
+      BLINK_SECONDS: "1.2"
+    depends_on:
+      - postgres
+    volumes:
+      - ./data:/app/data
+      - ./dashboard:/app/dashboard
+      - ./images:/app/images
+      - ./delta:/app/delta
+
+
 
 volumes:
   kafka-data: null
