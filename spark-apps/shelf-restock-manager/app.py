@@ -1,6 +1,8 @@
 import os, time
 from pyspark.sql import SparkSession, functions as F, types as T, Window
 from delta.tables import DeltaTable
+from simulated_time.redis_helpers import get_simulated_now
+
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC_RESTOCK = os.getenv("TOPIC_RESTOCK", "shelf_restock_plan")   # compacted
@@ -51,13 +53,17 @@ def foreach_batch(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty(): return
 
     # Take candidate plans (at least PLAN_DELAY_SEC old and status='pending')
+    now_ts = get_simulated_now()
+
     candidates = (batch_df
-        .withColumn("now_ts", F.current_timestamp())
-        .filter( (F.col("status") == F.lit("pending")) &
-                 (F.col("created_at") <= F.expr(f"now() - interval {PLAN_DELAY_SEC} seconds")) )
+        .filter(
+            (F.col("status") == F.lit("pending")) &
+            (F.col("created_at") <= (F.lit(now_ts) - F.expr(f"INTERVAL {PLAN_DELAY_SEC} seconds")))
+        )
         .select("plan_id","shelf_id","suggested_qty","created_at","updated_at","alert_id")
         .cache()
     )
+
     if candidates.rdd.isEmpty(): return
 
     # Warehouse state for FIFO (Delta mirror updated by wh-batch-state-updater)

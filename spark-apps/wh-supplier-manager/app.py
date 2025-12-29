@@ -1,6 +1,7 @@
 import os
 import time
 from datetime import datetime, timedelta, timezone, date
+from simulated_time.clock import get_simulated_now
 
 from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.window import Window
@@ -97,7 +98,7 @@ ensure_delta_table(DL_RECEIPTS_PATH, schema_receipt)
 # Time helpers (UTC)
 # =========================
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return get_simulated_now()
 
 def is_cutoff_moment(ts: datetime) -> bool:
     # cutoff: Sunday(6), Tuesday(1), Thursday(3) at 12:00
@@ -282,8 +283,8 @@ def do_cutoff(now_ts: datetime):
         .withColumn("delivery_date", F.lit(delivery).cast("date"))
         .withColumn("order_id", F.expr("uuid()"))
         .withColumn("status", F.lit("issued"))
-        .withColumn("created_at", F.current_timestamp())
-        .withColumn("updated_at", F.current_timestamp())
+        .withColumn("created_at", F.lit(get_simulated_now()).cast("timestamp"))
+        .withColumn("updated_at", F.lit(get_simulated_now()).cast("timestamp"))
         .select("order_id","delivery_date","shelf_id","total_qty","status","created_at","updated_at")
     )
 
@@ -294,7 +295,7 @@ def do_cutoff(now_ts: datetime):
     issued = (
         pending
         .withColumn("status", F.lit("issued"))
-        .withColumn("updated_at", F.current_timestamp())
+        .withColumn("updated_at", F.lit(get_simulated_now()).cast("timestamp"))
         .select("supplier_plan_id","shelf_id","suggested_qty","standard_batch_size","status","created_at","updated_at")
     )
     publish_plan_updates(issued)
@@ -381,7 +382,7 @@ def do_delivery(now_ts: datetime):
         .withColumn("batch_code", F.concat_ws("-", F.lit("SUP"), F.date_format(F.lit(today), "yyyyMMdd"), F.col("shelf_id"), F.col("batch_idx").cast("string")))
         .withColumn("qty", F.col("qty_batch").cast("int"))
         .withColumn("unit", F.lit("ea"))
-        .withColumn("timestamp", F.current_timestamp())
+        .withColumn("timestamp", F.lit(get_simulated_now()).cast("timestamp"))
         .withColumn("fifo", F.lit(True))
         .withColumn("received_date", F.lit(received_date).cast("date"))
         .withColumn("expiry_date", F.lit(expiry_date).cast("date"))
@@ -399,7 +400,7 @@ def do_delivery(now_ts: datetime):
         due.select("delivery_date","shelf_id","total_qty")
         .withColumnRenamed("total_qty", "received_qty")
         .withColumn("receipt_id", F.expr("uuid()"))
-        .withColumn("created_at", F.current_timestamp())
+        .withColumn("created_at", F.lit(get_simulated_now()).cast("timestamp"))
         .select("receipt_id","delivery_date","shelf_id","received_qty","created_at")
     )
     upsert_receipts(receipts)
@@ -409,8 +410,8 @@ def do_delivery(now_ts: datetime):
         due.select("delivery_date","shelf_id","total_qty")
         .withColumn("order_id", F.expr("uuid()"))  # ignored on merge for matched rows
         .withColumn("status", F.lit("delivered"))
-        .withColumn("created_at", F.current_timestamp())
-        .withColumn("updated_at", F.current_timestamp())
+        .withColumn("created_at", F.lit(get_simulated_now()).cast("timestamp"))
+        .withColumn("updated_at", F.lit(get_simulated_now()).cast("timestamp"))
         .select("order_id","delivery_date","shelf_id",F.col("total_qty"),"status","created_at","updated_at")
         .withColumnRenamed("total_qty", "total_qty")
     )
@@ -423,7 +424,7 @@ def do_delivery(now_ts: datetime):
         .join(shelves_today, on="shelf_id", how="inner")
         .filter(F.col("status") == F.lit("issued"))
         .withColumn("status", F.lit("completed"))
-        .withColumn("updated_at", F.current_timestamp())
+        .withColumn("updated_at", F.lit(get_simulated_now()).cast("timestamp"))
         .select("supplier_plan_id","shelf_id","suggested_qty","standard_batch_size","status","created_at","updated_at")
     )
     if not issued_plans_today.rdd.isEmpty():

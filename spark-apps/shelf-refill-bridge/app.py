@@ -1,6 +1,8 @@
 import os
 from pyspark.sql import SparkSession, functions as F, types as T, Window
 from delta.tables import DeltaTable
+from simulated_time.redis_helpers import get_simulated_now
+
 
 # ======== Config ========
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
@@ -108,7 +110,11 @@ def foreach_batch(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty():
         return
 
-    now_ts = spark.range(1).select(F.current_timestamp().alias("now")).collect()[0]["now"]
+    try:
+        now_ts = get_simulated_now()
+    except Exception:
+        now_ts = spark.range(1).select(F.current_timestamp().alias("now")).collect()[0]["now"]
+
 
     # 1) Pending attuali maturi da emettere
     if DeltaTable.isDeltaTable(spark, PENDING_PATH):

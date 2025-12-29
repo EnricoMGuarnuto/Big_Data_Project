@@ -15,6 +15,7 @@ import pandas as pd
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable
 from kafka.admin import KafkaAdminClient, NewTopic
+from simulated_time.redis_clock import RedisClock
 
 # ========================
 # Logging
@@ -40,17 +41,6 @@ REDIS_STREAM = os.getenv("REDIS_STREAM", "pos_transactions")  # stream key
 GROUP_ID_SHELF = os.getenv("GROUP_ID_SHELF", "pos-simulator-shelf")
 GROUP_ID_FOOT  = os.getenv("GROUP_ID_FOOT", "pos-simulator-foot")
 
-SHELF_AUTO_OFFSET_RESET = os.getenv("SHELF_AUTO_OFFSET_RESET", "latest")
-FOOT_AUTO_OFFSET_RESET = os.getenv("FOOT_AUTO_OFFSET_RESET", "earliest")
-
-# Consumer group stability / offset commits
-CONSUMER_ENABLE_AUTO_COMMIT = os.getenv("CONSUMER_ENABLE_AUTO_COMMIT", "0") in ("1", "true", "True")
-CONSUMER_COMMIT_EVERY_N = int(os.getenv("CONSUMER_COMMIT_EVERY_N", "200"))
-CONSUMER_COMMIT_EVERY_S = float(os.getenv("CONSUMER_COMMIT_EVERY_S", "5"))
-CONSUMER_SESSION_TIMEOUT_MS = int(os.getenv("CONSUMER_SESSION_TIMEOUT_MS", "30000"))
-CONSUMER_HEARTBEAT_INTERVAL_MS = int(os.getenv("CONSUMER_HEARTBEAT_INTERVAL_MS", "10000"))
-CONSUMER_MAX_POLL_INTERVAL_MS = int(os.getenv("CONSUMER_MAX_POLL_INTERVAL_MS", "600000"))
-
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
 STORE_BATCHES_PARQUET = os.getenv("STORE_BATCHES_PARQUET", "/data/store_batches.parquet")
@@ -66,15 +56,21 @@ PG_USER = os.getenv("PG_USER", "bdt_user")
 PG_PASS = os.getenv("PG_PASS", "bdt_password")
 DAILY_DISCOUNT_TABLE = os.getenv("DAILY_DISCOUNT_TABLE", "analytics.daily_discounts")
 
-
 # Probability of choosing the batch with the closest expiry
 PROB_EARLIEST_EXPIRY = float(os.getenv("PROB_EARLIEST_EXPIRY", "0.80"))
-
-
 
 # Globals inizializzati in main()
 producer: Optional[KafkaProducer] = None
 rconn: Optional[redis.Redis] = None
+
+# clock
+clock = RedisClock(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+)
+
+def now():
+    return clock.now()
 
 # ========================
 # Kafka topic ensure
@@ -113,8 +109,6 @@ ensure_topic(FOOT_TOPIC,  KAFKA_BROKER)
 # ========================
 # Helpers
 # ========================
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
 
 def parse_date(d) -> date:
     if isinstance(d, date):
@@ -136,9 +130,13 @@ def load_discounts_from_parquet(path: str) -> Dict[str, float]:
     if not os.path.exists(path):
         log.warning(f"[pos] Discounts file not found: {path}")
         return {}
+
     df = pd.read_parquet(path)
-    today = datetime.today()
-    week_str = f"{today.isocalendar().year}-W{today.isocalendar().week:02}"
+
+    sim_now = now()   # ⬅️ TEMPO SIMULATO
+    iso = sim_now.isocalendar()
+    week_str = f"{iso.year}-W{iso.week:02}"
+
     df = df[df["week"] == week_str]
     log.info(f"[pos] Loaded {len(df)} discounts for week {week_str}")
     return dict(zip(df["shelf_id"], df["discount"]))
@@ -156,10 +154,10 @@ def load_daily_discounts_from_pg() -> Dict[str, float]:
             password=PG_PASS,
         )
         cur = conn.cursor()
-        today = datetime.now().date()
+        sim_today = now().date()
         cur.execute(
             f"SELECT shelf_id, discount FROM {DAILY_DISCOUNT_TABLE} WHERE discount_date = %s",
-            (today,),
+            (sim_today,),
         )
         rows = cur.fetchall()
         cur.close()
@@ -170,7 +168,7 @@ def load_daily_discounts_from_pg() -> Dict[str, float]:
             for sid, discount in rows
             if sid is not None and discount is not None
         }
-        log.info(f"[pos] Loaded {len(d)} daily discounts for {today}")
+        log.info(f"[pos] Loaded {len(d)} daily discounts for {sim_today}")
         return d
     except Exception as e:
         log.warning(f"[pos] ERROR while loading daily discounts from Postgres: {e}")
@@ -187,9 +185,7 @@ carts_lock = threading.Lock()
 batch_state: Dict[str, Deque[Dict]] = {}
 batches_lock = threading.Lock()
 
-timers: Dict[str, threading.Timer] = {}
-timers_lock = threading.Lock()
-entries: Dict[str, datetime] = {}
+entries: Dict[str, Dict[str, object]] = {}
 entries_lock = threading.Lock()
 
 def load_store_batches(path: str) -> Dict[str, Deque[Dict]]:
@@ -446,36 +442,9 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
     # cleanup
     with carts_lock:
         carts.pop(customer_id, None)
-    with timers_lock:
-        t = timers.pop(customer_id, None)
-        if t:
-            try:
-                t.cancel()
-            except Exception:
-                pass
     with entries_lock:
         entries.pop(customer_id, None)
 
-def schedule_checkout(customer_id: str, exit_time: datetime):
-    delay = (exit_time - now_utc()).total_seconds()
-    if delay < 0:
-        delay = 0.0
-
-    def _checkout_cb():
-        emit_pos_transaction(customer_id, timestamp=exit_time)
-
-    with timers_lock:
-        old = timers.get(customer_id)
-        if old:
-            try:
-                old.cancel()
-            except Exception:
-                pass
-        t = threading.Timer(delay, _checkout_cb)
-        t.daemon = True
-        t.start()
-        timers[customer_id] = t
-        log.info(f"[pos] Checkout for {customer_id} in {round(delay, 2)}s.")
 
 # ========================
 # Consumers
@@ -486,44 +455,26 @@ def shelf_consumer_loop():
         bootstrap_servers=KAFKA_BROKER,
         group_id=GROUP_ID_SHELF,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-        auto_offset_reset=SHELF_AUTO_OFFSET_RESET,
-        enable_auto_commit=CONSUMER_ENABLE_AUTO_COMMIT,
-        session_timeout_ms=CONSUMER_SESSION_TIMEOUT_MS,
-        heartbeat_interval_ms=CONSUMER_HEARTBEAT_INTERVAL_MS,
-        max_poll_interval_ms=CONSUMER_MAX_POLL_INTERVAL_MS,
+        auto_offset_reset='latest',
+        enable_auto_commit=True
     )
     log.info(f"[pos] Listening shelf events on '{SHELF_TOPIC}'")
 
-    processed = 0
-    last_commit = time.time()
     for msg in consumer:
-        try:
-            evt = msg.value
-            etype = evt.get("event_type")
-            customer_id = evt.get("customer_id")
-            item_id = evt.get("item_id")
+        evt = msg.value
+        etype = evt.get("event_type")
+        customer_id = evt.get("customer_id")
+        item_id = evt.get("item_id")
 
-            if etype not in ("pickup", "putback") or not customer_id or not item_id:
-                continue
+        if etype not in ("pickup", "putback") or not customer_id or not item_id:
+            continue
 
-            qty = int(evt.get("quantity", 1))
-            with carts_lock:
-                if etype == "pickup":
-                    carts[customer_id][item_id] += qty
-                elif etype == "putback":
-                    carts[customer_id][item_id] = max(0, carts[customer_id][item_id] - qty)
-        finally:
-            if not CONSUMER_ENABLE_AUTO_COMMIT:
-                processed += 1
-                now = time.time()
-                if processed >= CONSUMER_COMMIT_EVERY_N or (now - last_commit) >= CONSUMER_COMMIT_EVERY_S:
-                    try:
-                        consumer.commit()
-                    except Exception as e:
-                        # Commit can fail during rebalances; we keep running to avoid killing the simulator.
-                        log.warning(f"[pos] consumer commit failed for group {GROUP_ID_SHELF}: {e}")
-                    processed = 0
-                    last_commit = now
+        qty = int(evt.get("quantity", 1))
+        with carts_lock:
+            if etype == "pickup":
+                carts[customer_id][item_id] += qty
+            elif etype == "putback":
+                carts[customer_id][item_id] = max(0, carts[customer_id][item_id] - qty)
 
 def foot_consumer_loop():
     consumer = KafkaConsumer(
@@ -531,54 +482,64 @@ def foot_consumer_loop():
         bootstrap_servers=KAFKA_BROKER,
         group_id=GROUP_ID_FOOT,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-        auto_offset_reset=FOOT_AUTO_OFFSET_RESET,
-        enable_auto_commit=CONSUMER_ENABLE_AUTO_COMMIT,
-        session_timeout_ms=CONSUMER_SESSION_TIMEOUT_MS,
-        heartbeat_interval_ms=CONSUMER_HEARTBEAT_INTERVAL_MS,
-        max_poll_interval_ms=CONSUMER_MAX_POLL_INTERVAL_MS,
+        auto_offset_reset='earliest',
+        enable_auto_commit=True
     )
     log.info(f"[pos] Listening foot traffic on '{FOOT_TOPIC}'")
 
-    processed = 0
-    last_commit = time.time()
     for msg in consumer:
-        try:
-            evt = msg.value
-            if evt.get("event_type") != "foot_traffic":
-                continue
+        evt = msg.value
+        if evt.get("event_type") != "foot_traffic":
+            continue
 
-            customer_id = evt.get("customer_id")
-            entry_time  = datetime.fromisoformat(evt["entry_time"])
-            exit_time   = datetime.fromisoformat(evt["exit_time"])
+        customer_id = evt.get("customer_id")
+        entry_time  = datetime.fromisoformat(evt["entry_time"])
+        exit_time   = datetime.fromisoformat(evt["exit_time"])
 
-            with entries_lock:
-                entries[customer_id] = entry_time
+        with entries_lock:
+            entries[customer_id] = {
+                "entry_time": entry_time,
+                "exit_time": exit_time,
+                "checked_out": False
+            }
 
-            schedule_checkout(customer_id, exit_time)
-        finally:
-            if not CONSUMER_ENABLE_AUTO_COMMIT:
-                processed += 1
-                now = time.time()
-                if processed >= CONSUMER_COMMIT_EVERY_N or (now - last_commit) >= CONSUMER_COMMIT_EVERY_S:
-                    try:
-                        consumer.commit()
-                    except Exception as e:
-                        log.warning(f"[pos] consumer commit failed for group {GROUP_ID_FOOT}: {e}")
-                    processed = 0
-                    last_commit = now
+
 
 def janitor_loop():
     while True:
-        time.sleep(30)
-        now = datetime.now(timezone.utc)
+        time.sleep(20)  # meglio per simulazione veloce
+        current_time = now()
         stale = []
         with entries_lock:
-            for cid, ent in list(entries.items()):
-                if (now - ent).total_seconds() > MAX_SESSION_AGE_SEC:
+            for cid, info in list(entries.items()):
+                if (current_time - info["entry_time"]).total_seconds() > MAX_SESSION_AGE_SEC:
                     stale.append(cid)
         for cid in stale:
             log.info(f"[pos] Janitor: forcing checkout for stale customer {cid}")
-            emit_pos_transaction(cid, timestamp=now)
+            emit_pos_transaction(cid, timestamp=current_time)
+
+
+
+def checkout_loop():
+    while True:
+        try:
+            current_time = now()
+        except Exception:
+            continue
+
+        to_checkout = []
+
+        with entries_lock:
+            for cid, info in entries.items():
+                if not info["checked_out"] and info["exit_time"] <= current_time:
+                    info["checked_out"] = True
+                    to_checkout.append(cid)
+
+        for cid in to_checkout:
+            emit_pos_transaction(cid, timestamp=current_time)
+
+        # loop leggero, NON temporale
+        time.sleep(0.01)
 
 # ========================
 # Main
@@ -591,6 +552,8 @@ def main():
     threading.Thread(target=shelf_consumer_loop, daemon=True).start()
     threading.Thread(target=foot_consumer_loop, daemon=True).start()
     threading.Thread(target=janitor_loop, daemon=True).start()
+    threading.Thread(target=checkout_loop, daemon=True).start()
+
 
     log.info("[pos] POS Producer started (building carts, scheduling checkouts).")
     while True:

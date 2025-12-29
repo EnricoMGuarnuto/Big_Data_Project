@@ -2,6 +2,7 @@ import os
 import time
 from pyspark.sql import SparkSession, functions as F, types as T, Window
 from delta.tables import DeltaTable
+from simulated_time.redis_helpers import get_simulated_timestamp
 
 # =========================
 # Env / Config
@@ -145,7 +146,7 @@ def bootstrap_state_if_missing():
                    F.col("current_stock").cast("int").alias("current_stock"),
                    # Note: store the unit weight (item_weight) inside shelf_weight column
                    F.col("item_weight").cast("double").alias("shelf_weight"),
-                   F.current_timestamp().alias("last_update_ts")
+                   F.lit(get_simulated_timestamp()).cast("timestamp").alias("last_update_ts")
                )
     )
 
@@ -158,8 +159,6 @@ def bootstrap_state_if_missing():
             "value_json",
             F.to_json(F.struct(
                 "shelf_id","current_stock",
-                # Keep both names for compatibility across sinks/consumers
-                F.col("shelf_weight").alias("shelf_weight"),
                 F.col("shelf_weight").alias("item_weight"),
                 "last_update_ts"
             ))
@@ -264,7 +263,7 @@ def upsert_and_publish(batch_df, batch_id: int):
     if DeltaTable.isDeltaTable(spark, STATE_PATH):
         updates = (
             enriched
-            .withColumn("last_update_ts", F.current_timestamp())
+            .withColumn("last_update_ts", F.lit(get_simulated_timestamp()).cast("timestamp"))
             .select("shelf_id","delta_qty","last_event_ts","item_weight","last_update_ts")
         )
 
@@ -286,7 +285,7 @@ def upsert_and_publish(batch_df, batch_id: int):
         initial_state = (
             enriched
             .withColumn("current_stock", F.col("delta_qty"))
-            .withColumn("last_update_ts", F.current_timestamp())
+            .withColumn("last_update_ts", F.lit(get_simulated_timestamp()).cast("timestamp"))
             .select("shelf_id", "current_stock", F.col("item_weight").alias("shelf_weight"), "last_update_ts")
         )
         initial_state.write.format("delta").mode("overwrite").save(STATE_PATH)
@@ -303,8 +302,6 @@ def upsert_and_publish(batch_df, batch_id: int):
                 F.struct(
                     F.col("shelf_id"),
                     F.col("current_stock"),
-                    # Keep both names for compatibility across sinks/consumers
-                    F.col("shelf_weight").alias("shelf_weight"),
                     F.col("shelf_weight").alias("item_weight"),
                     F.col("last_update_ts")
                 )

@@ -4,6 +4,8 @@ from typing import Optional
 from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
+from simulated_time.clock import get_simulated_now  # ✅ clock simulato
+
 
 # =========================
 # Env / Config
@@ -316,7 +318,7 @@ def foreach_batch(batch_df, batch_id: int):
 
     enriched = (
         joined.join(soonest, on="shelf_id", how="left")
-        .withColumn("days_to_expiry", F.datediff(F.col("min_expiry"), F.current_date()))
+        .withColumn("days_to_expiry", F.datediff(F.col("min_expiry"), F.to_date(F.lit(get_simulated_now()))))
     )
 
     # 1) Reorder alert if below reorder_point
@@ -364,7 +366,7 @@ def foreach_batch(batch_df, batch_id: int):
     )
 
     alerts_df = reorder_alerts.unionByName(near_expiry_alerts, allowMissingColumns=True)\
-        .withColumn("created_at", F.current_timestamp())
+        .withColumn("created_at", F.lit(get_simulated_now()))
 
     if alerts_df.rdd.isEmpty() is False:
         # Normalize types to match the existing Delta table schema (prevents DELTA_FAILED_TO_MERGE_FIELDS on int/long).
@@ -422,8 +424,8 @@ def foreach_batch(batch_df, batch_id: int):
             "suggested_qty",
             F.col("standard_batch_size"),
             F.lit("pending").alias("status"),
-            F.current_timestamp().alias("created_at"),
-            F.current_timestamp().alias("updated_at")
+            F.lit(get_simulated_now()).alias("created_at"),
+            F.lit(get_simulated_now()).alias("updated_at")
         )
         .filter(F.col("suggested_qty") > 0)
     )

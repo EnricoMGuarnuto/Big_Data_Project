@@ -37,6 +37,21 @@ services:
     - redis-data:/data
     restart: unless-stopped
 
+  sim-clock:
+    build:
+      context: .
+      dockerfile: simulated_time/Dockerfile  
+    container_name: sim-clock
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    volumes:
+      - ./simulated_time:/app/simulated_time:ro
+    environment:
+      PYTHONPATH: /app
+    restart: 'no'
+
 # Kafka Connect and Init
   kafka-init:
     build:
@@ -122,6 +137,8 @@ services:
     depends_on:
     - kafka
     - redis
+    env_file:
+    - .env
     environment:
       KAFKA_BROKER: kafka:9092
       REDIS_HOST: redis
@@ -130,6 +147,10 @@ services:
       REDIS_STREAM: foot_traffic
       SLEEP: '0.125'
       TIME_SCALE: '4.0'
+      PYTHONPATH: /app
+    volumes:
+    - ./data:/data:ro
+    - ./simulated_time:/app/simulated_time:ro  
     restart: unless-stopped
 
   kafka-producer-pos:
@@ -140,6 +161,8 @@ services:
     depends_on:
     - kafka
     - redis
+    env_file:
+    - .env
     environment:
       KAFKA_BROKER: kafka:9092
       REDIS_HOST: redis
@@ -148,8 +171,10 @@ services:
       REDIS_STREAM: pos_transactions
       SLEEP: '0.25'
       TIME_SCALE: '4.0'
+      PYTHONPATH: /app   # ✅ importa i moduli clock + config
     volumes:
     - ./data:/data:ro
+    - ./simulated_time:/app/simulated_time:ro
     restart: unless-stopped
 
   kafka-producer-shelf:
@@ -160,6 +185,8 @@ services:
     depends_on:
     - kafka
     - redis
+    env_file:
+    - .env
     environment:
       KAFKA_BROKER: kafka:9092
       REDIS_HOST: redis
@@ -167,8 +194,10 @@ services:
       REDIS_DB: '0'
       REDIS_STREAM: shelf_events
       SHELF_SLEEP: '0.25'
+      PYTHONPATH: /app
     volumes:
     - ./data:/data:ro
+    - ./simulated_time:/app/simulated_time:ro
     restart: unless-stopped
   
 #Spark Applications
@@ -199,6 +228,9 @@ services:
     container_name: spark-shelf-aggregator
     depends_on:
     - kafka
+    - redis
+    env_file:
+    - .env
     environment:
       KAFKA_BROKER: kafka:9092
       TOPIC_SHELF_EVENTS: shelf_events
@@ -212,13 +244,17 @@ services:
       STARTING_OFFSETS: earliest
       MAX_OFFSETS_PER_TRIGGER: "2000"
       CHECKPOINT_ROOT: /delta/_checkpoints/shelf_aggregator
+      PYTHONPATH: /app
     volumes:
     - ./delta:/delta
+    - ./simulated_time:/app/simulated_time:ro
     restart: 'no'
 
   batch-state-updater:
     build:
       context: ./spark-apps/batch-state-updater
+    env_file:
+    - .env
     environment:
       KAFKA_BROKER: kafka:9092
       TOPIC_POS_TRANSACTIONS: pos_transactions
@@ -231,11 +267,14 @@ services:
       CHECKPOINT_ROOT: /delta/_checkpoints/batch_state_updater
       STARTING_OFFSETS: earliest
       MAX_OFFSETS_PER_TRIGGER: "2000"
+      PYTHONPATH: /app
     volumes:
     - ./delta:/delta
+    - ./simulated_time:/app/simulated_time:ro
     depends_on:
     - kafka
     - postgres
+    - redis
     restart: 'no'
 
   foot-traffic-raw-sink:
@@ -257,6 +296,8 @@ services:
   shelf-alert-engine:
     build:
       context: ./spark-apps/shelf-alert-engine
+    env_file:
+      - .env 
     environment:
       KAFKA_BROKER: kafka:9092
       TOPIC_SHELF_STATE: shelf_state
@@ -280,11 +321,14 @@ services:
       MAX_STOCK_TABLE: ref.store_inventory_snapshot
       BOOTSTRAP_POLICIES_FROM_PG: "1"
       POLICIES_PG_TABLE: config.shelf_policies
+      PYTHONPATH: /app 
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     depends_on:
       - kafka
       - postgres
+      - redis
     restart: 'no'
 
   wh-alert-engine:
@@ -311,11 +355,14 @@ services:
       JDBC_PG_USER: bdt_user
       JDBC_PG_PASSWORD: bdt_password
       WH_POLICIES_PG_TABLE: config.wh_policies
+      PYTHONPATH: /app
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     depends_on:
       - kafka
       - postgres
+      - redis
     restart: 'no'
 
   alerts-sink:
@@ -355,11 +402,16 @@ services:
       DL_RESTOCK_PATH: /delta/ops/shelf_restock_plan
       CKP_ROOT: /delta/_checkpoints/shelf_restock_manager
       STARTING_OFFSETS: earliest
-      PLAN_DELAY_SEC: "60"     # attesa di 1 minuto prima di muovere stock
+      PLAN_DELAY_SEC: "60" # attesa di 1 minuto prima di muovere stock
+      PYTHONPATH: /app    
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     depends_on:
       - kafka
+      - redis
+    env_file:
+     - .env
     restart: 'no'
 
   wh-aggregator:
@@ -375,16 +427,22 @@ services:
       JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
       JDBC_PG_USER: bdt_user
       JDBC_PG_PASSWORD: bdt_password
+      PYTHONPATH: /app
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     depends_on:
       - kafka
       - postgres
+    env_file:
+    - .env
     restart: 'no'
 
   wh-batch-state-updater:
     build:
       context: ./spark-apps/wh-batch-state-updater
+    env_file:
+     - .env
     environment:
       KAFKA_BROKER: kafka:9092
       TOPIC_WH_EVENTS: wh_events
@@ -396,11 +454,14 @@ services:
       JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
       JDBC_PG_USER: bdt_user
       JDBC_PG_PASSWORD: bdt_password
+      PYTHONPATH: /app
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     depends_on:
       - kafka
       - postgres
+      - redis
     restart: 'no'
 
   shelf-refill-bridge:
@@ -416,10 +477,15 @@ services:
       PENDING_PATH: /delta/staging/shelf_refill_pending
       CKP: /delta/_checkpoints/shelf_refill_bridge
       STARTING_OFFSETS: earliest
+      PYTHONPATH: /app 
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
+    env_file:
+     - .env
     depends_on:
       - kafka
+      - redis
     restart: 'no'
 
 
@@ -428,8 +494,11 @@ services:
       context: ./spark-apps/daily-discount-manager
       dockerfile: Dockerfile
     container_name: daily-discount-manager
+    env_file:
+    - .env 
     depends_on:
       - kafka
+      - redis
     environment:
       KAFKA_BROKER: kafka:9092
       TOPIC_DAILY_DISCOUNTS: daily_discounts
@@ -438,8 +507,10 @@ services:
       DELTA_ROOT: /delta
       DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
       DL_DAILY_DISC_PATH: /delta/analytics/daily_discounts
+      PYTHONPATH: /app
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     restart: 'no'
 
   removal-scheduler:
@@ -449,6 +520,9 @@ services:
     container_name: removal-scheduler
     depends_on:
       - kafka
+      - redis
+    env_file:
+     - .env
     environment:
       KAFKA_BROKER: kafka:9092
       TOPIC_ALERTS: alerts
@@ -459,11 +533,14 @@ services:
       DL_SHELF_STATE_PATH: /delta/cleansed/shelf_state
       DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
 
+      PYTHONPATH: /app
+
       # remove next day by default
       REMOVE_MODE: next_day
       EMIT_ALERTS: "1"
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     restart: 'no'
 
 
@@ -472,6 +549,8 @@ services:
       context: ./spark-apps/wh-supplier-manager
       dockerfile: Dockerfile
     container_name: wh-supplier-manager
+    env_file:
+    - .env
     environment:
       KAFKA_BROKER: kafka:9092
       TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
@@ -485,6 +564,7 @@ services:
 
       CHECKPOINT_ROOT: /delta/_checkpoints/wh_supplier_manager
       TICK_MINUTES: "1"
+      PYTHONPATH: /app
 
       # Schedule (UTC)
       CUTOFF_HOUR: "12"
@@ -495,10 +575,12 @@ services:
       DEFAULT_EXPIRY_DAYS: "365"
     volumes:
       - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     depends_on:
       - kafka
       - spark-init-delta
       - wh-alert-engine
+      - redis
     restart: 'no'
 
 # Dashboard Service

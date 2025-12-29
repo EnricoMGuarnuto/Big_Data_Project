@@ -1,8 +1,8 @@
-# ./spark-apps/daily-discount-manager/app.py
-
 import os
 from pyspark.sql import SparkSession, functions as F, types as T
 from delta.tables import DeltaTable
+
+from simulated_time.redis_helpers import get_simulated_date, get_simulated_timestamp
 
 # =========================
 # Env / Config
@@ -36,6 +36,19 @@ def delta_exists(path: str) -> bool:
         return DeltaTable.isDeltaTable(spark, path)
     except Exception:
         return False
+    
+# =========================
+# Tempo simulato
+# =========================
+TODAY_STR = get_simulated_date()
+NOW_STR = get_simulated_timestamp()
+
+if TODAY_STR is None or NOW_STR is None:
+    raise RuntimeError("[daily_discount_manager] sim:today or sim:now missing in Redis!")
+
+today_col    = F.lit(TODAY_STR).cast("date")
+tomorrow_col = F.date_add(today_col, 1)
+now_col      = F.lit(NOW_STR).cast("timestamp")
 
 # =========================
 # 1) Read store batch state from Delta
@@ -48,13 +61,7 @@ if missing:
     raise RuntimeError(f"[daily_discount_manager] shelf_batch_state missing columns: {missing}")
 
 # =========================
-# 2) Today, tomorrow
-# =========================
-today_col     = F.current_date()
-tomorrow_col  = F.date_add(today_col, 1)
-
-# =========================
-# 3) Shelves with batches expiring today or tomorrow (in store)
+# 2) Batches expiring today/tomorrow
 # =========================
 shelf_expiring = (
     shelf_batches
@@ -74,19 +81,12 @@ if shelf_expiring.rdd.isEmpty():
     raise SystemExit(0)
 
 # =========================
-# 4) Compute (shelf_id, discount_date) pairs to discount
-#    Rules:
-#      - if expiry = today       -> discount_date = today
-#      - if expiry = tomorrow    -> discount_date = today and tomorrow
+# 3) Calcolo delle date sconto
 # =========================
 exp_today = (
     shelf_expiring
     .filter(F.col("expiry_date") == today_col)
-    .select(
-        "shelf_id",
-        F.col("expiry_date").alias("expiry_date"),
-        today_col.alias("discount_date")
-    )
+    .select("shelf_id", F.col("expiry_date"), today_col.alias("discount_date"))
 )
 
 exp_tomorrow = (
@@ -103,8 +103,9 @@ candidates = (
     .distinct()
 )
 
+
 # =========================
-# 5) Existing discounts (if any) for those dates
+# 4) Sconti esistenti
 # =========================
 if delta_exists(DL_DAILY_DISC_PATH):
     existing_all = spark.read.format("delta").load(DL_DAILY_DISC_PATH)
@@ -120,12 +121,13 @@ else:
         T.StructField("base_discount", T.DoubleType()),
     ]))
 
-# HACK: fixed seed for reproducibility
+# =========================
+# 5) Calcolo nuovi sconti
+# =========================
 steps = int(round((DISCOUNT_MAX - DISCOUNT_MIN) / 0.10)) + 1
 
 discounts = (
     candidates
-    # random extra discount in {DISCOUNT_MIN, DISCOUNT_MIN+0.1, ..., DISCOUNT_MAX}
     .withColumn(
         "extra_discount",
         F.round(
@@ -139,23 +141,17 @@ discounts = (
         "discount",
         F.lit(1.0) - (F.lit(1.0) - F.col("base_discount")) * (F.lit(1.0) - F.col("extra_discount"))
     )
-    .withColumn("created_at", F.current_timestamp())
+    .withColumn("created_at", now_col)
     .select("shelf_id", "discount_date", "discount", "created_at")
 )
 
 # =========================
-# 6) Write to Kafka: daily_discounts (compacted, key = shelf_id)
+# 6) Kafka output
 # =========================
 to_kafka = (
     discounts
-    .withColumn(
-        "value",
-        F.to_json(F.struct("shelf_id", "discount_date", "discount", "created_at"))
-    )
-    .select(
-        F.col("shelf_id").cast("string").alias("key"),
-        F.col("value").cast("string").alias("value")
-    )
+    .withColumn("value", F.to_json(F.struct("shelf_id", "discount_date", "discount", "created_at")))
+    .select(F.col("shelf_id").cast("string").alias("key"), F.col("value").cast("string"))
 )
 
 to_kafka.write \
@@ -166,8 +162,9 @@ to_kafka.write \
 
 print(f"[daily_discount_manager] Wrote {discounts.count()} daily discounts to {TOPIC_DAILY_DISCOUNTS}")
 
+
 # =========================
-# 7) Mirror Delta con upsert su (shelf_id, discount_date)
+# 7) Delta upsert
 # =========================
 if delta_exists(DL_DAILY_DISC_PATH):
     tgt = DeltaTable.forPath(spark, DL_DAILY_DISC_PATH)
@@ -195,7 +192,7 @@ else:
 print(f"[daily_discount_manager] Delta mirror aggiornato in {DL_DAILY_DISC_PATH}")
 
 # =========================
-# 8) (Optional) near_expiry_discount alert
+# 8) Alert Kafka (opzionale)
 # =========================
 alerts = (
     discounts
@@ -209,23 +206,17 @@ alerts = (
     .withColumn("threshold_pct", F.lit(None).cast("double"))
     .withColumn("stock_pct",     F.lit(None).cast("double"))
     .withColumn("suggested_qty", F.lit(0))
-    .withColumn("created_at",    F.current_timestamp())
+    .withColumn("created_at",    now_col)
 )
 
 alerts_out = (
     alerts
-    .withColumn(
-        "value",
-        F.to_json(F.struct(
-            "event_type", "shelf_id", "location", "severity",
-            "current_stock", "min_qty", "threshold_pct",
-            "stock_pct", "suggested_qty", "created_at"
-        ))
-    )
-    .select(
-        F.lit(None).cast("string").alias("key"),
-        F.col("value").cast("string").alias("value")
-    )
+    .withColumn("value", F.to_json(F.struct(
+        "event_type", "shelf_id", "location", "severity",
+        "current_stock", "min_qty", "threshold_pct",
+        "stock_pct", "suggested_qty", "created_at"
+    )))
+    .select(F.lit(None).cast("string").alias("key"), F.col("value").cast("string"))
 )
 
 alerts_out.write \

@@ -3,6 +3,8 @@ import time
 from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
+from simulated_time.clock import get_simulated_now  # ✅ clock simulato
+
 
 # =========================
 # Env / Config
@@ -105,9 +107,10 @@ def bootstrap_state_if_missing():
             .select(
                 F.col("shelf_id"),
                 F.col("current_stock").cast("int").alias("wh_current_stock"),
-                F.current_timestamp().alias("last_update_ts")
+                F.lit(get_simulated_now()).alias("last_update_ts")  # ✅ simulato
             )
     )
+
 
     # Write initial Delta state
     latest.write.format("delta").mode("overwrite").save(STATE_PATH)
@@ -190,7 +193,7 @@ def upsert_and_publish(batch_df, batch_id: int):
     )
 
     updates = (
-        deltas.withColumn("last_update_ts", F.current_timestamp())
+        deltas.withColumn("last_update_ts", F.lit(get_simulated_now()))
               .select("shelf_id", "delta_qty", "last_event_ts", "last_update_ts")
     )
 

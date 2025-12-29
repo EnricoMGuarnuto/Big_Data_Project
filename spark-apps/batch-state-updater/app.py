@@ -3,6 +3,8 @@ import time
 import json
 from pyspark.sql import SparkSession, functions as F, types as T, Window
 from delta.tables import DeltaTable
+from simulated_time.redis_helpers import get_simulated_timestamp
+
 
 # =========================
 # Env / Config
@@ -97,7 +99,12 @@ def bootstrap_if_needed():
     else:
         raise RuntimeError("[bootstrap] Failed to read store_batches_snapshot")
 
-    df_with_ts = df.withColumn("last_update_ts", F.current_timestamp())
+    SIM_START = os.getenv("SIM_START")  # es: 2025-10-01T00:00:00
+
+    df_with_ts = df.withColumn(
+        "last_update_ts",
+        F.lit(get_simulated_timestamp()).cast("timestamp")
+    )
     df_with_ts.write.format("delta").mode("overwrite").save(BATCH_STATE_PATH)
     print("[bootstrap] Bootstrapped shelf_batch_state.")
 
@@ -127,27 +134,67 @@ bootstrap_if_needed()
 # =========================
 # Stream from POS → Update Delta → Publish Kafka
 # =========================
-def process_batch(batch_df, batch_id):
+def process_batch(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty():
         return
 
-    exploded = (
-        batch_df
-        .withColumn("event_ts", F.to_timestamp("timestamp"))
-        .withColumn("item", F.explode("items"))
-        .select(
-            F.col("item.item_id"),
-            F.col("item.batch_code"),
-            F.col("item.quantity"),
-            F.col("item.expiry_date").cast("date").alias("expiry_date"),
-            F.col("event_ts"),
-        )
-        .filter(F.col("batch_code").isNotNull())
-        .withColumnRenamed("item_id", "shelf_id")
+    # Leggo lo stato corrente (serve per mappare batch_code -> shelf_id)
+    state_df = spark.read.format("delta").load(BATCH_STATE_PATH).select(
+        "shelf_id", "batch_code", "expiry_date"
     )
 
+    # Timestamp ISO8601 con timezone: 2025-10-01T10:00:50+00:00
+    # Spark spesso lo parse-a ok, ma questo è più robusto.
+    event_ts_col = F.to_timestamp(
+        F.regexp_replace(F.col("timestamp"), "Z$", "+00:00")
+    )
+
+    # 1) Flatten dei POS items
+    items = (
+        batch_df
+        .withColumn("event_ts", event_ts_col)
+        .withColumn("item", F.explode("items"))
+        .select(
+            F.col("event_ts"),
+            F.col("item.item_id").alias("item_id"),
+            F.col("item.batch_code").alias("batch_code"),
+            F.col("item.quantity").alias("quantity"),
+            F.to_date(F.col("item.expiry_date")).alias("expiry_date_item")
+        )
+        .filter(F.col("batch_code").isNotNull())
+        .filter(F.col("quantity").isNotNull())
+        .filter(F.col("event_ts").isNotNull())
+    )
+
+    # 2) Enrichment: recupero shelf_id dallo stato tramite batch_code
+    # Se vuoi essere super-strict, puoi anche matchare expiry_date quando presente.
+    enriched = (
+        items.alias("i")
+        .join(
+            state_df.alias("s"),
+            on=[
+                F.col("i.batch_code") == F.col("s.batch_code")
+            ],
+            how="inner"
+        )
+        .select(
+            F.col("s.shelf_id").alias("shelf_id"),
+            F.col("i.batch_code").alias("batch_code"),
+            # preferisco l'expiry_date dello stato (coerenza), ma se vuoi quella POS, inverti coalesce
+            F.col("s.expiry_date").alias("expiry_date"),
+            F.col("i.quantity").alias("quantity"),
+            F.col("i.event_ts").alias("event_ts")
+        )
+    )
+
+    # (Opzionale) loggare batch_code sconosciuti (utile in demo)
+    # unknown = items.join(state_df, on="batch_code", how="left_anti")
+    # unknown.show(5, truncate=False)
+
+    # 3) Aggregazione per key di stato
     grouped = (
-        exploded.groupBy("shelf_id", "batch_code", "expiry_date")
+        enriched
+        .groupBy("shelf_id", "batch_code", "expiry_date")
         .agg(
             F.sum("quantity").alias("delta_qty"),
             F.max("event_ts").alias("last_event_ts")
@@ -157,41 +204,52 @@ def process_batch(batch_df, batch_id):
     updates = (
         grouped
         .withColumn("received_date", F.lit(None).cast("date"))
-        .withColumn("last_update_ts", F.current_timestamp())
+        .withColumnRenamed("last_event_ts", "last_update_ts")  # EVENT-TIME!
     )
 
+    # 4) Merge Delta (aggiorna quantità e timestamp)
     delta_tbl = DeltaTable.forPath(spark, BATCH_STATE_PATH)
-    delta_tbl.alias("t").merge(
-        updates.alias("s"),
-        "t.shelf_id = s.shelf_id AND t.batch_code = s.batch_code"
-    ).whenMatchedUpdate(set={
-        "batch_quantity_store": F.expr("t.batch_quantity_store - s.delta_qty"),
-        "last_update_ts": F.col("s.last_update_ts")
-    }).whenNotMatchedInsert(values={
-        "shelf_id": F.col("s.shelf_id"),
-        "batch_code": F.col("s.batch_code"),
-        "received_date": F.col("s.received_date"),
-        "expiry_date": F.col("s.expiry_date"),
-        "batch_quantity_store": F.expr("-s.delta_qty"),
-        "last_update_ts": F.col("s.last_update_ts")
-    }).execute()
 
-    # Kafka compacted topic publish
-    state_df = spark.read.format("delta").load(BATCH_STATE_PATH)
+    (
+        delta_tbl.alias("t")
+        .merge(
+            updates.alias("s"),
+            # Consiglio: includere expiry_date se è parte della chiave logica.
+            "t.shelf_id = s.shelf_id AND t.batch_code = s.batch_code"
+        )
+        .whenMatchedUpdate(set={
+            "batch_quantity_store": F.expr("t.batch_quantity_store - s.delta_qty"),
+            "last_update_ts": F.greatest(F.col("t.last_update_ts"), F.col("s.last_update_ts"))
+        })
+        # Qui, dato che abbiamo fatto INNER JOIN con lo stato, in teoria non servono insert.
+        # Se vuoi mantenerlo come safety net, ok; ma rischi stati “fantasma”.
+        # Io consiglierei di toglierlo. Per ora lo commento:
+        # .whenNotMatchedInsert(values={...})
+        .execute()
+    )
+
+    # 5) Publish Kafka (solo chiavi aggiornate)
     keys = grouped.select("shelf_id", "batch_code").distinct()
-    to_publish = (
-        keys.join(state_df, on=["shelf_id", "batch_code"], how="left")
+    refreshed = (
+        keys.join(
+            spark.read.format("delta").load(BATCH_STATE_PATH),
+            on=["shelf_id", "batch_code"],
+            how="inner"
+        )
         .withColumn("key", F.concat_ws("::", F.col("shelf_id"), F.col("batch_code")))
-        .withColumn("value_json", F.to_json(F.struct(
+        .withColumn("value", F.to_json(F.struct(
             "shelf_id", "batch_code", "received_date", "expiry_date", "batch_quantity_store", "last_update_ts"
         )))
-        .select("key", F.col("value_json").alias("value"))
+        .select(F.col("key").cast("string"), F.col("value").cast("string"))
     )
 
-    to_publish.write.format("kafka") \
-        .option("kafka.bootstrap.servers", KAFKA_BROKER) \
-        .option("topic", TOPIC_BATCH_STATE) \
+    (
+        refreshed.write.format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BROKER)
+        .option("topic", TOPIC_BATCH_STATE)
         .save()
+    )
+
 
 # =========================
 # Stream Definition

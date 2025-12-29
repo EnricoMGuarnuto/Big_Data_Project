@@ -3,6 +3,9 @@ from pyspark.sql import SparkSession, functions as F, types as T
 from delta.tables import DeltaTable
 from pyspark.sql.window import Window
 
+from simulated_time.redis_helpers import get_simulated_timestamp
+
+
 
 KAFKA_BROKER=os.getenv("KAFKA_BROKER","kafka:9092")
 TOPIC_WH_EVENTS=os.getenv("TOPIC_WH_EVENTS","wh_events")
@@ -94,7 +97,8 @@ def bootstrap_from_pg():
               .select("shelf_id","batch_code","received_date","expiry_date",
                       F.coalesce(F.col("batch_quantity_warehouse"),F.lit(0)).cast("int").alias("batch_quantity_warehouse"),
                       F.coalesce(F.col("batch_quantity_store"),F.lit(0)).cast("int").alias("batch_quantity_store"),
-                      F.current_timestamp().alias("last_update_ts")))
+                      F.lit(get_simulated_timestamp()).cast("timestamp").alias("last_update_ts")))
+
     if not _delta_has_rows(DL_WH_BATCH):
         _with_delta_retries(
             "bootstrap wh_batch_state overwrite",
@@ -110,7 +114,7 @@ def bootstrap_from_pg():
               .where("rn=1")
               .select("shelf_id","batch_code","received_date","expiry_date",
                       F.coalesce(F.col("batch_quantity_store"),F.lit(0)).cast("int").alias("batch_quantity_store"),
-                      F.current_timestamp().alias("last_update_ts")))
+                      F.lit(get_simulated_timestamp()).cast("timestamp").alias("last_update_ts")))
     if not _delta_has_rows(DL_SHELF_BATCH):
         _with_delta_retries(
             "bootstrap shelf_batch_state overwrite",
@@ -141,7 +145,8 @@ def apply_events(batch_df, batch_id:int):
                      F.max("timestamp").alias("ts")))
     if DeltaTable.isDeltaTable(spark, DL_WH_BATCH):
         t = DeltaTable.forPath(spark, DL_WH_BATCH)
-        upd = (wh_delta.withColumn("last_update_ts", F.current_timestamp()))
+        upd = wh_delta.withColumnRenamed("ts", "last_update_ts")
+
         def _merge_wh():
             return (t.alias("t").merge(upd.alias("s"),
                 "t.shelf_id=s.shelf_id AND t.batch_code=s.batch_code") \
@@ -149,7 +154,7 @@ def apply_events(batch_df, batch_id:int):
                  "received_date": F.coalesce(F.col("s.received_date"), F.col("t.received_date")),
                  "expiry_date": F.coalesce(F.col("s.expiry_date"), F.col("t.expiry_date")),
                  "batch_quantity_warehouse": F.expr("coalesce(t.batch_quantity_warehouse,0)+s.d_wh"),
-                 "last_update_ts": F.expr("greatest(t.last_update_ts, s.ts, s.last_update_ts)")
+                 "last_update_ts": F.expr("greatest(t.last_update_ts, s.last_update_ts)")
              }).whenNotMatchedInsert(values={
                  "shelf_id":F.col("s.shelf_id"),
                  "batch_code":F.col("s.batch_code"),
@@ -157,13 +162,13 @@ def apply_events(batch_df, batch_id:int):
                  "expiry_date":F.col("s.expiry_date"),
                  "batch_quantity_warehouse":F.col("s.d_wh"),
                  "batch_quantity_store":F.lit(0),
-                 "last_update_ts":F.col("s.last_update_ts")
+                 "last_update_ts": F.col("s.last_update_ts")
              }).execute())
         _with_delta_retries("merge wh_batch_state", _merge_wh)
     else:
         _with_delta_retries(
             "init wh_batch_state overwrite",
-            lambda: (wh_delta.withColumn("last_update_ts",F.current_timestamp())
+            lambda: (wh_delta.withColumnRenamed("ts", "last_update_ts")
              .select("shelf_id","batch_code","received_date","expiry_date",
                      F.col("d_wh").alias("batch_quantity_warehouse"),
                      F.lit(0).alias("batch_quantity_store"),
@@ -179,7 +184,7 @@ def apply_events(batch_df, batch_id:int):
     if not to_store.rdd.isEmpty():
         if DeltaTable.isDeltaTable(spark, DL_SHELF_BATCH):
             t2 = DeltaTable.forPath(spark, DL_SHELF_BATCH)
-            upd2 = to_store.withColumn("last_update_ts", F.current_timestamp())
+            upd2 = to_store.withColumnRenamed("ts", "last_update_ts")
             def _merge_store():
                 return (t2.alias("t").merge(upd2.alias("s"),
                     "t.shelf_id=s.shelf_id AND t.batch_code=s.batch_code") \
@@ -187,7 +192,7 @@ def apply_events(batch_df, batch_id:int):
                     "received_date": F.coalesce(F.col("s.received_date"), F.col("t.received_date")),
                     "expiry_date": F.coalesce(F.col("s.expiry_date"), F.col("t.expiry_date")),
                     "batch_quantity_store": F.expr("coalesce(t.batch_quantity_store,0)+s.d_store"),
-                    "last_update_ts": F.expr("greatest(t.last_update_ts, s.ts, s.last_update_ts)")
+                    "last_update_ts": F.expr("greatest(t.last_update_ts, s.last_update_ts)")
                 }).whenNotMatchedInsert(values={
                     "shelf_id":F.col("s.shelf_id"),
                     "batch_code":F.col("s.batch_code"),
@@ -200,7 +205,7 @@ def apply_events(batch_df, batch_id:int):
         else:
             _with_delta_retries(
                 "init shelf_batch_state overwrite",
-                lambda: (to_store.withColumn("last_update_ts",F.current_timestamp())
+                lambda: (to_store.withColumnRenamed("ts", "last_update_ts")
                  .select("shelf_id","batch_code","received_date","expiry_date",
                          F.col("d_store").alias("batch_quantity_store"),
                          "last_update_ts")

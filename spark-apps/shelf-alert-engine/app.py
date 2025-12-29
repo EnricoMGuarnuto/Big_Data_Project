@@ -298,6 +298,15 @@ def foreach_batch_alerts(batch_df, batch_id: int):
 
     shelves = batch_df.select("shelf_id","current_stock").distinct().cache()
 
+    # Simulated "now" derived from event-time in this micro-batch
+    sim_now = batch_df.select(F.max("last_update_ts").alias("sim_now")).collect()[0]["sim_now"]
+    if sim_now is None:
+        # fallback: if producer didn't send last_update_ts (should not happen)
+        sim_now = batch_df.select(F.current_timestamp().alias("sim_now")).collect()[0]["sim_now"]
+
+    sim_now_ts = F.lit(sim_now).cast("timestamp")
+    sim_now_date = F.to_date(sim_now_ts)
+
     # Join with policies: prefer per-shelf else fallback to global (NULL shelf)
     pol = POLICIES_LATEST.alias("p")
     joined = (
@@ -362,7 +371,7 @@ def foreach_batch_alerts(batch_df, batch_id: int):
         )
         near_expiry = (
             soonest.join(shelves, on="shelf_id", how="inner")
-            .withColumn("days_to_expiry", F.datediff(F.col("min_expiry"), F.current_date()))
+            .withColumn("days_to_expiry", F.datediff(F.col("min_expiry"), sim_now_date))
             .filter(F.col("min_expiry").isNotNull() & (F.col("days_to_expiry") <= F.lit(NEAR_EXPIRY_DAYS)) & (F.col("days_to_expiry") >= 0))
             .withColumn("event_type", F.lit("near_expiry"))
             .withColumn("location", F.lit("store"))
@@ -400,8 +409,10 @@ def foreach_batch_alerts(batch_df, batch_id: int):
         )
     )
 
-    alerts_df = refill_alerts.unionByName(expiry_alerts, allowMissingColumns=True)\
-        .withColumn("created_at", F.current_timestamp())
+    alerts_df = (
+        refill_alerts.unionByName(expiry_alerts, allowMissingColumns=True)
+        .withColumn("created_at", sim_now_ts)
+    )
 
     # Write alerts → Kafka (append-only)
     if alerts_df.rdd.isEmpty() is False:
@@ -428,8 +439,8 @@ def foreach_batch_alerts(batch_df, batch_id: int):
             F.col("shelf_id"),
             F.col("suggested_qty"),
             F.lit("pending").alias("status"),
-            F.current_timestamp().alias("created_at"),
-            F.current_timestamp().alias("updated_at"),
+            sim_now_ts.alias("created_at"),
+            sim_now_ts.alias("updated_at"),
             F.expr("uuid()").alias("plan_id")
         )
     )

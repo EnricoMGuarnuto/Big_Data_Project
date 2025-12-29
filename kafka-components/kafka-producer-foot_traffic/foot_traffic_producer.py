@@ -1,3 +1,4 @@
+
 import os
 import time
 import uuid
@@ -10,6 +11,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta, date, time as dtime, timezone
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
+from simulated_time.redis_clock import RedisClock
 
 # ============================================================
 # Config
@@ -17,14 +19,11 @@ from kafka.errors import NoBrokersAvailable
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC = os.getenv("KAFKA_TOPIC", "foot_traffic")
 TOPIC_REALISTIC = os.getenv("KAFKA_TOPIC_REALISTIC", "foot_traffic_realistic")
-# Redis (buffer-before-Kafka)
+
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-REDIS_STREAM = os.getenv("REDIS_STREAM", "foot_traffic")  # stream key
-
-SLEEP = float(os.getenv("SLEEP", 0.5))
-TIME_SCALE = float(os.getenv("TIME_SCALE", 1.0))
+REDIS_STREAM = os.getenv("REDIS_STREAM", "foot_traffic")
 
 DEFAULT_DAILY_CUSTOMERS = int(os.getenv("DEFAULT_DAILY_CUSTOMERS", 1000))
 BASE_DAILY_CUSTOMERS = int(os.getenv("BASE_DAILY_CUSTOMERS", DEFAULT_DAILY_CUSTOMERS))
@@ -73,15 +72,7 @@ signal.signal(signal.SIGTERM, _handle_stop)
 signal.signal(signal.SIGINT, _handle_stop)
 
 WEEKDAYS_ORDER = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-SCHEDULE_BY_IDX = [
-    schedule["Monday"],
-    schedule["Tuesday"],
-    schedule["Wednesday"],
-    schedule["Thursday"],
-    schedule["Friday"],
-    schedule["Saturday"],
-    schedule["Sunday"],
-]
+SCHEDULE_BY_IDX = [schedule[d] for d in WEEKDAYS_ORDER]
 DAY_WEIGHTS_SUM = [sum(w) for w in SCHEDULE_BY_IDX]
 AVG_DAY_WEIGHT = sum(DAY_WEIGHTS_SUM) / len(DAY_WEIGHTS_SUM)
 
@@ -213,9 +204,6 @@ def build_event(entry_time: datetime):
         "time_slot": slot_label
     }, cid
 
-def now_utc():
-    return datetime.utcnow().replace(tzinfo=timezone.utc)
-
 class DayPlan:
     def __init__(self, day: date, weekday_idx: int, total_customers: int, now: Optional[datetime] = None):
         self.day = day
@@ -260,81 +248,91 @@ def main():
     producer = build_producer()
     rconn = build_redis()
 
-    now = now_utc()
-    current_day = now.date()
-    weekday_idx = now.weekday()
-    plan = DayPlan(current_day, weekday_idx, decide_daily_total(weekday_idx), now=now)
+    clock = RedisClock(host=REDIS_HOST, port=REDIS_PORT)
+
+    current_day = None
+    weekday_idx = None
+    plan = None
     future_exits = []
 
-    log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] Total planned (from now on): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
+    last_now = None
 
-    try:
-        while not stop:
-            now = now_utc()
-            if now.date() != current_day:
-                current_day = now.date()
-                weekday_idx = now.weekday()
-                plan = DayPlan(current_day, weekday_idx, decide_daily_total(weekday_idx), now=now)
-                log.info(f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] New plan. Total (from now on): {sum(plan.slot_counts)}; per slot: {plan.slot_counts}")
-
-            while True:
-                ts = plan.next_ready(now)
-                if ts is None:
-                    break
-                event, cid = build_event(ts)
-
-                # 1) Redis buffer (append-only)
-                try:
-                    rconn.xadd(REDIS_STREAM, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
-                except Exception as e:
-                    log.warning(f"Redis XADD failed (foot_traffic): {e}")
-
-                # 2) Kafka
-                producer.send(TOPIC, key=cid, value=event)
-                log.info(f"Simulated: {event}")
-
-                # Realistic event: entry
-                entry_event = {
-                    "event_type": "entry",
-                    "time": event["entry_time"],
-                    "weekday": event["weekday"],
-                    "time_slot": event["time_slot"]
-                }
-                try:
-                    rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(entry_event)}, maxlen=20000, approximate=True)
-                except Exception as e:
-                    log.warning(f"Redis XADD failed (entry): {e}")
-                producer.send(TOPIC_REALISTIC, key=cid, value=entry_event)
-                log.info(f"Realistic ENTRY: {entry_event}")
-
-                # Plan realistic exit event for future
-                exit_event = {
-                    "event_type": "exit",
-                    "time": event["exit_time"],
-                    "weekday": event["weekday"],
-                    "time_slot": event["time_slot"]
-                }
-                future_exits.append((datetime.fromisoformat(event["exit_time"]), exit_event, cid))
-
-            # Verify future realistic exits
-            for exit_time, exit_event, cid in future_exits[:]:
-                if exit_time <= now:
-                    try:
-                        rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(exit_event)}, maxlen=20000, approximate=True)
-                    except Exception as e:
-                        log.warning(f"Redis XADD failed (exit): {e}")
-                    producer.send(TOPIC_REALISTIC, key=cid, value=exit_event)
-                    log.info(f"Realistic EXIT: {exit_event}")
-                    future_exits.remove((exit_time, exit_event, cid))
-
-            time.sleep(max(0.1, SLEEP / max(1.0, TIME_SCALE)))
-    finally:
-        log.info("Flush & close producer...")
+    while not stop:
         try:
-            producer.flush(10)
+            now = clock.now()
         except Exception:
-            pass
-        producer.close(10)
+            time.sleep(0.5)
+            continue
+
+
+        if last_now is not None and now <= last_now:
+            time.sleep(0.1)
+            continue
+
+        last_now = now
+
+        if current_day != now.date():
+            current_day = now.date()
+            weekday_idx = now.weekday()
+            plan = DayPlan(
+                current_day,
+                weekday_idx,
+                decide_daily_total(weekday_idx),
+                now=now
+            )
+            log.info(
+                f"[{WEEKDAYS_ORDER[weekday_idx]} {current_day}] "
+                f"New plan. Total: {sum(plan.slot_counts)}; per slot: {plan.slot_counts}"
+            )
+
+        while True:
+            ts = plan.next_ready(now)
+            if ts is None:
+                break
+
+            event, cid = build_event(ts)
+
+            try:
+                rconn.xadd(REDIS_STREAM, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
+            except Exception as e:
+                log.warning(f"Redis XADD failed (foot_traffic): {e}")
+
+            producer.send(TOPIC, key=cid, value=event)
+            log.info(f"Simulated: {event}")
+
+            entry_event = {
+                "event_type": "entry",
+                "time": event["entry_time"],
+                "weekday": event["weekday"],
+                "time_slot": event["time_slot"]
+            }
+
+            try:
+                rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(entry_event)}, maxlen=20000, approximate=True)
+            except Exception as e:
+                log.warning(f"Redis XADD failed (entry): {e}")
+
+            producer.send(TOPIC_REALISTIC, key=cid, value=entry_event)
+
+            exit_event = {
+                "event_type": "exit",
+                "time": event["exit_time"],
+                "weekday": event["weekday"],
+                "time_slot": event["time_slot"]
+            }
+
+            future_exits.append((datetime.fromisoformat(event["exit_time"]), exit_event, cid))
+
+        for exit_time, exit_event, cid in future_exits[:]:
+            if exit_time <= now:
+                try:
+                    rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(exit_event)}, maxlen=20000, approximate=True)
+                except Exception as e:
+                    log.warning(f"Redis XADD failed (exit): {e}")
+
+                producer.send(TOPIC_REALISTIC, key=cid, value=exit_event)
+                future_exits.remove((exit_time, exit_event, cid))
+
 
 if __name__ == "__main__":
     main()

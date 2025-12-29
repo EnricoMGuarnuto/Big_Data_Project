@@ -6,11 +6,13 @@ import threading
 import redis
 import logging
 import psycopg2
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
 import pandas as pd
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+
+from simulated_time.redis_clock import RedisClock
 
 # ========================
 # Logging
@@ -18,24 +20,23 @@ from kafka.errors import NoBrokersAvailable
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
 log = logging.getLogger("shelf")
 
-# customer_id -> item_id -> {"quantity": int, "weight": float}
-customer_carts = defaultdict(lambda: defaultdict(lambda: {"quantity": 0, "weight": 0.0}))
-
 # ========================
 # Config
 # ========================
-BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
-KAFKA_BROKER = BOOTSTRAP
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC_SHELF = os.getenv("KAFKA_TOPIC_SHELF", "shelf_events")
-TOPIC_FOOT = os.getenv("KAFKA_TOPIC_FOOT", "foot_traffic")
+TOPIC_FOOT  = os.getenv("KAFKA_TOPIC_FOOT", "foot_traffic")
 
-# Redis (buffer-before-Kafka)
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-REDIS_STREAM = os.getenv("REDIS_STREAM", "shelf_events")  # stream key
+REDIS_DB   = int(os.getenv("REDIS_DB", "0"))
+REDIS_STREAM = os.getenv("REDIS_STREAM", "shelf_events")
 
-# postgres 
+STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
+DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
+SLEEP_SEC = float(os.getenv("SHELF_IDLE_SLEEP", "0.01"))
+PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
+
 PG_HOST = os.getenv("PG_HOST", "postgres")
 PG_PORT = int(os.getenv("PG_PORT", "5432"))
 PG_DB   = os.getenv("PG_DB", "smart_shelf")
@@ -43,132 +44,93 @@ PG_USER = os.getenv("PG_USER", "bdt_user")
 PG_PASS = os.getenv("PG_PASS", "bdt_password")
 DAILY_DISCOUNT_TABLE = os.getenv("DAILY_DISCOUNT_TABLE", "analytics.daily_discounts")
 
-
-STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
-DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
-SLEEP_SEC = float(os.getenv("SHELF_SLEEP", 1.0))
-PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
+# ========================
+# Simulated Time
+# ========================
+clock = RedisClock(host=REDIS_HOST, port=REDIS_PORT)
+def now():
+    return clock.now()
 
 # ========================
 # State
 # ========================
+customer_carts = defaultdict(lambda: defaultdict(lambda: {"quantity": 0, "weight": 0.0}))
 active_customers = {}
 scheduled_actions = defaultdict(list)
 lock = threading.Lock()
 
 # ========================
-# utils
+# Utility functions
 # ========================
-def now_utc():
-    return datetime.utcnow().replace(tzinfo=timezone.utc)
-
 def sample_num_actions():
     r = random.random()
-    if r < 0.2:
-        return random.randint(3, 6)
-    elif r < 0.7:
-        return random.randint(7, 15)
-    else:
-        return random.randint(16, 30)
+    return random.randint(3, 6) if r < 0.2 else random.randint(7, 15) if r < 0.7 else random.randint(16, 30)
 
 def generate_scheduled_actions(entry, exit):
-    n_actions = sample_num_actions()
+    n = sample_num_actions()
     start = entry + timedelta(seconds=60)
     end = exit - timedelta(seconds=30)
     if start >= end:
         return []
     timestamps = sorted([
         start + timedelta(seconds=random.uniform(0, (end - start).total_seconds()))
-        for _ in range(n_actions)
+        for _ in range(n)
     ])
     return [(ts, "pickup" if random.random() > PUTBACK_PROB else "putback") for ts in timestamps]
 
-def load_discounts_from_parquet(path: str) -> dict:
-    today = datetime.today()
-    year, week, _ = today.isocalendar()
-    week_str = f"{year}-W{week:02}"
+def load_discounts_from_parquet(path):
     try:
-        if not os.path.exists(path):
-            log.warning(f"[shelf] Discounts file not found: {path}")
-            return {}
         df = pd.read_parquet(path)
+        week_str = f"{now().isocalendar()[0]}-W{now().isocalendar()[1]:02}"
         df = df[df["week"] == week_str]
-        log.info(f"[shelf] Weekly discounts loaded {week_str}: {len(df)} rows")
         return dict(zip(df["shelf_id"], df["discount"]))
     except Exception as e:
-        log.warning(f"[shelf] Error reading discounts from {path}: {e}")
+        log.warning(f"[shelf] Error loading weekly discounts: {e}")
         return {}
-    
-def load_daily_discounts_from_pg() -> dict:
-    """
-    Returns a mapping shelf_id -> daily_discount for today from analytics.daily_discounts.
-    """
+
+def load_daily_discounts():
     try:
         conn = psycopg2.connect(
-            host=PG_HOST,
-            port=PG_PORT,
-            dbname=PG_DB,
-            user=PG_USER,
-            password=PG_PASS,
+            host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASS
         )
         cur = conn.cursor()
-        today = datetime.utcnow().date()
-        cur.execute(
-            f"SELECT shelf_id, discount FROM {DAILY_DISCOUNT_TABLE} WHERE discount_date = %s",
-            (today,),
-        )
+        cur.execute(f"SELECT shelf_id, discount FROM {DAILY_DISCOUNT_TABLE} WHERE discount_date = %s", (now().date(),))
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        d = {
-            sid: float(discount)
-            for sid, discount in rows
-            if sid is not None and discount is not None
-        }
-        log.info(f"[shelf] Daily discounts loaded for {today}: {len(d)} rows")
-        return d
+        cur.close(); conn.close()
+        return {sid: float(d) for sid, d in rows}
     except Exception as e:
-        log.warning(f"[shelf] Error reading daily discounts from Postgres: {e}")
+        log.warning(f"[shelf] Error loading daily discounts: {e}")
         return {}
 
-
 # ========================
-# IO (Kafka / Redis)
+# Kafka / Redis
 # ========================
 def build_producer():
-    for attempt in range(6):
+    for _ in range(6):
         try:
-            p = KafkaProducer(
+            return KafkaProducer(
                 bootstrap_servers=KAFKA_BROKER,
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                linger_ms=10,
-                retries=10,
-                acks="all",
+                acks="all", retries=10,
             )
-            log.info("[shelf] Connected to Kafka.")
-            return p
         except NoBrokersAvailable:
-            log.warning(f"[shelf] Kafka not available (attempt {attempt+1}/6). Retrying...")
             time.sleep(3)
     raise RuntimeError("Kafka not reachable")
 
-def build_redis() -> redis.Redis:
+def build_redis():
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     r.ping()
-    log.info(f"[shelf] Connected to Redis at {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
     return r
 
-def emit_with_buffer(rconn: redis.Redis, producer: KafkaProducer, topic: str, event: dict, redis_stream: str):
-    """Prima Redis Stream (buffer), poi Kafka."""
+def emit(rconn, producer, event):
     try:
-        rconn.xadd(redis_stream, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
+        rconn.xadd(REDIS_STREAM, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
     except Exception as e:
         log.warning(f"[shelf] Redis XADD failed: {e}")
-    producer.send(topic, value=event)
+    producer.send(TOPIC_SHELF, value=event)
 
 # ========================
-# Kafka consumers
+# Background threads
 # ========================
 def foot_traffic_listener():
     consumer = KafkaConsumer(
@@ -183,17 +145,17 @@ def foot_traffic_listener():
         evt = msg.value
         if evt.get("event_type") == "foot_traffic":
             cid = evt["customer_id"]
-            exit_time = pd.to_datetime(evt["exit_time"]).to_pydatetime()
-            entry_time = pd.to_datetime(evt["entry_time"]).to_pydatetime()
+            entry = datetime.fromisoformat(evt["entry_time"])
+            exit = datetime.fromisoformat(evt["exit_time"])
             with lock:
-                active_customers[cid] = exit_time
-                scheduled_actions[cid] = generate_scheduled_actions(entry_time, exit_time)
+                active_customers[cid] = exit
+                scheduled_actions[cid] = generate_scheduled_actions(entry, exit)
 
 def reap_inactive():
     while True:
-        now = now_utc()
+        current = now()
         with lock:
-            expired = [cid for cid, et in active_customers.items() if et < now]
+            expired = [cid for cid, et in active_customers.items() if et < current]
             for cid in expired:
                 active_customers.pop(cid, None)
                 scheduled_actions.pop(cid, None)
@@ -201,95 +163,80 @@ def reap_inactive():
         time.sleep(5)
 
 # ========================
-# Main loop
+# Main Loop
 # ========================
 def main():
     df = pd.read_parquet(STORE_PARQUET)
-    required_cols = {"shelf_id", "item_weight", "item_visibility"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError(f"Parquet must contain columns: {required_cols}")
+    weekly = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
+    daily = load_daily_discounts()
 
-    weekly_discounts = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
-    daily_discounts = load_daily_discounts_from_pg()
+    def discount(sid):
+        dw = float(weekly.get(sid, 0.0))
+        dd = float(daily.get(sid, 0.0))
+        return max(0.0, min(1 - (1 - dw) * (1 - dd), 0.95))
 
-    def effective_discount(sid: str) -> float:
-        dw = float(weekly_discounts.get(sid, 0.0) or 0.0)
-        dd = float(daily_discounts.get(sid, 0.0) or 0.0)
-        eff = 1.0 - (1.0 - dw) * (1.0 - dd)
-        return max(0.0, min(eff, 0.95))
-
-    df["discount"] = df["shelf_id"].map(effective_discount)
+    df["discount"] = df["shelf_id"].map(discount)
     df["pick_score"] = df["item_visibility"] * (1 + df["discount"])
     pick_weights = df["pick_score"].tolist()
 
     rng = random.Random()
     producer = build_producer()
-    rconn = build_redis()  # <— inizializzato UNA VOLTA qui
+    rconn = build_redis()
 
     threading.Thread(target=foot_traffic_listener, daemon=True).start()
     threading.Thread(target=reap_inactive, daemon=True).start()
-    log.info("[shelf] Producer started.")
+    log.info("[shelf] Producer started (SIMULATED TIME)")
 
     while True:
-        now = now_utc()
+        current_time = now()
         executed = False
 
         with lock:
-            for customer_id, actions in scheduled_actions.items():
+            for cid, actions in list(scheduled_actions.items()):
                 if not actions:
                     continue
-                ts, action_type = actions[0]
-                if ts <= now:
+                ts, action = actions[0]
+                if ts <= current_time:
                     actions.pop(0)
 
-                    if action_type == "pickup":
+                    if action == "pickup":
                         idx = rng.choices(range(len(df)), weights=pick_weights, k=1)[0]
                         row = df.iloc[idx]
                         item_id = row["shelf_id"]
-                        item_weight = float(row["item_weight"])
+                        weight = float(row["item_weight"])
+                        qty = rng.choices([1,2,3], [0.6,0.3,0.1])[0]
+                        customer_carts[cid][item_id]["quantity"] += qty
+                        customer_carts[cid][item_id]["weight"] = weight
 
-                        quantity = rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
-                        customer_carts[customer_id][item_id]["quantity"] += quantity
-                        customer_carts[customer_id][item_id]["weight"] = item_weight
-
-                    elif action_type == "putback":
-                        available_items = [(iid, data) for iid, data in customer_carts[customer_id].items() if data["quantity"] > 0]
-                        if not available_items:
-                            continue
-                        item_id, data = rng.choice(available_items)
-                        item_weight = data["weight"]
-                        max_quantity = data["quantity"]
-                        quantity = rng.randint(1, max_quantity)
-                        customer_carts[customer_id][item_id]["quantity"] -= quantity
                     else:
-                        continue
+                        items = [(i,d) for i,d in customer_carts[cid].items() if d["quantity"]>0]
+                        if not items:
+                            continue
+                        item_id, data = rng.choice(items)
+                        weight = data["weight"]
+                        qty = rng.randint(1, data["quantity"])
+                        customer_carts[cid][item_id]["quantity"] -= qty
 
-                    quantity = rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
-                    total_weight = round(item_weight * quantity, 3)
-
-                    # Evento simulato (pickup/putback) — buffer su Redis, poi Kafka
-                    sim_event = {
-                        "event_type": action_type,
-                        "customer_id": customer_id,
+                    event = {
+                        "event_type": action,
+                        "customer_id": cid,
                         "item_id": item_id,
-                        "weight": item_weight,
-                        "quantity": quantity,
-                        "timestamp": now.isoformat(),
+                        "quantity": qty,
+                        "weight": weight,
+                        "timestamp": current_time.isoformat(),
                     }
-                    emit_with_buffer(rconn, producer, TOPIC_SHELF, sim_event, REDIS_STREAM)
-                    log.info(f"[shelf] Sent {action_type.upper()}: {sim_event}")
+                    emit(rconn, producer, event)
 
-                    # Evento derivato di peso — buffer su Redis, poi Kafka
-                    weight_event = {
+                    weight_evt = {
                         "event_type": "weight_change",
-                        "customer_id": customer_id,
+                        "customer_id": cid,
                         "item_id": item_id,
-                        "delta_weight": (-1 if action_type == "pickup" else 1) * total_weight,
-                        "timestamp": now.isoformat(),
+                        "delta_weight": (-1 if action == "pickup" else 1) * weight * qty,
+                        "timestamp": current_time.isoformat(),
                     }
-                    emit_with_buffer(rconn, producer, TOPIC_SHELF, weight_event, REDIS_STREAM)
-                    log.info(f"[shelf] Sent WEIGHT_CHANGE: {weight_event}")
+                    emit(rconn, producer, weight_evt)
 
+                    log.info(f"[shelf] {action.upper()} {cid} item={item_id} qty={qty}")
                     executed = True
                     break
 
