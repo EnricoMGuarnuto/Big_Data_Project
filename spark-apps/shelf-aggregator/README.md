@@ -17,3 +17,4 @@
 - `RAW_PATH`, `STATE_PATH`, `CKP_RAW`, `CKP_AGG`: Delta destinations and checkpoints.
 - `KAFKA_BROKER`, `TOPIC_SHELF_EVENTS`, `TOPIC_SHELF_PROFILES`, `TOPIC_SHELF_STATE`: Kafka topics.
 - `BOOTSTRAP_FROM_PG`, `JDBC_PG_*`: enable and control the initial state seeding.
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

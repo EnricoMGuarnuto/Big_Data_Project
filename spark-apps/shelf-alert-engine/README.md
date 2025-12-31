@@ -19,3 +19,4 @@
 - Kafka topics: `TOPIC_SHELF_STATE`, `TOPIC_SHELF_BATCH_STATE`, `TOPIC_SHELF_POLICIES`, `TOPIC_ALERTS`, `TOPIC_SHELF_RESTOCK`.
 - Delta mirrors and checkpoints: `DL_*` paths plus `CHECKPOINT_ROOT`.
 - Policy/stock tuning: `NEAR_EXPIRY_DAYS`, `DEFAULT_TARGET_PCT`, `LOAD_MAX_FROM_PG`, JDBC params.
+- Simulated time: not used; timestamps come from payloads or Spark `current_timestamp()`.

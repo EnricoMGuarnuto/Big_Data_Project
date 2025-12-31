@@ -23,4 +23,4 @@
 - Delta: `DELTA_ROOT`, `DL_SHELF_STATE_PATH`, `DL_SHELF_BATCH_PATH`.
 - Kafka: `KAFKA_BROKER`, `TOPIC_SHELF_STATE`, `TOPIC_SHELF_BATCH_STATE`, `TOPIC_ALERTS`.
 - Behavior: `REMOVE_MODE` (`next_day` | `same_day_evening`), `EMIT_ALERTS` (`1`/`0`).
-
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

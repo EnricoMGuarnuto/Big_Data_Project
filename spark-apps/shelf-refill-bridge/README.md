@@ -17,3 +17,4 @@
 - `DELAY_MINUTES`: minutes to wait before re-emitting the warehouse events to shelves.
 - `PENDING_PATH`, `CKP`: Delta storage for pending events and structured streaming checkpoint.
 - Kafka topics: `TOPIC_WH_EVENTS`, `TOPIC_SHELF_EVENTS`, `TOPIC_SHELF_PROFILES`.
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

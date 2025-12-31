@@ -15,3 +15,4 @@
 - `STATE_PATH`, `CKP`: Delta storage for wh_state and checkpointing.
 - Kafka topics: `TOPIC_WH_EVENTS` (input) and `TOPIC_WH_STATE` (output).
 - `BOOTSTRAP_FROM_PG`, `JDBC_PG_*`: enable and parameterize the optional bootstrap.
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

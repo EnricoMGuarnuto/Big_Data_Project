@@ -13,3 +13,4 @@
 - `DELTA_ROOT`, `DL_FOOT_TRAFFIC_PATH`: where the Delta table lives (defaults to `/delta/raw/foot_traffic`).
 - `KAFKA_BROKER`, `TOPIC_FOOT_TRAFFIC`, `STARTING_OFFSETS`: Kafka connection.
 - `CHECKPOINT`: checkpoint directory (default `/delta/_checkpoints/foot_traffic_raw_sink`).
+- Simulated time: not used; timestamps come from payloads or Spark `current_timestamp()`.

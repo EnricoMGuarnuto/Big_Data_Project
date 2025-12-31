@@ -17,4 +17,4 @@
 - `DL_SUPPLIER_PLAN_PATH`, `DL_ORDERS_PATH`, `DL_RECEIPTS_PATH`, `DL_WH_EVENTS_RAW`: Delta inputs/outputs.
 - `CUTOFF_HOUR/MINUTE`, `DELIVERY_HOUR/MINUTE`, `TICK_MINUTES`: scheduling knobs.
 - `DEFAULT_EXPIRY_DAYS`: shelf-life applied to generated batches.
-
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

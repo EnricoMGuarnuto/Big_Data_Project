@@ -16,3 +16,4 @@
 - Delta paths: `DL_WH_BATCH`, `DL_SHELF_BATCH`; checkpoint: `CKP`.
 - Kafka topics: `TOPIC_WH_EVENTS`, `TOPIC_WH_BATCH`, `TOPIC_SHELF_BATCH`.
 - Optional JDBC bootstrap requires `JDBC_PG_URL`, `JDBC_PG_USER`, `JDBC_PG_PASSWORD`.
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

@@ -15,3 +15,4 @@
 - `BATCH_STATE_PATH`, `CHECKPOINT_PATH`: Delta destination and streaming checkpoint.
 - `KAFKA_BROKER`, `TOPIC_POS_TRANSACTIONS`, `TOPIC_BATCH_STATE`: IO topics.
 - `BOOTSTRAP_FROM_PG`, `JDBC_PG_URL`, `JDBC_PG_USER`, `JDBC_PG_PASSWORD`: enable and drive the optional bootstrap.
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

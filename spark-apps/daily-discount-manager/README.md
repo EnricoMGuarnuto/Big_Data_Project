@@ -16,4 +16,4 @@
 - `DL_SHELF_BATCH_PATH`, `DL_DAILY_DISC_PATH`: Delta sources/destinations.
 - `TOPIC_DAILY_DISCOUNTS`, `TOPIC_ALERTS`, `KAFKA_BROKER`: Kafka wiring.
 - `DISCOUNT_MIN`, `DISCOUNT_MAX`: percentage range for the additional markdown.
-
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

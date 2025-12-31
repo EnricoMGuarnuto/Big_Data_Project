@@ -16,3 +16,4 @@
 - Kafka topics: `TOPIC_RESTOCK`, `TOPIC_WH_EVENTS`, `TOPIC_ALERTS`.
 - Delta inputs/outputs: `DL_WH_BATCH_PATH`, `DL_RESTOCK_PATH`, `CKP_ROOT`.
 - Operational tuning: `PLAN_DELAY_SEC` ensures alerts have time to self-heal before triggering a pick.
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

@@ -18,3 +18,4 @@
 - Kafka topics: `TOPIC_WH_STATE`, `TOPIC_WH_BATCH_STATE`, `TOPIC_WH_POLICIES`, `TOPIC_ALERTS`, `TOPIC_WH_SUPPLIER_PLAN`.
 - Delta paths/checkpoints: `DL_WH_STATE_PATH`, `DL_WH_BATCH_PATH`, `DL_ALERTS_PATH`, `DL_SUPPLIER_PLAN_PATH`, `CHECKPOINT_ROOT`.
 - Alert tuning knobs: `NEAR_EXPIRY_DAYS`, `DEFAULT_MULTIPLIER`, plus JDBC settings for policy bootstrap.
+- Simulated time: uses Redis `sim:now`/`sim:today` via `simulated_time`; start `sim-clock` for deterministic runs.

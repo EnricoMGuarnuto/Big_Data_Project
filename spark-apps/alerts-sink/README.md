@@ -15,3 +15,4 @@
 ## Key configuration
 - `DL_ALERTS_PATH` / `CHECKPOINT`: Delta location for the alert log and streaming checkpoint.
 - `WRITE_TO_PG`, `JDBC_PG_URL`, `JDBC_PG_USER`, `JDBC_PG_PASSWORD`, `PG_TABLE`: toggle and parameters for the optional Postgres sink.
+- Simulated time: not used; timestamps come from payloads or Spark `current_timestamp()`.
