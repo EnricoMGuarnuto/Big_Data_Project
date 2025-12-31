@@ -36,6 +36,7 @@ BOOTSTRAP_POLICIES_FROM_PG = os.getenv("BOOTSTRAP_POLICIES_FROM_PG", "1") in ("1
 # Engine params
 STARTING_OFFSETS        = os.getenv("STARTING_OFFSETS", "earliest")
 NEAR_EXPIRY_DAYS        = int(os.getenv("NEAR_EXPIRY_DAYS", "5"))        # expiry alerts window
+ALERTS_COOLDOWN_MINUTES = int(os.getenv("ALERTS_COOLDOWN_MINUTES", "60"))
 DEFAULT_TARGET_PCT      = float(os.getenv("DEFAULT_TARGET_PCT", "80.0")) # target refill level if none provided
 CHECKPOINT_ROOT         = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/_checkpoints/shelf_alert_engine")
 CKP_SHELF_STATE         = os.getenv("CKP_SHELF_STATE", f"{CHECKPOINT_ROOT}/shelf_state")
@@ -51,6 +52,16 @@ spark = (
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel("WARN")
+
+def _delta_field_types(path: str) -> dict:
+    if not DeltaTable.isDeltaTable(spark, path):
+        return {}
+    try:
+        schema = spark.read.format("delta").load(path).schema
+        return {f.name: f.dataType for f in schema.fields}
+    except Exception as e:
+        print(f"[delta-schema] warn reading schema from {path}: {e}")
+        return {}
 
 def kafka_topic_exists(topic_name: str) -> bool:
     """Check topic presence via Kafka AdminClient (avoids UnknownTopic errors on read)."""
@@ -306,6 +317,7 @@ def foreach_batch_alerts(batch_df, batch_id: int):
 
     sim_now_ts = F.lit(sim_now).cast("timestamp")
     sim_now_date = F.to_date(sim_now_ts)
+    cutoff_ts = sim_now_ts - F.expr(f"INTERVAL {ALERTS_COOLDOWN_MINUTES} MINUTES")
 
     # Join with policies: prefer per-shelf else fallback to global (NULL shelf)
     pol = POLICIES_LATEST.alias("p")
@@ -414,6 +426,18 @@ def foreach_batch_alerts(batch_df, batch_id: int):
         .withColumn("created_at", sim_now_ts)
     )
 
+    if ALERTS_COOLDOWN_MINUTES > 0 and DeltaTable.isDeltaTable(spark, DL_ALERTS_PATH):
+        try:
+            recent = (
+                spark.read.format("delta").load(DL_ALERTS_PATH)
+                .where(F.col("created_at") >= cutoff_ts)
+                .select("event_type", "shelf_id", "location")
+                .dropDuplicates()
+            )
+            alerts_df = alerts_df.join(recent, on=["event_type", "shelf_id", "location"], how="left_anti")
+        except Exception as e:
+            print(f"[alerts-dedupe] warn: {e}")
+
     # Write alerts → Kafka (append-only)
     if alerts_df.rdd.isEmpty() is False:
         alerts_out = alerts_df.withColumn("value",
@@ -426,7 +450,23 @@ def foreach_batch_alerts(batch_df, batch_id: int):
             .save()
 
         # Also persist to Delta (optional)
-        (alerts_df
+        # Normalize types to match existing Delta schema (prevents merge field conflicts).
+        alerts_delta_types = _delta_field_types(DL_ALERTS_PATH)
+        t = lambda name, default: alerts_delta_types.get(name, default)
+        alerts_to_delta = alerts_df.select(
+            F.col("event_type").cast(t("event_type", T.StringType())).alias("event_type"),
+            F.col("shelf_id").cast(t("shelf_id", T.StringType())).alias("shelf_id"),
+            F.col("location").cast(t("location", T.StringType())).alias("location"),
+            F.col("severity").cast(t("severity", T.StringType())).alias("severity"),
+            F.col("current_stock").cast(t("current_stock", T.IntegerType())).alias("current_stock"),
+            F.col("min_qty").cast(t("min_qty", T.IntegerType())).alias("min_qty"),
+            F.col("threshold_pct").cast(t("threshold_pct", T.DoubleType())).alias("threshold_pct"),
+            F.col("stock_pct").cast(t("stock_pct", T.DoubleType())).alias("stock_pct"),
+            F.col("suggested_qty").cast(t("suggested_qty", T.IntegerType())).alias("suggested_qty"),
+            F.col("created_at").cast(t("created_at", T.TimestampType())).alias("created_at"),
+        )
+
+        (alerts_to_delta
          .write.format("delta")
          .mode("append")
          .option("mergeSchema","true")

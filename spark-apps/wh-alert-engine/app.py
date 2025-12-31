@@ -5,6 +5,7 @@ from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 from simulated_time.clock import get_simulated_now  # ✅ clock simulato
+from datetime import timedelta
 
 
 # =========================
@@ -39,6 +40,7 @@ NEAR_EXPIRY_DAYS         = int(os.getenv("NEAR_EXPIRY_DAYS", "10"))  # warehouse
 DEFAULT_MULTIPLIER       = int(os.getenv("DEFAULT_MULTIPLIER", "1"))  # multiples of standard_batch_size
 CHECKPOINT_ROOT          = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/_checkpoints/wh_alert_engine")
 CKP_FOREACH              = os.getenv("CKP_FOREACH", f"{CHECKPOINT_ROOT}/foreach")
+ALERTS_COOLDOWN_MINUTES  = int(os.getenv("ALERTS_COOLDOWN_MINUTES", "60"))
 
 # =========================
 # Spark Session
@@ -60,6 +62,23 @@ def _delta_field_types(path: str) -> dict:
     except Exception as e:
         print(f"[delta-schema] warn reading schema from {path}: {e}")
         return {}
+
+def _filter_recent_alerts(alerts_df, cutoff_ts):
+    if ALERTS_COOLDOWN_MINUTES <= 0:
+        return alerts_df
+    if not DeltaTable.isDeltaTable(spark, DL_ALERTS_PATH):
+        return alerts_df
+    try:
+        recent = (
+            spark.read.format("delta").load(DL_ALERTS_PATH)
+            .where(F.col("created_at") >= F.lit(cutoff_ts))
+            .select("event_type", "shelf_id", "location")
+            .dropDuplicates()
+        )
+        return alerts_df.join(recent, on=["event_type", "shelf_id", "location"], how="left_anti")
+    except Exception as e:
+        print(f"[alerts-dedupe] warn: {e}")
+        return alerts_df
 
 def kafka_topic_exists(topic_name: str) -> bool:
     """Check if a Kafka topic exists to avoid UnknownTopic errors when reading offsets."""
@@ -288,6 +307,9 @@ def foreach_batch(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty():
         return
 
+    sim_now = get_simulated_now()
+    cooldown_ts = sim_now - timedelta(minutes=ALERTS_COOLDOWN_MINUTES)
+
     shelves = batch_df.select("shelf_id","wh_current_stock").distinct().cache()
 
     # Join with per-shelf policy (latest) – no global here; if missing, set a conservative default
@@ -318,7 +340,7 @@ def foreach_batch(batch_df, batch_id: int):
 
     enriched = (
         joined.join(soonest, on="shelf_id", how="left")
-        .withColumn("days_to_expiry", F.datediff(F.col("min_expiry"), F.to_date(F.lit(get_simulated_now()))))
+        .withColumn("days_to_expiry", F.datediff(F.col("min_expiry"), F.to_date(F.lit(sim_now))))
     )
 
     # 1) Reorder alert if below reorder_point
@@ -366,7 +388,9 @@ def foreach_batch(batch_df, batch_id: int):
     )
 
     alerts_df = reorder_alerts.unionByName(near_expiry_alerts, allowMissingColumns=True)\
-        .withColumn("created_at", F.lit(get_simulated_now()))
+        .withColumn("created_at", F.lit(sim_now))
+
+    alerts_df = _filter_recent_alerts(alerts_df, cooldown_ts)
 
     if alerts_df.rdd.isEmpty() is False:
         # Normalize types to match the existing Delta table schema (prevents DELTA_FAILED_TO_MERGE_FIELDS on int/long).

@@ -3,6 +3,7 @@ FROM apache/spark:3.5.1-python3
 USER root
 # Optional utilities needed at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends procps curl && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir redis
 
 # Application directory
 WORKDIR /app

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -59,6 +60,8 @@ DELTA_SHELF_EVENTS_PATH = Path(os.getenv("DELTA_SHELF_EVENTS_PATH", str(DEFAULT_
 
 # tabella alerts su Postgres (nome fisso)
 ALERTS_TABLE_NAME = os.getenv("ALERTS_TABLE", "ops.alerts").strip()
+# schema di default per le tabelle "state.*"
+STATE_SCHEMA = os.getenv("STATE_SCHEMA", "state").strip()
 
 # live refresh
 AUTOREFRESH_MS = int(os.getenv("DASH_AUTOREFRESH_MS", "1500"))  # 1.5s
@@ -67,6 +70,7 @@ WEIGHT_EVENT_LOOKBACK_SEC = int(os.getenv("WEIGHT_EVENT_LOOKBACK_SEC", "8"))
 # weight event type label (se nel tuo delta è diverso, cambialo qui)
 WEIGHT_EVENT_TYPE = os.getenv("WEIGHT_EVENT_TYPE", "weight_change")
 
+log = logging.getLogger("dashboard")
 
 # -----------------------------
 # DATA STRUCTURES
@@ -255,10 +259,13 @@ def fetch_pg_table(table_name: str, limit: int = 2000) -> pd.DataFrame:
     Per gli states (shelf_state, wh_state, shelf_batch_state, wh_batch_state)
     """
     allow = {"shelf_state", "wh_state", "shelf_batch_state", "wh_batch_state"}
-    if table_name not in allow:
+    raw_name = table_name.strip()
+    base_name = raw_name.split(".")[-1]
+    if base_name not in allow:
         raise ValueError(f"Tabella non permessa: {table_name}")
+    table_ref = raw_name if "." in raw_name else (f"{STATE_SCHEMA}.{base_name}" if STATE_SCHEMA else base_name)
     eng = get_pg_engine()
-    q = text(f"SELECT * FROM {table_name} ORDER BY 1 DESC LIMIT {int(limit)}")
+    q = text(f"SELECT * FROM {table_ref} ORDER BY 1 DESC LIMIT {int(limit)}")
     with eng.connect() as c:
         return pd.read_sql(q, c)
 
@@ -289,6 +296,16 @@ def _to_datetime(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, errors="coerce", utc=True)
 
 
+def _is_delta_table(delta_path: Path) -> bool:
+    log_dir = delta_path / "_delta_log"
+    if not log_dir.exists() or not log_dir.is_dir():
+        return False
+    for ext in (".json", ".checkpoint"):
+        if any(log_dir.glob(f"*{ext}")):
+            return True
+    return False
+
+
 @st.cache_data(ttl=1, show_spinner=False)
 def fetch_recent_weight_events(delta_path: Path, lookback_sec: int) -> pd.DataFrame:
     """
@@ -302,8 +319,16 @@ def fetch_recent_weight_events(delta_path: Path, lookback_sec: int) -> pd.DataFr
     if not delta_path.exists():
         # se non esiste path, vuoto
         return pd.DataFrame()
+    if not _is_delta_table(delta_path):
+        # cartella esiste ma non e' una delta table valida
+        return pd.DataFrame()
 
-    dt = DeltaTable(str(delta_path))
+    try:
+        dt = DeltaTable(str(delta_path))
+    except Exception as e:
+        # delta-rs alza TableNotFoundError se manca _delta_log
+        log.warning("Delta table not available at %s: %s", delta_path, e)
+        return pd.DataFrame()
     df = dt.to_pandas()  # per un progetto demo va bene; se cresce, ottimizziamo con predicate pushdown
 
     if df.empty:

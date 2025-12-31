@@ -1,4 +1,5 @@
 import os, time
+from typing import Optional
 from pyspark.sql import SparkSession, functions as F, types as T
 from delta.tables import DeltaTable
 from pyspark.sql.window import Window
@@ -48,7 +49,7 @@ def _delta_has_rows(path: str) -> bool:
     except Exception:
         return False
 
-def _with_delta_retries(op_name: str, fn, *, ok_if_table_filled: str | None = None):
+def _with_delta_retries(op_name: str, fn, *, ok_if_table_filled: Optional[str] = None):
     last = None
     for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
         try:

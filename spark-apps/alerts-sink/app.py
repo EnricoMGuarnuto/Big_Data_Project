@@ -13,6 +13,8 @@ DELTA_ROOT    = os.getenv("DELTA_ROOT", "/delta")
 DL_ALERTS_PATH = os.getenv("DL_ALERTS_PATH", f"{DELTA_ROOT}/ops/alerts")
 CHECKPOINT    = os.getenv("CHECKPOINT", f"{DELTA_ROOT}/_checkpoints/alerts_sink")
 DL_TXN_APP_ID = os.getenv("DL_TXN_APP_ID", "alerts_sink_delta_ops_alerts")
+DELTA_WRITE_MAX_RETRIES = int(os.getenv("DELTA_WRITE_MAX_RETRIES", "8"))
+DELTA_WRITE_RETRY_BASE_S = float(os.getenv("DELTA_WRITE_RETRY_BASE_S", "1.0"))
 
 # Postgres sink (optional)
 WRITE_TO_PG   = os.getenv("WRITE_TO_PG", "1") in ("1","true","True")
@@ -49,6 +51,39 @@ def _jdbc_url_with_stringtype_unspecified(url: str) -> str:
     sep = "&" if "?" in url else "?"
     return f"{url}{sep}stringtype=unspecified"
 
+
+def _is_delta_conflict(err: Exception) -> bool:
+    name = err.__class__.__name__
+    msg = str(err)
+    return (
+        "Concurrent" in name
+        or "DELTA_CONCURRENT" in msg
+        or "MetadataChangedException" in name
+        or "DELTA_METADATA_CHANGED" in msg
+        or "ProtocolChangedException" in name
+    )
+
+
+def _write_delta_with_retries(df, batch_id: int) -> None:
+    last = None
+    for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
+        try:
+            (df.write.format("delta")
+             .mode("append")
+             .option("mergeSchema", "true")
+             .option("txnAppId", DL_TXN_APP_ID)
+             .option("txnVersion", str(batch_id))
+             .save(DL_ALERTS_PATH))
+            return
+        except Exception as e:
+            last = e
+            if not _is_delta_conflict(e) or attempt == DELTA_WRITE_MAX_RETRIES:
+                raise
+            sleep_s = DELTA_WRITE_RETRY_BASE_S * attempt
+            print(f"[delta-retry] alerts_sink append conflict ({attempt}/{DELTA_WRITE_MAX_RETRIES}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last  # pragma: no cover
+
 # =========================
 # Schema for alerts
 # (as emitted by shelf/wh alert engines)
@@ -75,13 +110,7 @@ def write_batch_to_sinks(parsed_df, batch_id: int):
         return
 
     # 1) Delta Lake (append) with idempotency on retries (same batch_id)
-    (parsed_df
-     .write.format("delta")
-     .mode("append")
-     .option("mergeSchema", "true")
-     .option("txnAppId", DL_TXN_APP_ID)
-     .option("txnVersion", str(batch_id))
-     .save(DL_ALERTS_PATH))
+    _write_delta_with_retries(parsed_df, batch_id)
 
     # 2) Postgres (append) — map to ops.alerts columns only
     if WRITE_TO_PG and JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD:

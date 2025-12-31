@@ -2,6 +2,7 @@ FROM apache/spark:3.5.1-python3
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir redis
 
 WORKDIR /app
 COPY app.py /app/app.py
