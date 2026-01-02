@@ -135,15 +135,19 @@ def foreach_batch(batch_df, batch_id: int):
         }).execute()
 
     # (Optional) alert status change: ack/resolved
-    alerts_updates = (alloc.groupBy("plan_id","alert_id")
-                      .agg(F.sum("alloc_qty").alias("moved"))
-                      .filter(F.col("alert_id").isNotNull()))
+    alerts_updates = (alloc.groupBy("plan_id", "shelf_id", "alert_id")
+                      .agg(F.sum("alloc_qty").alias("moved")))
     if alerts_updates.rdd.isEmpty() is False:
         au = (alerts_updates
               .withColumn("event_type", F.lit("alert_status_change"))
+              .withColumn("alert_event_type", F.lit("refill_request"))
+              .withColumn("location", F.lit("store"))
               .withColumn("status", F.lit("ack"))
               .withColumn("timestamp", F.current_timestamp())
-              .withColumn("value", F.to_json(F.struct("event_type","alert_id","status","timestamp")))
+              .withColumn("value", F.to_json(F.struct(
+                  "event_type", "alert_id", "shelf_id", "location",
+                  "alert_event_type", "status", "timestamp"
+              )))
               .select(F.lit(None).cast("string").alias("key"), "value"))
         au.write.format("kafka") \
           .option("kafka.bootstrap.servers", KAFKA_BROKER) \

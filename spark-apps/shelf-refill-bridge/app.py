@@ -193,7 +193,7 @@ def foreach_batch(batch_df, batch_id: int):
         # upsert by event_id
         src = remaining_pending.alias("s")
         tgt = pending_tbl.alias("t")
-        pending_tbl.merge(
+        tgt.merge(
             src,
             "t.event_id = s.event_id"
         ).whenMatchedUpdate(set={

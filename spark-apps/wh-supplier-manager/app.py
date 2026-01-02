@@ -14,6 +14,7 @@ KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 
 TOPIC_WH_SUPPLIER_PLAN = os.getenv("TOPIC_WH_SUPPLIER_PLAN", "wh_supplier_plan")  # compacted (key shelf_id)
 TOPIC_WH_EVENTS        = os.getenv("TOPIC_WH_EVENTS", "wh_events")                # append-only
+TOPIC_ALERTS           = os.getenv("TOPIC_ALERTS", "alerts")                      # append-only
 
 DELTA_ROOT = os.getenv("DELTA_ROOT", "/delta")
 
@@ -299,6 +300,25 @@ def do_cutoff(now_ts: datetime):
         .select("supplier_plan_id","shelf_id","suggested_qty","standard_batch_size","status","created_at","updated_at")
     )
     publish_plan_updates(issued)
+
+    # Ack related warehouse alerts when supplier plan is issued
+    alert_acks = (
+        pending.select("shelf_id").distinct()
+        .withColumn("event_type", F.lit("alert_status_change"))
+        .withColumn("alert_event_type", F.lit("supplier_request"))
+        .withColumn("location", F.lit("warehouse"))
+        .withColumn("status", F.lit("ack"))
+        .withColumn("timestamp", F.lit(get_simulated_now()).cast("timestamp"))
+        .withColumn("value", F.to_json(F.struct(
+            "event_type", "shelf_id", "location", "alert_event_type", "status", "timestamp"
+        )))
+        .select(F.lit(None).cast("string").alias("key"), "value")
+    )
+    if alert_acks.rdd.isEmpty() is False:
+        alert_acks.write.format("kafka") \
+            .option("kafka.bootstrap.servers", KAFKA_BROKER) \
+            .option("topic", TOPIC_ALERTS) \
+            .save()
 
     print(f"[wh-supplier-manager] cutoff executed for delivery_date={delivery} (issued orders).")
 

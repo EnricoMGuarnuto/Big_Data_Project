@@ -26,6 +26,9 @@ DL_WH_STATE_PATH         = os.getenv("DL_WH_STATE_PATH", f"{DELTA_ROOT}/cleansed
 DL_WH_BATCH_PATH         = os.getenv("DL_WH_BATCH_PATH", f"{DELTA_ROOT}/cleansed/wh_batch_state")
 DL_ALERTS_PATH           = os.getenv("DL_ALERTS_PATH", f"{DELTA_ROOT}/ops/alerts")
 DL_SUPPLIER_PLAN_PATH    = os.getenv("DL_SUPPLIER_PLAN_PATH", f"{DELTA_ROOT}/ops/wh_supplier_plan")
+DL_TXN_APP_ID            = os.getenv("DL_TXN_APP_ID", "wh_alert_engine_delta_ops_alerts")
+DELTA_WRITE_MAX_RETRIES  = int(os.getenv("DELTA_WRITE_MAX_RETRIES", "8"))
+DELTA_WRITE_RETRY_BASE_S = float(os.getenv("DELTA_WRITE_RETRY_BASE_S", "1.0"))
 
 # Optional Postgres bootstrap for policies
 JDBC_PG_URL              = os.getenv("JDBC_PG_URL")
@@ -62,6 +65,37 @@ def _delta_field_types(path: str) -> dict:
     except Exception as e:
         print(f"[delta-schema] warn reading schema from {path}: {e}")
         return {}
+
+def _is_delta_conflict(err: Exception) -> bool:
+    name = err.__class__.__name__
+    msg = str(err)
+    return (
+        "Concurrent" in name
+        or "DELTA_CONCURRENT" in msg
+        or "MetadataChangedException" in name
+        or "DELTA_METADATA_CHANGED" in msg
+        or "ProtocolChangedException" in name
+    )
+
+def _write_alerts_delta_with_retries(df, batch_id: int) -> None:
+    last = None
+    for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
+        try:
+            (df.write.format("delta")
+             .mode("append")
+             .option("mergeSchema", "true")
+             .option("txnAppId", DL_TXN_APP_ID)
+             .option("txnVersion", str(batch_id))
+             .save(DL_ALERTS_PATH))
+            return
+        except Exception as e:
+            last = e
+            if not _is_delta_conflict(e) or attempt == DELTA_WRITE_MAX_RETRIES:
+                raise
+            sleep_s = DELTA_WRITE_RETRY_BASE_S * attempt
+            print(f"[delta-retry] wh_alert_engine append conflict ({attempt}/{DELTA_WRITE_MAX_RETRIES}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last  # pragma: no cover
 
 def _filter_recent_alerts(alerts_df, cutoff_ts):
     if ALERTS_COOLDOWN_MINUTES <= 0:
@@ -420,7 +454,7 @@ def foreach_batch(batch_df, batch_id: int):
 	       .option("topic", TOPIC_ALERTS)\
 	       .save()
 
-        (alerts_to_delta.write.format("delta").mode("append").option("mergeSchema","true").save(DL_ALERTS_PATH))
+        _write_alerts_delta_with_retries(alerts_to_delta, batch_id)
 
     # Supplier plan (compacted): compute suggested_qty when below reorder point
     # If standard_batch_size available, round up to multiples * DEFAULT_MULTIPLIER

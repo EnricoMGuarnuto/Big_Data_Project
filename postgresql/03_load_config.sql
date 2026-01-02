@@ -140,10 +140,10 @@ SELECT
   w.item_subcategory,
   GREATEST(
     1,
-    (COALESCE(w.maximum_stock, w.current_stock) * 0.15)::int
+    (COALESCE(w.maximum_stock, w.current_stock) * 0.05)::int
   ) AS reorder_point_qty,
   TRUE AS active,
-  'Auto-generated reorder point ≈15% of maximum_stock' AS notes
+  'Auto-generated reorder point ≈5% of maximum_stock' AS notes
 FROM ref.warehouse_inventory_snapshot w
 JOIN latest_wh_snapshot l
   ON w.snapshot_ts = l.snapshot_ts

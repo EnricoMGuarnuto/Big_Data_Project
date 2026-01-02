@@ -41,6 +41,9 @@ DEFAULT_TARGET_PCT      = float(os.getenv("DEFAULT_TARGET_PCT", "80.0")) # targe
 CHECKPOINT_ROOT         = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/_checkpoints/shelf_alert_engine")
 CKP_SHELF_STATE         = os.getenv("CKP_SHELF_STATE", f"{CHECKPOINT_ROOT}/shelf_state")
 CKP_FOREACH             = os.getenv("CKP_FOREACH", f"{CHECKPOINT_ROOT}/foreach")
+DL_TXN_APP_ID           = os.getenv("DL_TXN_APP_ID", "shelf_alert_engine_delta_ops_alerts")
+DELTA_WRITE_MAX_RETRIES = int(os.getenv("DELTA_WRITE_MAX_RETRIES", "8"))
+DELTA_WRITE_RETRY_BASE_S = float(os.getenv("DELTA_WRITE_RETRY_BASE_S", "1.0"))
 
 # =========================
 # Spark Session (Delta)
@@ -62,6 +65,37 @@ def _delta_field_types(path: str) -> dict:
     except Exception as e:
         print(f"[delta-schema] warn reading schema from {path}: {e}")
         return {}
+
+def _is_delta_conflict(err: Exception) -> bool:
+    name = err.__class__.__name__
+    msg = str(err)
+    return (
+        "Concurrent" in name
+        or "DELTA_CONCURRENT" in msg
+        or "MetadataChangedException" in name
+        or "DELTA_METADATA_CHANGED" in msg
+        or "ProtocolChangedException" in name
+    )
+
+def _write_alerts_delta_with_retries(df, batch_id: int) -> None:
+    last = None
+    for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
+        try:
+            (df.write.format("delta")
+             .mode("append")
+             .option("mergeSchema", "true")
+             .option("txnAppId", DL_TXN_APP_ID)
+             .option("txnVersion", str(batch_id))
+             .save(DL_ALERTS_PATH))
+            return
+        except Exception as e:
+            last = e
+            if not _is_delta_conflict(e) or attempt == DELTA_WRITE_MAX_RETRIES:
+                raise
+            sleep_s = DELTA_WRITE_RETRY_BASE_S * attempt
+            print(f"[delta-retry] alerts append conflict ({attempt}/{DELTA_WRITE_MAX_RETRIES}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last  # pragma: no cover
 
 def kafka_topic_exists(topic_name: str) -> bool:
     """Check topic presence via Kafka AdminClient (avoids UnknownTopic errors on read)."""
@@ -466,11 +500,7 @@ def foreach_batch_alerts(batch_df, batch_id: int):
             F.col("created_at").cast(t("created_at", T.TimestampType())).alias("created_at"),
         )
 
-        (alerts_to_delta
-         .write.format("delta")
-         .mode("append")
-         .option("mergeSchema","true")
-         .save(DL_ALERTS_PATH))
+        _write_alerts_delta_with_retries(alerts_to_delta, batch_id)
 
     # Build shelf_restock_plan (only from refill alerts with positive suggested qty)
     plans = (
