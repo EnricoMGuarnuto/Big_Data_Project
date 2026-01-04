@@ -1,9 +1,15 @@
 import pandas as pd
 import numpy as np
+import copy
+import math
+import os
 from datetime import datetime, timedelta
 
 # Set seed for reproducibility
 np.random.seed(42)
+
+PERISHABLE_CATEGORIES = {'FRUITS AND VEGETABLES', 'REFRIGERATED', 'FROZEN', 'MEAT', 'FISH'}
+
 
 # Define product hierarchy with categories, subcategories, and their attributes
 product_hierarchy = {
@@ -583,7 +589,8 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
 
         cat_props = product_hierarchy[category]
         sub_props = cat_props['subcategories'][subcategory]
-        is_perishable = 'current_stock_probabilities' in sub_props
+        is_perishable = category in PERISHABLE_CATEGORIES
+
 
         # Minimum number of full batches we want the warehouse to be able to hold
         min_batches_capacity = 2
@@ -668,9 +675,14 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
 
         else:  # STORE
             if is_perishable:
-                # Use the product-specific probability model (e.g. fruits & vegetables)
-                raw_current = np.random.choice(sub_props['current_stock_probabilities'])
-                current_stock = min(raw_current, maximum_stock)
+                # Perishables in store: have stock, but not necessarily full.
+                # (If you want ZERO out-of-stock in initial snapshot, keep min 1 always.)
+                current_stock_ratio = np.random.uniform(0.35, 0.95)
+                current_stock = int(maximum_stock * current_stock_ratio)
+
+                # Ensure at least 1 item so we always have at least one batch -> expiry dates exist
+                current_stock = max(1, min(current_stock, maximum_stock))
+
             else:
                 # Non-perishables in store: percentage of maximum_stock
                 current_stock_ratio = np.random.uniform(
@@ -755,7 +767,7 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type, start_
         remainder = current_stock % standard_batch_size
         num_batches = full_batches + (1 if remainder > 0 else 0)
 
-        is_perishable = 'current_stock_probabilities' in product_hierarchy[category]['subcategories'][subcategory]
+        is_perishable = category in PERISHABLE_CATEGORIES
 
         for batch_index in range(num_batches):
             if batch_index < full_batches:
@@ -776,14 +788,23 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type, start_
                 batch_qty_warehouse = batch_qty_total
 
             # expiry date
+            # expiry date
             if is_perishable:
-                min_days = 2 + batch_index
                 max_days = 15
-                expiry_delta = timedelta(days=np.random.randint(min_days, max_days))
+                # clamp: min_days must be <= max_days
+                min_days = min(max_days, 2 + batch_index)
+
+                # randint high is EXCLUSIVE -> use max_days+1 to include 15
+                expiry_days = np.random.randint(min_days, max_days + 1)
+                expiry_delta = timedelta(days=expiry_days)
             else:
                 min_days = 365 + 100 * batch_index
                 max_days = min_days + 365
-                expiry_delta = timedelta(days=np.random.randint(min_days, max_days))
+
+                # also make it inclusive if you want
+                expiry_days = np.random.randint(min_days, max_days + 1)
+                expiry_delta = timedelta(days=expiry_days)
+
 
             days_ago = np.random.randint(0, 3) + max(0, (num_batches - 1 - batch_index))
             received_date = datetime.now() - timedelta(days=days_ago)
@@ -809,65 +830,101 @@ def generate_batches_data(inventory_df, product_hierarchy, location_type, start_
     return pd.DataFrame(batches_data), batch_counter
 
 
+def scale_product_hierarchy_counts(product_hierarchy, scale_factor=0.2, min_per_subcategory=1):
+    """
+    Ritorna una nuova gerarchia con i `count` scalati proporzionalmente.
+    - scale_factor=0.2 => tieni ~20% degli SKU per ogni subcategory
+    - min_per_subcategory evita che sottocategorie spariscano (min 1 di default)
+    """
+    h = copy.deepcopy(product_hierarchy)
+
+    for cat, cat_props in h.items():
+        for subcat, sub_props in cat_props.get('subcategories', {}).items():
+            if 'count' in sub_props:
+                original = sub_props['count']
+                scaled = int(math.ceil(original * scale_factor))
+                sub_props['count'] = max(min_per_subcategory, scaled)
+
+    return h
+
+
+
 # -------------------------------------------------------------------
 # MAIN
 # -------------------------------------------------------------------
-print("Generating product catalog...")
-product_catalog = generate_product_catalog(product_hierarchy)
+if __name__ == "__main__":
 
+    # 1) Ensure output folders exist
+    os.makedirs("data", exist_ok=True)
+    os.makedirs("data/db_csv", exist_ok=True)
 
+    # 2) Scale down number of products (keep categories/subcategories, reduce counts proportionally)
+    # Tune scale_factor: 0.20 = -80%, 0.15 = -85%, 0.10 = -90% (very drastic)
+    print("Scaling product hierarchy counts...")
+    scaled_hierarchy = scale_product_hierarchy_counts(
+        product_hierarchy,
+        scale_factor=0.15,
+        min_per_subcategory=1
+    )
 
-# Saving db in parquet
-print("Generating store inventory...")
-store_inventory_df = generate_inventory_df(product_catalog, product_hierarchy, 'store')
-store_inventory_to_save = store_inventory_df.drop(columns=['standard_batch_size'])
-store_inventory_to_save.to_parquet('data/store_inventory_final.parquet', index=False)
-print("Store inventory saved successfully!")
+    # 3) Generate product catalog
+    print("Generating product catalog...")
+    product_catalog = generate_product_catalog(scaled_hierarchy)
 
-print("Generating warehouse inventory...")
-warehouse_inventory_df = generate_inventory_df(
-    product_catalog, product_hierarchy, 'warehouse', store_max_stock_data=store_inventory_df
-)
-warehouse_inventory_to_save = warehouse_inventory_df.drop(columns=['standard_batch_size'])
-warehouse_inventory_to_save.to_parquet('data/warehouse_inventory_final.parquet', index=False)
-print("Warehouse inventory saved successfully!")
+    # 4) Store inventory
+    print("Generating store inventory...")
+    store_inventory_df = generate_inventory_df(product_catalog, scaled_hierarchy, "store")
+    store_inventory_to_save = store_inventory_df.drop(columns=["standard_batch_size"])
+    store_inventory_to_save.to_parquet("data/store_inventory_final.parquet", index=False)
+    print("Store inventory saved successfully!")
 
-print("Generating batches dataset for the store...")
-store_batches_df, last_counter = generate_batches_data(
-    store_inventory_df,
-    product_hierarchy,
-    'in-store',
-    start_counter=0   # per ora parti da 0
-)
-store_batches_df.to_parquet('data/store_batches.parquet', index=False)
-print("Batches dataset for the store saved successfully!")
+    # 5) Warehouse inventory
+    print("Generating warehouse inventory...")
+    warehouse_inventory_df = generate_inventory_df(
+        product_catalog,
+        scaled_hierarchy,
+        "warehouse",
+        store_max_stock_data=store_inventory_df
+    )
+    warehouse_inventory_to_save = warehouse_inventory_df.drop(columns=["standard_batch_size"])
+    warehouse_inventory_to_save.to_parquet("data/warehouse_inventory_final.parquet", index=False)
+    print("Warehouse inventory saved successfully!")
 
-print("Generating batches dataset for the warehouse...")
-warehouse_batches_df, last_counter = generate_batches_data(
-    warehouse_inventory_df,
-    product_hierarchy,
-    'warehouse',
-    start_counter=last_counter    # continui la numerazione
-)
-warehouse_batches_df.to_parquet('data/warehouse_batches.parquet', index=False)
-print("Batches dataset for the warehouse saved successfully!")
+    # 6) Batches - store
+    print("Generating batches dataset for the store...")
+    store_batches_df, last_counter = generate_batches_data(
+        store_inventory_df,
+        scaled_hierarchy,
+        "in-store",
+        start_counter=0
+    )
+    store_batches_df.to_parquet("data/store_batches.parquet", index=False)
+    print("Batches dataset for the store saved successfully!")
 
+    # 7) Batches - warehouse
+    print("Generating batches dataset for the warehouse...")
+    warehouse_batches_df, last_counter = generate_batches_data(
+        warehouse_inventory_df,
+        scaled_hierarchy,
+        "warehouse",
+        start_counter=last_counter
+    )
+    warehouse_batches_df.to_parquet("data/warehouse_batches.parquet", index=False)
+    print("Batches dataset for the warehouse saved successfully!")
 
-print("\nAll datasets generated and saved successfully!")
+    print("\nAll parquet datasets generated and saved successfully!")
 
-# Saving db in csv
-store_inventory_to_save.to_csv('data/db_csv/store_inventory_final.csv', index=False)
-print("Store inventory csv saved successfully!")
+    # 8) CSV exports
+    store_inventory_to_save.to_csv("data/db_csv/store_inventory_final.csv", index=False)
+    print("Store inventory csv saved successfully!")
 
-warehouse_inventory_to_save.to_csv('data/db_csv/warehouse_inventory_final.csv', index=False)
-print("Warehouse inventory csv saved successfully!")
+    warehouse_inventory_to_save.to_csv("data/db_csv/warehouse_inventory_final.csv", index=False)
+    print("Warehouse inventory csv saved successfully!")
 
-store_batches_df.to_csv('data/db_csv/store_batches.csv', index=False)
-print("Batches dataset csv for the store saved successfully!")
+    store_batches_df.to_csv("data/db_csv/store_batches.csv", index=False)
+    print("Batches dataset csv for the store saved successfully!")
 
-warehouse_batches_df.to_csv('data/db_csv/warehouse_batches.csv', index=False)
-print("Batches dataset csv for the warehouse saved successfully!")
+    warehouse_batches_df.to_csv("data/db_csv/warehouse_batches.csv", index=False)
+    print("Batches dataset csv for the warehouse saved successfully!")
 
-
-
-print("\nAll datasets generated and saved successfully!")
+    print("\nAll CSV datasets generated and saved successfully!")
