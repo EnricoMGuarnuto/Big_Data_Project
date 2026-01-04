@@ -41,10 +41,22 @@ kafka_stream = (
     spark.readStream.format("kafka")
     .option("kafka.bootstrap.servers", KAFKA_BROKER)
     .option("subscribe", TOPIC_FOOT_TRAFFIC)
-    .option("startingOffsets", STARTING_OFFSETS)
+    .option("startingOffsets", "earliest")
     .option("failOnDataLoss", "false")
+    .option("kafka.group.id", "foot_traffic_raw_sink")
+
+    # 🔧 timeout robusti
+    .option("kafka.request.timeout.ms", "180000")
+    .option("kafka.default.api.timeout.ms", "180000")
+    .option("kafka.session.timeout.ms", "30000")
+    .option("kafka.heartbeat.interval.ms", "10000")
+    .option("kafka.metadata.max.age.ms", "10000")
+
+    .option("maxOffsetsPerTrigger", "5000")
     .load()
 )
+
+
 
 parsed = (
     kafka_stream

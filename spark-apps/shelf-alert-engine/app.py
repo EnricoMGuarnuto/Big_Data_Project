@@ -503,27 +503,47 @@ def foreach_batch_alerts(batch_df, batch_id: int):
         _write_alerts_delta_with_retries(alerts_to_delta, batch_id)
 
     # Build shelf_restock_plan (only from refill alerts with positive suggested qty)
-    plans = (
-        refill_needed.filter(F.col("suggested_qty") > 0)
+    # IMPORTANT: ensure 1 row per shelf_id, otherwise Delta MERGE fails with
+    # DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE
+    plans_raw = (
+        refill_needed
+        .filter(F.col("suggested_qty") > 0)
         .select(
-            F.col("shelf_id"),
-            F.col("suggested_qty"),
-            F.lit("pending").alias("status"),
-            sim_now_ts.alias("created_at"),
-            sim_now_ts.alias("updated_at"),
-            F.expr("uuid()").alias("plan_id")
+            F.col("shelf_id").alias("shelf_id"),
+            F.col("suggested_qty").cast("int").alias("suggested_qty"),
         )
     )
 
-    if plans.rdd.isEmpty() is False:
-        # Kafka compacted (key = shelf_id)
-        plans_k = plans.withColumn("value",
-            F.to_json(F.struct("plan_id","shelf_id","suggested_qty","status","created_at","updated_at"))
-        ).select(F.col("shelf_id").alias("key"), F.col("value"))
+    # Collapse multiple rows per shelf in the same micro-batch
+    plans = (
+        plans_raw
+        .groupBy("shelf_id")
+        .agg(F.max("suggested_qty").alias("suggested_qty"))
+        .withColumn("status", F.lit("pending"))
+        .withColumn("created_at", sim_now_ts)
+        .withColumn("updated_at", sim_now_ts)
+        .withColumn("plan_id", F.expr("uuid()"))
+        .cache()
+    )
 
-        plans_k.write.format("kafka")\
-            .option("kafka.bootstrap.servers", KAFKA_BROKER)\
-            .option("topic", TOPIC_SHELF_RESTOCK)\
+    # 🔑 materializza UNA volta sola
+    plans.count()
+
+
+    if plans.rdd.isEmpty() is False:
+        # Kafka compacted (key = shelf_id) -> now guaranteed unique per key in this batch
+        plans_k = (
+            plans
+            .withColumn(
+                "value",
+                F.to_json(F.struct("plan_id","shelf_id","suggested_qty","status","created_at","updated_at"))
+            )
+            .select(F.col("shelf_id").cast("string").alias("key"), F.col("value").cast("string").alias("value"))
+        )
+
+        plans_k.write.format("kafka") \
+            .option("kafka.bootstrap.servers", KAFKA_BROKER) \
+            .option("topic", TOPIC_SHELF_RESTOCK) \
             .save()
 
         # Delta mirror (upsert by shelf_id -> keep only latest plan per shelf)

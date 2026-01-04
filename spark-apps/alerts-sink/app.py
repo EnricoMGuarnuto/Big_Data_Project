@@ -148,7 +148,21 @@ def _apply_status_updates(status_df):
         )
 
         for r in rows:
-            status = (r["status"] or "ack").lower()
+            raw_status = (r["status"] or "ack").lower()
+
+            # Map application-level statuses to DB enum values
+            STATUS_MAP = {
+                "open": "open",
+                "active": "open",     # active alerts are still 'open' in DB
+                "pending": "open",
+                "ack": "ack",
+                "acknowledged": "ack",
+                "closed": "closed",
+                "resolved": "closed",
+            }
+
+            status = STATUS_MAP.get(raw_status, "ack")
+
             alert_id = r["alert_id"]
             shelf_id = r["shelf_id"]
             location = r["location"]

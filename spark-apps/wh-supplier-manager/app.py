@@ -337,7 +337,8 @@ def do_delivery(now_ts: datetime):
     orders = (
         spark.read.format("delta").load(DL_ORDERS_PATH)
         .filter((F.col("delivery_date") == F.lit(today)) & (F.col("status") == F.lit("issued")))
-        .select("delivery_date","shelf_id","total_qty")
+        .select("delivery_date","shelf_id","suggested_qty")
+        .withColumnRenamed("suggested_qty", "total_qty")
     )
     if orders.rdd.isEmpty():
         return

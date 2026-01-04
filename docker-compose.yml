@@ -511,7 +511,7 @@ services:
     volumes:
       - ./delta:/delta
       - ./simulated_time:/app/simulated_time:ro
-    restart: 'no'
+    restart: 'unless-stopped'
 
   removal-scheduler:
     build:

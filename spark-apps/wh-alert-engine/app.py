@@ -457,36 +457,49 @@ def foreach_batch(batch_df, batch_id: int):
         _write_alerts_delta_with_retries(alerts_to_delta, batch_id)
 
     # Supplier plan (compacted): compute suggested_qty when below reorder point
-    # If standard_batch_size available, round up to multiples * DEFAULT_MULTIPLIER
-    plans_base = reorder_needed.select("shelf_id","wh_current_stock","reorder_point_qty")
+    plans_base = reorder_needed.select(
+        "shelf_id", "wh_current_stock", "reorder_point_qty"
+    )
+
     if STD_BATCH_SIZES is not None:
         plans_base = plans_base.join(STD_BATCH_SIZES, on="shelf_id", how="left")
     else:
         plans_base = plans_base.withColumn("standard_batch_size", F.lit(None).cast("int"))
 
-    plans = (
+    plans_raw = (
         plans_base
         .withColumn("raw_suggested", F.greatest(F.lit(0), F.col("reorder_point_qty") - F.col("wh_current_stock")))
         .withColumn(
             "suggested_qty",
-            F.when(F.col("standard_batch_size").isNotNull() & (F.col("standard_batch_size") > 0),
-                   # round up to nearest multiple of (std_size * DEFAULT_MULTIPLIER)
-                   ( ( (F.col("raw_suggested") + (F.col("standard_batch_size")*DEFAULT_MULTIPLIER) - 1) \
-                       / (F.col("standard_batch_size")*DEFAULT_MULTIPLIER) ).cast("int") \
-                     * (F.col("standard_batch_size")*DEFAULT_MULTIPLIER) )
+            F.when(
+                F.col("standard_batch_size").isNotNull() & (F.col("standard_batch_size") > 0),
+                (
+                    (
+                        (F.col("raw_suggested") + (F.col("standard_batch_size") * DEFAULT_MULTIPLIER) - 1)
+                        / (F.col("standard_batch_size") * DEFAULT_MULTIPLIER)
+                    ).cast("int")
+                    * (F.col("standard_batch_size") * DEFAULT_MULTIPLIER)
+                )
             ).otherwise(F.col("raw_suggested"))
         )
-        .select(
-            F.expr("uuid()").alias("supplier_plan_id"),
-            "shelf_id",
-            "suggested_qty",
-            F.col("standard_batch_size"),
-            F.lit("pending").alias("status"),
-            F.lit(get_simulated_now()).alias("created_at"),
-            F.lit(get_simulated_now()).alias("updated_at")
-        )
         .filter(F.col("suggested_qty") > 0)
+        .select("shelf_id", "suggested_qty", "standard_batch_size")
     )
+
+    # 🔑 COLLAPSE: guarantee 1 row per shelf_id
+    plans = (
+        plans_raw
+        .groupBy("shelf_id")
+        .agg(
+            F.max("suggested_qty").alias("suggested_qty"),
+            F.max("standard_batch_size").alias("standard_batch_size")
+        )
+        .withColumn("supplier_plan_id", F.expr("uuid()"))
+        .withColumn("status", F.lit("pending"))
+        .withColumn("created_at", F.lit(get_simulated_now()))
+        .withColumn("updated_at", F.lit(get_simulated_now()))
+    )
+
 
     if plans.rdd.isEmpty() is False:
         # Kafka compacted (key = shelf_id)

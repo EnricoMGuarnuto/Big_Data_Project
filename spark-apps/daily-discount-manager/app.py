@@ -78,7 +78,7 @@ shelf_expiring = (
 if shelf_expiring.rdd.isEmpty():
     print("[daily_discount_manager] No batches expiring today/tomorrow. Exiting.")
     spark.stop()
-    raise SystemExit(0)
+    time.sleep(3600)
 
 # =========================
 # 3) Calcolo delle date sconto
