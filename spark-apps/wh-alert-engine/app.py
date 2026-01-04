@@ -344,7 +344,7 @@ def foreach_batch(batch_df, batch_id: int):
     sim_now = get_simulated_now()
     cooldown_ts = sim_now - timedelta(minutes=ALERTS_COOLDOWN_MINUTES)
 
-    shelves = batch_df.select("shelf_id","wh_current_stock").distinct().cache()
+    shelves = batch_df.select("shelf_id", "wh_current_stock").distinct()
 
     # Join with per-shelf policy (latest) – no global here; if missing, set a conservative default
     pol = POLICIES_LATEST
@@ -355,7 +355,11 @@ def foreach_batch(batch_df, batch_id: int):
 
     # Near-expiry: find soonest expiry per shelf in warehouse
     try:
-        wh_batches = spark.read.format("delta").load(DL_WH_BATCH_PATH)
+        wh_batches = (
+            spark.read.format("delta")
+            .load(DL_WH_BATCH_PATH)
+            .select("shelf_id", "expiry_date", "batch_quantity_warehouse")
+        )
         soonest = (
             wh_batches
             .groupBy("shelf_id")

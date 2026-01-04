@@ -52,14 +52,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]  # repo root (dashboard/..)
 DEFAULT_LAYOUT_YAML = PROJECT_ROOT / "dashboard" / "store_layout.yaml"
 DEFAULT_INVENTORY_CSV = PROJECT_ROOT / "data" / "db_csv" / "store_inventory_final.csv"
 DEFAULT_DELTA_SHELF_EVENTS = PROJECT_ROOT / "delta" / "raw" / "shelf_events"
+DEFAULT_DELTA_SUPPLIER_PLAN = PROJECT_ROOT / "delta" / "ops" / "wh_supplier_plan"
+DEFAULT_DELTA_SUPPLIER_ORDERS = PROJECT_ROOT / "delta" / "ops" / "wh_supplier_orders"
 
 # se preferisci, puoi sovrascrivere da .env / docker-compose
 LAYOUT_YAML_PATH = Path(os.getenv("DASH_LAYOUT_YAML", str(DEFAULT_LAYOUT_YAML)))
 INVENTORY_CSV_PATH = Path(os.getenv("INVENTORY_CSV_PATH", str(DEFAULT_INVENTORY_CSV)))
 DELTA_SHELF_EVENTS_PATH = Path(os.getenv("DELTA_SHELF_EVENTS_PATH", str(DEFAULT_DELTA_SHELF_EVENTS)))
+DELTA_SUPPLIER_PLAN_PATH = Path(os.getenv("DELTA_SUPPLIER_PLAN_PATH", str(DEFAULT_DELTA_SUPPLIER_PLAN)))
+DELTA_SUPPLIER_ORDERS_PATH = Path(os.getenv("DELTA_SUPPLIER_ORDERS_PATH", str(DEFAULT_DELTA_SUPPLIER_ORDERS)))
 
 # tabella alerts su Postgres (nome fisso)
 ALERTS_TABLE_NAME = os.getenv("ALERTS_TABLE", "ops.alerts").strip()
+SUPPLIER_PLAN_TABLE_NAME = os.getenv("SUPPLIER_PLAN_TABLE", "ops.wh_supplier_plan").strip()
 # schema di default per le tabelle "state.*"
 STATE_SCHEMA = os.getenv("STATE_SCHEMA", "state").strip()
 
@@ -101,6 +106,23 @@ def normalize_cat(s: Any) -> str:
     if s is None:
         return ""
     return str(s).strip().upper()
+
+
+def normalize_location(s: Any) -> str:
+    if s is None:
+        return ""
+    return str(s).strip().lower()
+
+
+def split_alerts_by_location(alerts_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if alerts_df.empty or "location" not in alerts_df.columns:
+        return alerts_df, alerts_df.iloc[0:0]
+    loc = alerts_df["location"].fillna("").map(normalize_location)
+    store_mask = loc.str.contains("store") | loc.str.contains("shop")
+    wh_mask = loc.str.contains("warehouse") | loc.str.startswith("wh")
+    store_alerts = alerts_df[store_mask].copy()
+    wh_alerts = alerts_df[wh_mask].copy()
+    return store_alerts, wh_alerts
 
 
 def must_have(dep_ok: bool, msg: str):
@@ -244,6 +266,31 @@ def fetch_alerts() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_supplier_plan(limit: int = 2000) -> pd.DataFrame:
+    eng = get_pg_engine()
+    q = text(f"""
+        SELECT
+            supplier_plan_id,
+            shelf_id,
+            suggested_qty,
+            standard_batch_size,
+            status,
+            created_at,
+            updated_at
+        FROM {SUPPLIER_PLAN_TABLE_NAME}
+        ORDER BY created_at DESC
+        LIMIT {int(limit)}
+    """)
+    with eng.connect() as c:
+        df = pd.read_sql(q, c)
+    if "shelf_id" in df.columns:
+        df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
+    if "status" in df.columns:
+        df["status"] = df["status"].astype(str).str.strip().str.lower()
+    return df
+
+
 def active_alerts(alerts_df: pd.DataFrame) -> pd.DataFrame:
     if alerts_df.empty:
         return alerts_df
@@ -361,6 +408,104 @@ def fetch_recent_weight_events(delta_path: Path, lookback_sec: int) -> pd.DataFr
     return df
 
 
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_supplier_orders(delta_path: Path) -> pd.DataFrame:
+    """
+    Legge Delta ops wh_supplier_orders.
+    Richiede deltalake (delta-rs).
+    """
+    if DeltaTable is None:
+        return pd.DataFrame()
+    if not delta_path.exists():
+        return pd.DataFrame()
+    if not _is_delta_table(delta_path):
+        return pd.DataFrame()
+
+    try:
+        dt = DeltaTable(str(delta_path))
+    except Exception as e:
+        log.warning("Delta table not available at %s: %s", delta_path, e)
+        return pd.DataFrame()
+
+    df = dt.to_pandas()
+    if df.empty:
+        return df
+
+    if "delivery_date" in df.columns:
+        df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date
+    if "status" in df.columns:
+        df["status"] = df["status"].astype(str).str.strip().str.lower()
+    return df
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_supplier_plan_delta(delta_path: Path) -> pd.DataFrame:
+    """
+    Legge Delta ops wh_supplier_plan.
+    Richiede deltalake (delta-rs).
+    """
+    if DeltaTable is None:
+        return pd.DataFrame()
+    if not delta_path.exists():
+        return pd.DataFrame()
+    if not _is_delta_table(delta_path):
+        return pd.DataFrame()
+
+    try:
+        dt = DeltaTable(str(delta_path))
+    except Exception as e:
+        log.warning("Delta table not available at %s: %s", delta_path, e)
+        return pd.DataFrame()
+
+    df = dt.to_pandas()
+    if df.empty:
+        return df
+
+    if "shelf_id" in df.columns:
+        df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
+    if "status" in df.columns:
+        df["status"] = df["status"].astype(str).str.strip().str.lower()
+    for col in ["created_at", "updated_at"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
+    return df
+
+
+def next_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str]]:
+    if orders_df.empty:
+        return None
+    df = orders_df.copy()
+    if "status" in df.columns:
+        df["status"] = df["status"].astype(str).str.strip().str.lower()
+        df = df[~df["status"].isin(["canceled", "cancelled"])]
+    if df.empty:
+        return None
+
+    if "cutoff_ts" in df.columns:
+        df["cutoff_ts"] = pd.to_datetime(df["cutoff_ts"], errors="coerce", utc=True)
+        df = df[df["cutoff_ts"].notna()]
+        if df.empty:
+            return None
+        now = pd.Timestamp.utcnow().tz_localize("UTC")
+        future = df[df["cutoff_ts"] >= now]
+        if future.empty:
+            return None
+        return future["cutoff_ts"].min(), "cutoff_ts"
+
+    if "delivery_date" in df.columns:
+        df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date
+        df = df[df["delivery_date"].notna()]
+        if df.empty:
+            return None
+        today = pd.Timestamp.utcnow().date()
+        df = df[df["delivery_date"] >= today]
+        if df.empty:
+            return None
+        return df["delivery_date"].min(), "delivery_date"
+
+    return None
+
+
 # -----------------------------
 # MAP FIGURE (Plotly)
 # -----------------------------
@@ -460,7 +605,7 @@ def main():
 
     st.title("📍 Supermarket Live Dashboard")
 
-    tabs = st.tabs(["🗺️ Map Live", "📦 States", "🚨 Alerts (raw)", "⚙️ Debug"])
+    tabs = st.tabs(["🗺️ Map Live", "📦 States", "🚚 Supplier Plan", "🚨 Alerts (raw)", "⚙️ Debug"])
 
     # blinking logic
     blink_on = (int(time.time() * 2) % 2 == 0)
@@ -473,11 +618,12 @@ def main():
 
         alerts_df = fetch_alerts()
         act_alerts = active_alerts(alerts_df)
+        store_alerts, wh_alerts = split_alerts_by_location(act_alerts)
 
         # categorie in alert (rosso)
         red_cats = set()
-        if not act_alerts.empty and "shelf_id" in act_alerts.columns:
-            tmp = act_alerts.copy()
+        if not store_alerts.empty and "shelf_id" in store_alerts.columns:
+            tmp = store_alerts.copy()
             tmp["item_category"] = tmp["shelf_id"].map(shelf_to_cat).map(normalize_cat)
             red_cats = set(tmp["item_category"].dropna().unique().tolist())
 
@@ -490,7 +636,7 @@ def main():
             green_cats = set(tmpw["item_category"].dropna().unique().tolist())
 
         with col_left:
-            st.subheader("Mappa live (rosso = alert attivo, verde = weight_change recente)")
+            st.subheader("Mappa live (rosso = alert store attivo, verde = weight_change recente)")
             if not map_img_path.exists():
                 st.error(f"Immagine mappa non trovata: {map_img_path}")
                 st.stop()
@@ -508,9 +654,44 @@ def main():
             )
 
         with col_right:
-            st.subheader("Dettagli")
-            st.metric("Alerts attivi", int(len(act_alerts)))
+            st.subheader("Dettagli store")
+            st.metric("Alerts attivi (store)", int(len(store_alerts)))
+            st.metric("Alerts attivi (warehouse)", int(len(wh_alerts)))
             st.metric("Weight events recenti", int(len(weight_df)))
+
+            st.markdown("**Riepilogo warehouse (grafico)**")
+            if wh_alerts.empty:
+                st.info("Nessun alert warehouse attivo.")
+            else:
+                chart_col = "severity" if "severity" in wh_alerts.columns else ("event_type" if "event_type" in wh_alerts.columns else None)
+                if chart_col is None:
+                    st.info("Impossibile creare il grafico: mancano colonne severity/event_type.")
+                else:
+                    wh_counts = (
+                        wh_alerts[chart_col]
+                        .fillna("unknown")
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                        .value_counts()
+                        .sort_index()
+                    )
+                    fig_wh = go.Figure(
+                        data=[
+                            go.Bar(
+                                x=wh_counts.index.tolist(),
+                                y=wh_counts.values.tolist(),
+                                marker_color="#f08a24",
+                            )
+                        ]
+                    )
+                    fig_wh.update_layout(
+                        height=260,
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        xaxis_title="Severity" if chart_col == "severity" else "Event type",
+                        yaxis_title="Count",
+                    )
+                    st.plotly_chart(fig_wh, use_container_width=True)
 
             clicked_zone: Optional[Zone] = None
             clicked_cat: Optional[str] = None
@@ -542,16 +723,16 @@ def main():
             if clicked_cat:
                 st.markdown(f"### Sezione selezionata: **{clicked_cat}**")
 
-                sub = act_alerts.copy()
+                sub = store_alerts.copy()
                 if not sub.empty and "shelf_id" in sub.columns:
                     sub["item_category"] = sub["shelf_id"].map(shelf_to_cat).map(normalize_cat)
                     sub["item_subcategory"] = sub["shelf_id"].map(shelf_to_sub)
                     sub = sub[sub["item_category"] == clicked_cat].copy()
 
                 if sub.empty:
-                    st.info("Nessun alert attivo in questa sezione.")
+                    st.info("Nessun alert store attivo in questa sezione.")
                 else:
-                    st.error(f"Alert attivi nella sezione: {len(sub)}")
+                    st.error(f"Alert store attivi nella sezione: {len(sub)}")
 
                     shelf_list = sorted(sub["shelf_id"].dropna().unique().tolist())
                     st.markdown("**Shelf in alert:**")
@@ -644,9 +825,67 @@ def main():
                 st.dataframe(show, use_container_width=True)
 
     # -----------------------------
-    # TAB 2: ALERTS RAW
+    # TAB 2: SUPPLIER PLAN
     # -----------------------------
     with tabs[2]:
+        st.subheader("WH Supplier Plan")
+
+        orders_df = fetch_supplier_orders(DELTA_SUPPLIER_ORDERS_PATH)
+        next_order = next_supplier_order_date(orders_df)
+        if next_order is not None:
+            next_value, source = next_order
+            if isinstance(next_value, pd.Timestamp):
+                label = "cutoff" if source == "cutoff_ts" else "data consegna"
+                st.info(f"Prossimo ordine al fornitore ({label}): {next_value.isoformat()}")
+            else:
+                st.info(f"Prossimo ordine al fornitore (data consegna): {next_value.isoformat()}")
+        else:
+            if DeltaTable is None:
+                st.info("DeltaTable (deltalake) non installato: ordini supplier non disponibili.")
+            else:
+                st.info("Nessun ordine fornitore pianificato.")
+
+        left, right = st.columns([0.35, 0.65], gap="large")
+
+        with left:
+            limit = st.slider("Righe max", 100, 5000, 1500, step=100, key="supplier_plan_limit")
+            status_filter = st.selectbox(
+                "Status",
+                ["(tutti)", "pending", "issued", "completed", "canceled"],
+                index=0,
+                key="supplier_plan_status",
+            )
+
+        df_plan = fetch_supplier_plan_delta(DELTA_SUPPLIER_PLAN_PATH)
+        data_source = "delta"
+        if df_plan.empty:
+            if DeltaTable is None:
+                st.info("DeltaTable (deltalake) non installato: uso Postgres se disponibile.")
+            try:
+                df_plan = fetch_supplier_plan(limit=limit)
+                if not df_plan.empty:
+                    data_source = "postgres"
+            except Exception as e:
+                st.error(f"Errore fetch tabella {SUPPLIER_PLAN_TABLE_NAME}: {e}")
+                df_plan = pd.DataFrame()
+
+        if status_filter != "(tutti)" and "status" in df_plan.columns:
+            df_plan = df_plan[df_plan["status"] == status_filter]
+        if "created_at" in df_plan.columns:
+            df_plan = df_plan.sort_values("created_at", ascending=False)
+        df_plan = df_plan.head(limit)
+
+        with right:
+            if df_plan.empty:
+                st.info("Nessun piano supplier trovato.")
+            else:
+                st.caption(f"Fonte dati: {data_source}")
+                st.dataframe(df_plan, use_container_width=True)
+
+    # -----------------------------
+    # TAB 3: ALERTS RAW
+    # -----------------------------
+    with tabs[3]:
         st.subheader("Alerts (tabella Postgres)")
         df = fetch_alerts()
         if df.empty:
@@ -655,15 +894,18 @@ def main():
             st.dataframe(df, use_container_width=True)
 
     # -----------------------------
-    # TAB 3: DEBUG
+    # TAB 4: DEBUG
     # -----------------------------
-    with tabs[3]:
+    with tabs[4]:
         st.subheader("Debug / Config")
         st.write("PROJECT_ROOT:", str(PROJECT_ROOT))
         st.write("LAYOUT_YAML_PATH:", str(LAYOUT_YAML_PATH))
         st.write("INVENTORY_CSV_PATH:", str(INVENTORY_CSV_PATH))
         st.write("DELTA_SHELF_EVENTS_PATH:", str(DELTA_SHELF_EVENTS_PATH))
+        st.write("DELTA_SUPPLIER_PLAN_PATH:", str(DELTA_SUPPLIER_PLAN_PATH))
+        st.write("DELTA_SUPPLIER_ORDERS_PATH:", str(DELTA_SUPPLIER_ORDERS_PATH))
         st.write("ALERTS_TABLE_NAME:", ALERTS_TABLE_NAME)
+        st.write("SUPPLIER_PLAN_TABLE_NAME:", SUPPLIER_PLAN_TABLE_NAME)
         st.write("AUTOREFRESH_MS:", AUTOREFRESH_MS)
         st.write("WEIGHT_EVENT_LOOKBACK_SEC:", WEIGHT_EVENT_LOOKBACK_SEC)
         st.write("WEIGHT_EVENT_TYPE:", WEIGHT_EVENT_TYPE)
