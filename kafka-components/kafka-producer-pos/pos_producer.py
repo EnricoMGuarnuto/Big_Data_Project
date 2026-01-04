@@ -137,9 +137,39 @@ def load_discounts_from_parquet(path: str) -> Dict[str, float]:
     iso = sim_now.isocalendar()
     week_str = f"{iso.year}-W{iso.week:02}"
 
-    df = df[df["week"] == week_str]
-    log.info(f"[pos] Loaded {len(df)} discounts for week {week_str}")
-    return dict(zip(df["shelf_id"], df["discount"]))
+    if "shelf_id" not in df.columns:
+        log.warning(f"[pos] Discounts file missing shelf_id column: {path}")
+        return {}
+
+    discount_col = None
+    if "discount" in df.columns:
+        discount_col = "discount"
+    elif "discount_pct" in df.columns:
+        discount_col = "discount_pct"
+    elif {"original_price", "discounted_price"}.issubset(df.columns):
+        base = pd.to_numeric(df["original_price"], errors="coerce")
+        disc = pd.to_numeric(df["discounted_price"], errors="coerce")
+        df = df.assign(discount_pct=(1 - (disc / base)))
+        discount_col = "discount_pct"
+    else:
+        log.warning(f"[pos] Discounts file missing discount columns: {path}")
+        return {}
+
+    if "week" in df.columns:
+        df = df[df["week"] == week_str]
+        log.info(f"[pos] Loaded {len(df)} discounts for week {week_str}")
+    elif "week_start" in df.columns and "week_end" in df.columns:
+        sim_date = sim_now.date() if hasattr(sim_now, "date") else sim_now
+        week_start = pd.to_datetime(df["week_start"], errors="coerce").dt.date
+        week_end = pd.to_datetime(df["week_end"], errors="coerce").dt.date
+        df = df[(week_start <= sim_date) & (week_end >= sim_date)]
+        log.info(f"[pos] Loaded {len(df)} discounts for date {sim_date}")
+    else:
+        log.warning(f"[pos] Discounts file missing week columns: {path}")
+        return {}
+
+    df = df.dropna(subset=["shelf_id", discount_col])
+    return dict(zip(df["shelf_id"].astype(str), df[discount_col].astype(float)))
 
 def load_daily_discounts_from_pg() -> Dict[str, float]:
     """
