@@ -337,6 +337,17 @@ state_events = (
 # ForeachBatch: compute alerts + restock plan for shelves touched in this micro-batch
 # =========================
 
+def write_plans_to_postgres(df):
+    df.write \
+    .format("jdbc") \
+    .option("url", JDBC_PG_URL) \
+    .option("dbtable", "ops.shelf_restock_plan") \
+    .option("user", JDBC_PG_USER) \
+    .option("password", JDBC_PG_PASSWORD) \
+    .option("driver", "org.postgresql.Driver") \
+    .mode("append") \
+    .save()
+
 def foreach_batch_alerts(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty():
         return
@@ -528,9 +539,19 @@ def foreach_batch_alerts(batch_df, batch_id: int):
 
     # 🔑 materializza UNA volta sola
     plans.count()
-
-
+    
     if plans.rdd.isEmpty() is False:
+
+        write_plans_to_postgres(
+        plans.select(
+            "plan_id",
+            "shelf_id",
+            "suggested_qty",
+            "status",
+            "created_at",
+            "updated_at"
+        )
+    )
         # Kafka compacted (key = shelf_id) -> now guaranteed unique per key in this batch
         plans_k = (
             plans
@@ -567,6 +588,7 @@ def foreach_batch_alerts(batch_df, batch_id: int):
             }).execute()
         else:
             plans.write.format("delta").mode("overwrite").save(DL_RESTOCK_PATH)
+
 
 # =========================
 # Start streaming
