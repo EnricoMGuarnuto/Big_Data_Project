@@ -36,6 +36,51 @@ spark = (
 )
 spark.sparkContext.setLogLevel("WARN")
 
+spark.sparkContext.setLogLevel("WARN")
+
+# =========================
+# Delta MERGE retry helpers  <--- QUI
+# =========================
+def _is_delta_conflict(err: Exception) -> bool:
+    name = err.__class__.__name__
+    msg = str(err)
+    return (
+        "ConcurrentAppendException" in name
+        or "ConcurrentWriteException" in name
+        or "MetadataChangedException" in name
+        or "ProtocolChangedException" in name
+        or "DELTA_CONCURRENT" in msg
+        or "DELTA_METADATA_CHANGED" in msg
+    )
+
+def _merge_with_retries(spark, updates_df, batch_state_path: str,
+                        max_retries: int = 10, base_sleep_s: float = 0.8) -> None:
+    last = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            delta_tbl = DeltaTable.forPath(spark, batch_state_path)
+            (delta_tbl.alias("t")
+                .merge(
+                    updates_df.alias("s"),
+                    "t.shelf_id = s.shelf_id AND t.batch_code = s.batch_code"
+                )
+                .whenMatchedUpdate(set={
+                    "batch_quantity_store": F.expr("t.batch_quantity_store - s.delta_qty"),
+                    "last_update_ts": F.greatest(F.col("t.last_update_ts"), F.col("s.last_update_ts"))
+                })
+                .execute()
+            )
+            return
+        except Exception as e:
+            last = e
+            if (not _is_delta_conflict(e)) or attempt == max_retries:
+                raise
+            sleep_s = base_sleep_s * attempt
+            print(f"[delta-merge-retry] conflict ({attempt}/{max_retries}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last
+
+
 # =========================
 # Schemas
 # =========================
@@ -208,25 +253,15 @@ def process_batch(batch_df, batch_id: int):
     )
 
     # 4) Merge Delta (aggiorna quantità e timestamp)
-    delta_tbl = DeltaTable.forPath(spark, BATCH_STATE_PATH)
-
-    (
-        delta_tbl.alias("t")
-        .merge(
-            updates.alias("s"),
-            # Consiglio: includere expiry_date se è parte della chiave logica.
-            "t.shelf_id = s.shelf_id AND t.batch_code = s.batch_code"
-        )
-        .whenMatchedUpdate(set={
-            "batch_quantity_store": F.expr("t.batch_quantity_store - s.delta_qty"),
-            "last_update_ts": F.greatest(F.col("t.last_update_ts"), F.col("s.last_update_ts"))
-        })
-        # Qui, dato che abbiamo fatto INNER JOIN con lo stato, in teoria non servono insert.
-        # Se vuoi mantenerlo come safety net, ok; ma rischi stati “fantasma”.
-        # Io consiglierei di toglierlo. Per ora lo commento:
-        # .whenNotMatchedInsert(values={...})
-        .execute()
+    # 4) Merge Delta (aggiorna quantità e timestamp) con retry
+    _merge_with_retries(
+        spark,
+        updates_df=updates,
+        batch_state_path=BATCH_STATE_PATH,
+        max_retries=10,
+        base_sleep_s=0.8
     )
+
 
     # 5) Publish Kafka (solo chiavi aggiornate)
     keys = grouped.select("shelf_id", "batch_code").distinct()
