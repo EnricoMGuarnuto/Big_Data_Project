@@ -25,6 +25,24 @@ PG_TABLE         = os.getenv("PG_TABLE", "ops.alerts")
 PG_MAX_RETRIES   = int(os.getenv("PG_MAX_RETRIES", "5"))
 PG_RETRY_SLEEP_S = float(os.getenv("PG_RETRY_SLEEP_S", "2.0"))
 
+ALLOWED = {"open", "ack", "resolved", "dismissed"}
+STATUS_MAP = {
+    "active": "open",
+    "pending": "open",
+    "new": "open",
+    "acknowledged": "ack",
+    "closed": "resolved",
+    "done": "resolved",
+    "ignored": "dismissed",
+}
+
+def normalize_status(s: str) -> str:
+    if not s:
+        return "ack"
+    s = s.strip().lower()
+    s = STATUS_MAP.get(s, s)
+    return s if s in ALLOWED else "ack"
+
 # =========================
 # Spark Session (Delta)
 # =========================
@@ -140,11 +158,11 @@ def _apply_status_updates(status_df):
         stmt_key = conn.prepareStatement(
             f"UPDATE {PG_TABLE} SET status = ?, updated_at = CURRENT_TIMESTAMP "
             "WHERE shelf_id = ? AND location = ? AND event_type = ? "
-            "AND status IN ('open','active','pending')"
+            "AND status IN ('open','ack')"
         )
         stmt_key_no_type = conn.prepareStatement(
             f"UPDATE {PG_TABLE} SET status = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE shelf_id = ? AND location = ? AND status IN ('open','active','pending')"
+            "WHERE shelf_id = ? AND location = ? AND status IN ('open','ack')"
         )
 
         for r in rows:
