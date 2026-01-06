@@ -360,6 +360,67 @@ CREATE TABLE IF NOT EXISTS analytics.features_store (
 );
 
 -- ======================================================
+-- ANALYTICS / FEATURES (bootstrap from CSV, then append-only)
+-- ======================================================
+
+CREATE TABLE IF NOT EXISTS analytics.shelf_daily_features (
+  shelf_id TEXT NOT NULL,
+  feature_date DATE NOT NULL,
+
+  item_category TEXT,
+  item_subcategory TEXT,
+
+  day_of_week SMALLINT,
+  is_weekend BOOLEAN,
+
+  warehouse_inbound_day BOOLEAN,
+  refill_day BOOLEAN,
+
+  item_price NUMERIC(10,2),
+  discount NUMERIC(5,2),
+  is_discounted BOOLEAN,
+  is_discounted_next_7d BOOLEAN,
+
+  people_count INTEGER,
+  sales_qty INTEGER,
+  sales_last_1d INTEGER,
+  sales_last_7d INTEGER,
+  sales_last_14d INTEGER,
+
+  stockout_events INTEGER,
+
+  shelf_capacity INTEGER,
+  current_stock_shelf INTEGER,
+  shelf_fill_ratio NUMERIC(5,4),
+  shelf_threshold_qty INTEGER,
+  expired_qty_shelf INTEGER,
+  alerts_last_30d_shelf INTEGER,
+  is_shelf_alert BOOLEAN,
+
+  warehouse_capacity INTEGER,
+  current_stock_warehouse INTEGER,
+  warehouse_fill_ratio NUMERIC(5,4),
+  wh_reorder_point_qty INTEGER,
+  pending_supplier_qty INTEGER,
+  expired_qty_wh INTEGER,
+  alerts_last_30d_wh INTEGER,
+  is_warehouse_alert BOOLEAN,
+  moved_wh_to_shelf INTEGER,
+
+  standard_batch_size INTEGER,
+  min_expiration_days INTEGER,
+  avg_expiration_days NUMERIC(6,2),
+  qty_expiring_next_7d INTEGER,
+  batches_to_order INTEGER,
+
+  label_next_day_stockout BOOLEAN,
+
+  snapshot_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  PRIMARY KEY (shelf_id, feature_date)
+);
+
+-- ======================================================
 -- HOUSEKEEPING TRIGGERS (auto-update updated_at)
 -- ======================================================
 -- CREATE OR REPLACE FUNCTION set_updated_at()

@@ -13,7 +13,7 @@ COPY ref.store_inventory_snapshot (
   item_category,
   item_subcategory,
   item_visibility,
-  maximum_stock,
+  maximum_stock
   current_stock,
   item_price
 )
