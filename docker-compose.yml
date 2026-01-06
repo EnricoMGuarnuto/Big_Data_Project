@@ -584,6 +584,25 @@ services:
       - redis
     restart: 'no'
 
+
+  shelf-daily-features:
+    build:
+      context: ./spark_shelf_daily_features
+    container_name: shelf-daily-features
+    environment:
+      RUN_DATE: "2026-01-01"   # per test, poi lo sovrascrivi quando lo lanci
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: smart_shelf
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    depends_on:
+      - postgres
+    networks:
+      - default
+    restart: "no"
+
+
 # Dashboard Service
   dashboard:
     build:
