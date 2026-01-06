@@ -584,23 +584,27 @@ services:
       - redis
     restart: 'no'
 
-
   shelf-daily-features:
     build:
-      context: ./spark_shelf_daily_features
+      context: ./spark-apps/shelf-daily-features
     container_name: shelf-daily-features
     environment:
-      RUN_DATE: "2026-01-01"   # per test, poi lo sovrascrivi quando lo lanci
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: smart_shelf
-      PGUSER: postgres
-      PGPASSWORD: postgres
+      PGUSER: bdt_user
+      PGPASSWORD: bdt_password
+      PYTHONPATH: /app
+    volumes:
+      - ./delta:/delta
+      - ./simulated_time:/app/simulated_time:ro
     depends_on:
-      - postgres
-    networks:
-      - default
+      - kafka
+      - spark-init-delta
+      - wh-alert-engine
+      - redis
     restart: "no"
+
 
 
 # Dashboard Service

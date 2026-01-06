@@ -1,2 +1,0 @@
-{"commitInfo":{"timestamp":1767611185286,"operation":"WRITE","operationParameters":{"mode":"Append","partitionBy":"[]"},"readVersion":78,"isolationLevel":"Serializable","isBlindAppend":false,"operationMetrics":{"numFiles":"1","numOutputRows":"0","numOutputBytes":"1135"},"engineInfo":"Apache-Spark/3.5.1 Delta-Lake/3.2.0","txnId":"56d24cb0-37d3-473f-9b08-27ec99fa5c03"}}
-{"txn":{"appId":"wh_alert_engine_delta_ops_alerts","version":64,"lastUpdated":1767611185285}}
