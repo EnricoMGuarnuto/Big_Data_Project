@@ -609,7 +609,7 @@ services:
 # ml model
   training-service:
     build:
-      context: ./ml/training-service
+      context: ./ml-model/training-service
     environment:
       PG_DSN: postgresql+psycopg2://postgres:example@db:5432/postgres
       MODEL_NAME: xgb_batches_to_order
@@ -628,7 +628,7 @@ services:
 
   inference-service:
     build:
-      context: ./ml/inference-service
+      context: ./ml-model/inference-service
     environment:
       PG_DSN: postgresql+psycopg2://postgres:example@db:5432/postgres
       MODEL_NAME: xgb_batches_to_order
