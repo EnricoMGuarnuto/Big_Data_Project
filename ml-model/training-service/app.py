@@ -2,6 +2,8 @@ import os
 import json
 import time
 from datetime import timedelta
+from datetime import timezone
+
 
 import numpy as np
 import pandas as pd
@@ -104,7 +106,7 @@ def train_once(engine):
             metrics_json,
             artifact_path
         )
-        VALUES (:mn, :mv, :ta, :mj::jsonb, :ap)
+        VALUES (:mn, :mv, :ta, :mj, :ap)
         ON CONFLICT (model_name)
         DO UPDATE SET
           model_version = EXCLUDED.model_version,
@@ -147,11 +149,14 @@ def main():
             train_once(engine)
             continue
 
-        trained_at = row[0]
-        now = get_simulated_now()  # ✅
+        trained_at = row[0]              # timezone-aware (Postgres)
+        now = get_simulated_now()         # naive
 
-        if now - trained_at.replace(tzinfo=None) >= timedelta(days=RETRAIN_DAYS):
+        now = now.replace(tzinfo=timezone.utc)
+
+        if now - trained_at >= timedelta(days=RETRAIN_DAYS):
             train_once(engine)
+
 
 if __name__ == "__main__":
     main()
