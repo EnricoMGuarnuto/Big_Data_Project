@@ -1,7 +1,7 @@
 import os
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,8 @@ from sqlalchemy import create_engine, text
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
+
+from simulated_time.redis_helpers import get_simulated_now  # ✅
 
 MODEL_NAME = os.getenv("MODEL_NAME", "xgb_batches_to_order")
 ARTIFACT_DIR = os.getenv("ARTIFACT_DIR", "/models")
@@ -34,16 +36,12 @@ def one_hot(df: pd.DataFrame) -> pd.DataFrame:
 def train_once(engine):
     df = pd.read_sql(FEATURE_SQL, engine)
 
-    # target
     y = df["batches_to_order"].astype(int)
-    # drop non-feature cols
     drop_cols = ["batches_to_order", "feature_date", "shelf_id"]
     X = df.drop(columns=drop_cols)
 
     X = one_hot(X)
 
-    # time split: usiamo split “a blocchi” sul tempo globale (non perfetto per panel, ma ok per progetto)
-    # alternativa: split per date e poi concat
     tscv = TimeSeriesSplit(n_splits=5)
 
     best_model = None
@@ -83,17 +81,30 @@ def train_once(engine):
         if mae < best_mae:
             best_mae = mae
             best_model = model
-            best_metrics = {"mae": mae, "fold": fold, "features": int(X.shape[1])}
+            best_metrics = {
+                "mae": mae,
+                "fold": fold,
+                "features": int(X.shape[1])
+            }
 
     os.makedirs(ARTIFACT_DIR, exist_ok=True)
-    version = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    artifact_path = os.path.join(ARTIFACT_DIR, f"{MODEL_NAME}_{version}.json")
+
+    simulated_now = get_simulated_now()        # ✅ tempo simulato unico
+    version = simulated_now.strftime("%Y%m%d_%H%M%S")
+    artifact_path = os.path.join(
+        ARTIFACT_DIR, f"{MODEL_NAME}_{version}.json"
+    )
     best_model.save_model(artifact_path)
 
-    # salva metadati in DB
     upsert_sql = text("""
-        INSERT INTO analytics.ml_models(model_name, model_version, trained_at, metrics_json, artifact_path)
-        VALUES (:mn, :mv, NOW(), :mj::jsonb, :ap)
+        INSERT INTO analytics.ml_models(
+            model_name,
+            model_version,
+            trained_at,
+            metrics_json,
+            artifact_path
+        )
+        VALUES (:mn, :mv, :ta, :mj::jsonb, :ap)
         ON CONFLICT (model_name)
         DO UPDATE SET
           model_version = EXCLUDED.model_version,
@@ -106,6 +117,7 @@ def train_once(engine):
         conn.execute(upsert_sql, {
             "mn": MODEL_NAME,
             "mv": version,
+            "ta": simulated_now,          # ✅
             "mj": json.dumps(best_metrics),
             "ap": artifact_path
         })
@@ -121,18 +133,24 @@ def main():
     # retrain loop
     while True:
         time.sleep(60)
-        # retrain every N days (semplice)
+
         with engine.connect() as conn:
             row = conn.execute(
-                text("SELECT trained_at FROM analytics.ml_models WHERE model_name=:mn"),
+                text(
+                    "SELECT trained_at FROM analytics.ml_models "
+                    "WHERE model_name=:mn"
+                ),
                 {"mn": MODEL_NAME}
             ).fetchone()
+
         if row is None:
             train_once(engine)
             continue
 
         trained_at = row[0]
-        if datetime.utcnow() - trained_at.replace(tzinfo=None) >= timedelta(days=RETRAIN_DAYS):
+        now = get_simulated_now()  # ✅
+
+        if now - trained_at.replace(tzinfo=None) >= timedelta(days=RETRAIN_DAYS):
             train_once(engine)
 
 if __name__ == "__main__":

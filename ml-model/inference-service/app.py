@@ -1,11 +1,13 @@
 import os
 import math
 import time
-from datetime import datetime, date
+from datetime import datetime
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 import xgboost as xgb
+
+from simulated_time.redis_helpers import get_simulated_now  # ✅
 
 PG_DSN = os.getenv(
     "PG_DSN",
@@ -32,7 +34,6 @@ def get_latest_model(engine):
     return row[0], row[1]
 
 def one_hot_like_training(df: pd.DataFrame) -> pd.DataFrame:
-    # stessa logica del training: one-hot su category/subcategory
     cat_cols = ["item_category", "item_subcategory"]
     for c in cat_cols:
         df[c] = df[c].astype("category")
@@ -40,7 +41,7 @@ def one_hot_like_training(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def should_run_now():
-    now = datetime.utcnow()
+    now = get_simulated_now()  # ✅ usa tempo simulato
     return now.hour == RUN_HOUR and now.minute == RUN_MINUTE
 
 def main():
@@ -54,7 +55,7 @@ def main():
         if not should_run_now():
             continue
 
-        today = date.today()
+        today = get_simulated_now().date()  # ✅ usa tempo simulato
         if last_run_day == today:
             continue  # già fatto oggi
 
@@ -70,7 +71,6 @@ def main():
             booster = xgb.Booster()
             booster.load_model(artifact_path)
 
-            # prepara feature matrix
             y_cols = ["batches_to_order", "feature_date", "shelf_id"]
             drop_cols = [c for c in y_cols if c in df.columns]
             X = df.drop(columns=drop_cols)
@@ -79,10 +79,8 @@ def main():
             dmat = xgb.DMatrix(X.values)
             pred = booster.predict(dmat)
 
-            # postprocess: batches interi >= 0
             pred_batches = [max(0, int(round(p))) for p in pred]
 
-            # scrivi piani pending (1 riga per shelf_id)
             insert_plan = text("""
                 INSERT INTO ops.wh_supplier_plan(shelf_id, suggested_qty, standard_batch_size, status, created_at, updated_at)
                 VALUES (:sid, :qty, :bs, 'pending', NOW(), NOW())
@@ -100,7 +98,6 @@ def main():
                 pb = int(pred_batches[i])
                 sq = int(pb * bs)
 
-                # se sq=0, puoi decidere di non scrivere niente
                 if sq <= 0:
                     continue
 

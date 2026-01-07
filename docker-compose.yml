@@ -611,29 +611,40 @@ services:
     build:
       context: ./ml/training-service
     environment:
-      - PG_DSN=postgresql+psycopg2://postgres:example@db:5432/postgres
-      - MODEL_NAME=xgb_batches_to_order
-      - ARTIFACT_DIR=/models
-      - RETRAIN_DAYS=7
+      PG_DSN: postgresql+psycopg2://postgres:example@db:5432/postgres
+      MODEL_NAME: xgb_batches_to_order
+      ARTIFACT_DIR: /models
+      RETRAIN_DAYS: 7
+      PYTHONPATH: /app                # ✅ FONDAMENTALE
     volumes:
       - ./models:/models
+      - ./simulated_time:/app/simulated_time:ro   # ✅
     depends_on:
-      - db
+      - postgres
+      - redis            # ✅
+      - sim-clock        # ✅
+    restart: unless-stopped
+
 
   inference-service:
     build:
       context: ./ml/inference-service
     environment:
-      - PG_DSN=postgresql+psycopg2://postgres:example@db:5432/postgres
-      - MODEL_NAME=xgb_batches_to_order
-      - ARTIFACT_DIR=/models
-      - RUN_HOUR=0
-      - RUN_MINUTE=5
+      PG_DSN: postgresql+psycopg2://postgres:example@db:5432/postgres
+      MODEL_NAME: xgb_batches_to_order
+      ARTIFACT_DIR: /models
+      RUN_HOUR: 0
+      RUN_MINUTE: 5
+      PYTHONPATH: /app                # ✅
     volumes:
       - ./models:/models
+      - ./simulated_time:/app/simulated_time:ro   # ✅
     depends_on:
-      - db
+      - postgres
+      - redis            # ✅
+      - sim-clock        # ✅
       - training-service
+    restart: unless-stopped
 
 
 
