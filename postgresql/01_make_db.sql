@@ -203,16 +203,22 @@ CREATE INDEX IF NOT EXISTS ix_wh_events_plan
 CREATE INDEX IF NOT EXISTS ix_wh_events_shelf
   ON ops.wh_events (shelf_id, timestamp);
 
--- Supplier restock plan 
+-- Supplier restock plan (one per shelf per day, idempotent)
 CREATE TABLE IF NOT EXISTS ops.wh_supplier_plan (
-  supplier_plan_id     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  shelf_id             TEXT NOT NULL,
-  suggested_qty        INTEGER NOT NULL CHECK (suggested_qty >= 0),
+  supplier_plan_id      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shelf_id              TEXT NOT NULL,
+  plan_date             DATE NOT NULL,  -- <<<<< fondamentale
+  suggested_qty         INTEGER NOT NULL CHECK (suggested_qty >= 0),
   standard_batch_size   INTEGER NULL,
-  status               plan_status NOT NULL DEFAULT 'pending',
-  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  status                plan_status NOT NULL DEFAULT 'pending',
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (shelf_id, plan_date)          -- <<<<< fondamentale
 );
+
+CREATE INDEX IF NOT EXISTS ix_wh_supplier_plan_status
+  ON ops.wh_supplier_plan (status, plan_date, created_at);
+
 
 -- Alerts (Alert Engine output, also on Kafka `alerts`)
 CREATE TABLE IF NOT EXISTS ops.alerts (

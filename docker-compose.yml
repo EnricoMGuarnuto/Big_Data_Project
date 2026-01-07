@@ -606,6 +606,36 @@ services:
     restart: "no"
 
 
+# ml model
+  training-service:
+    build:
+      context: ./ml/training-service
+    environment:
+      - PG_DSN=postgresql+psycopg2://postgres:example@db:5432/postgres
+      - MODEL_NAME=xgb_batches_to_order
+      - ARTIFACT_DIR=/models
+      - RETRAIN_DAYS=7
+    volumes:
+      - ./models:/models
+    depends_on:
+      - db
+
+  inference-service:
+    build:
+      context: ./ml/inference-service
+    environment:
+      - PG_DSN=postgresql+psycopg2://postgres:example@db:5432/postgres
+      - MODEL_NAME=xgb_batches_to_order
+      - ARTIFACT_DIR=/models
+      - RUN_HOUR=0
+      - RUN_MINUTE=5
+    volumes:
+      - ./models:/models
+    depends_on:
+      - db
+      - training-service
+
+
 
 # Dashboard Service
   dashboard:
