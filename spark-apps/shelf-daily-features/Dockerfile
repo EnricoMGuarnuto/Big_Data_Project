@@ -1,15 +1,19 @@
-FROM apache/spark:3.5.1
+FROM apache/spark:3.5.1-python3
 
 USER root
 
 RUN pip install --no-cache-dir psycopg2-binary==2.9.9
+RUN pip install --no-cache-dir redis
 
-# Metti il driver JDBC Postgres in ./jars/
-COPY jars/postgresql-*.jar /opt/spark/jars/
 
 WORKDIR /app
 COPY app.py /app/app.py
 
-USER 185
+RUN curl -L --retry 5 -o /opt/spark/jars/postgresql-42.7.3.jar \
+    https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.3/postgresql-42.7.3.jar
 
-ENTRYPOINT ["/opt/spark/bin/spark-submit", "--master", "local[*]", "/app/app.py"]
+CMD ["/opt/spark/bin/spark-submit", \
+     "--packages", "io.delta:delta-spark_2.12:3.2.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.3", \
+     "--conf", "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension", \
+     "--conf", "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog", \
+     "/app/app.py"]
