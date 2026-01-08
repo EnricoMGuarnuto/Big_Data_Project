@@ -112,8 +112,22 @@ def bootstrap_state_if_missing():
     )
 
 
-    # Write initial Delta state
-    latest.write.format("delta").mode("overwrite").save(STATE_PATH)
+    # Write initial Delta state (retry on concurrent create)
+    last = None
+    for attempt in range(1, 6):
+        try:
+            latest.write.format("delta").mode("overwrite").save(STATE_PATH)
+            break
+        except Exception as e:
+            last = e
+            if DeltaTable.isDeltaTable(spark, STATE_PATH):
+                break
+            msg = str(e)
+            if "DELTA_PROTOCOL_CHANGED" not in msg and "ProtocolChangedException" not in msg:
+                raise
+            time.sleep(0.5 * attempt)
+    else:
+        raise last
 
     # Publish initial compacted snapshot to Kafka (key = shelf_id)
     to_publish = (

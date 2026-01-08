@@ -57,6 +57,21 @@ spark = (
 )
 spark.sparkContext.setLogLevel("WARN")
 
+# =========================
+# Helpers
+# =========================
+def _jdbc_url_with_stringtype_unspecified(url: str) -> str:
+    """
+    Ensure Postgres JDBC sends strings as 'unknown' so Postgres can implicitly cast
+    them to UUID/enum columns when needed.
+    """
+    if not url:
+        return url
+    if "stringtype=unspecified" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}stringtype=unspecified"
+
 def _delta_field_types(path: str) -> dict:
     if not DeltaTable.isDeltaTable(spark, path):
         return {}
@@ -341,7 +356,7 @@ state_events = (
 def write_plans_to_postgres(df):
     df.write \
     .format("jdbc") \
-    .option("url", JDBC_PG_URL) \
+    .option("url", _jdbc_url_with_stringtype_unspecified(JDBC_PG_URL)) \
     .option("dbtable", "ops.shelf_restock_plan") \
     .option("user", JDBC_PG_USER) \
     .option("password", JDBC_PG_PASSWORD) \

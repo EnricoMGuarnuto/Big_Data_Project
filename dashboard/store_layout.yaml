@@ -7,144 +7,144 @@ zones:
   - id: beverages
     category: BEVERAGES
     label: Beverages
-    bounds: {x0: 0.80, y0: 0.45, x1: 0.93, y1: 0.70}
+    bounds: {x0: 0.8829, y0: 0.5138, x1: 0.9521, y1: 0.7302}
 
   - id: hot_beverages
     category: HOT BEVERAGES
     label: Hot Beverages
-    bounds: {x0: 0.86, y0: 0.35, x1: 0.93, y1: 0.45}
+    bounds: {x0: 0.8816, y0: 0.3758, x1: 0.9509, y1: 0.4987}
 
   - id: spirits
     category: SPIRITS AND APERITIFS
     label: Spirits and Aperitifs
-    bounds: {x0: 0.86, y0: 0.70, x1: 0.93, y1: 0.88}
+    bounds: {x0: 0.8829, y0: 0.7453, x1: 0.9521, y1: 0.8744}
 
   - id: beers
     category: BEERS
     label: Beers
-    bounds: {x0: 0.48, y0: 0.45, x1: 0.60, y1: 0.58}
+    bounds: {x0: 0.5038, y0: 0.3874, x1: 0.5730, y1: 0.5361}
 
   - id: wines
     category: WINES
     label: Wines
-    bounds: {x0: 0.65, y0: 0.62, x1: 0.80, y1: 0.80}
+    bounds: {x0: 0.7292, y0: 0.5396, x1: 0.7985, y1: 0.7551}
 
   - id: fruits_veg
     category: FRUITS AND VEGETABLES
     label: Fruits and Vegetables
-    bounds: {x0: 0.40, y0: 0.05, x1: 0.70, y1: 0.14}
+    bounds: {x0: 0.4030, y0: 0.0463, x1: 0.6385, y1: 0.0953}
 
   - id: long_life_fruit
     category: LONG-LIFE FRUIT
     label: Long-Life Fruit
-    bounds: {x0: 0.12, y0: 0.05, x1: 0.40, y1: 0.14}
+    bounds: {x0: 0.1448, y0: 0.0463, x1: 0.3791, y1: 0.0953}
 
   - id: refrigerated
     category: REFRIGERATED
     label: Refrigerated
-    bounds: {x0: 0.20, y0: 0.18, x1: 0.62, y1: 0.28}
+    bounds: {x0: 0.2053, y0: 0.1585, x1: 0.5781, y1: 0.2075}
 
   - id: frozen
     category: FROZEN
     label: Frozen
-    bounds: {x0: 0.20, y0: 0.28, x1: 0.62, y1: 0.36}
+    bounds: {x0: 0.2053, y0: 0.2102, x1: 0.5781, y1: 0.2591}
 
   - id: long_life_dairy
     category: LONG-LIFE DAIRY
     label: Long-Life Dairy
-    bounds: {x0: 0.05, y0: 0.05, x1: 0.12, y1: 0.20}
+    bounds: {x0: 0.0516, y0: 0.1131, x1: 0.1209, y1: 0.2654}
 
   - id: meat
     category: MEAT
     label: Meat
-    bounds: {x0: 0.05, y0: 0.36, x1: 0.12, y1: 0.58}
+    bounds: {x0: 0.0516, y0: 0.2832, x1: 0.1209, y1: 0.4987}
 
   - id: fish
     category: FISH
     label: Fish
-    bounds: {x0: 0.05, y0: 0.72, x1: 0.12, y1: 0.88}
+    bounds: {x0: 0.0516, y0: 0.7462, x1: 0.1209, y1: 0.8744}
 
   - id: bread_breadsticks
     category: BREAD AND BREADSTICKS
     label: Bread and Breadsticks
-    bounds: {x0: 0.05, y0: 0.58, x1: 0.12, y1: 0.72}
+    bounds: {x0: 0.0516, y0: 0.5147, x1: 0.1209, y1: 0.7302}
 
   - id: sweets_breakfast
     category: SWEETS AND BREAKFAST
     label: Sweets and Breakfast
-    bounds: {x0: 0.20, y0: 0.42, x1: 0.34, y1: 0.62}
+    bounds: {x0: 0.2053, y0: 0.3197, x1: 0.2746, y1: 0.5352}
 
   - id: bath_personal
     category: BATH AND PERSONAL CARE
     label: Bath and Personal Care
-    bounds: {x0: 0.34, y0: 0.42, x1: 0.42, y1: 0.62}
+    bounds: {x0: 0.2783, y0: 0.3206, x1: 0.3476, y1: 0.5361}
 
   - id: baby_products
     category: BABY PRODUCTS
     label: Baby Products
-    bounds: {x0: 0.42, y0: 0.42, x1: 0.52, y1: 0.62}
+    bounds: {x0: 0.4307, y0: 0.3206, x1: 0.5000, y1: 0.5361}
 
   - id: household_goods
     category: HOUSEHOLD GOODS
     label: Household Goods
-    bounds: {x0: 0.52, y0: 0.58, x1: 0.62, y1: 0.72}
+    bounds: {x0: 0.5038, y0: 0.5405, x1: 0.5730, y1: 0.7560}
 
   - id: pet_products
     category: PET PRODUCTS
     label: Pet Products
-    bounds: {x0: 0.62, y0: 0.62, x1: 0.72, y1: 0.80}
+    bounds: {x0: 0.6574, y0: 0.5396, x1: 0.7267, y1: 0.7551}
 
   - id: vinegar_oil
     category: VINEGAR AND OIL
     label: Vinegar and Oil
-    bounds: {x0: 0.42, y0: 0.88, x1: 0.74, y1: 0.96}
+    bounds: {x0: 0.4484, y0: 0.8931, x1: 0.7267, y1: 0.9421}
 
   - id: canned_goods
     category: CANNED GOODS
     label: Canned Goods
-    bounds: {x0: 0.12, y0: 0.88, x1: 0.42, y1: 0.96}
+    bounds: {x0: 0.1423, y0: 0.8931, x1: 0.4207, y1: 0.9421}
 
   - id: pasta_sauces
     category: PASTA SAUCES
     label: Pasta Sauces
-    bounds: {x0: 0.25, y0: 0.72, x1: 0.34, y1: 0.82}
+    bounds: {x0: 0.2783, y0: 0.7649, x1: 0.3476, y1: 0.8281}
 
   - id: flours_sugar
     category: FLOURS AND SUGAR
     label: Flours and Sugar
-    bounds: {x0: 0.20, y0: 0.72, x1: 0.25, y1: 0.82}
+    bounds: {x0: 0.2053, y0: 0.7649, x1: 0.2746, y1: 0.8281}
 
   - id: pasta_rice
     category: PASTA AND RICE
     label: Pasta and Rice
-    bounds: {x0: 0.20, y0: 0.62, x1: 0.34, y1: 0.72}
+    bounds: {x0: 0.2053, y0: 0.5414, x1: 0.2746, y1: 0.7569}
 
   - id: house_cleaning
     category: HOUSE CLEANING PRODUCTS
     label: House Cleaning Products
-    bounds: {x0: 0.34, y0: 0.62, x1: 0.42, y1: 0.72}
+    bounds: {x0: 0.2783, y0: 0.5414, x1: 0.3476, y1: 0.7569}
 
   - id: laundry
     category: LAUNDRY PRODUCTS
     label: Laundry Products
-    bounds: {x0: 0.42, y0: 0.62, x1: 0.52, y1: 0.72}
+    bounds: {x0: 0.4307, y0: 0.5405, x1: 0.5000, y1: 0.7569}
 
   - id: spices
     category: SPICES
     label: Spices
-    bounds: {x0: 0.42, y0: 0.72, x1: 0.50, y1: 0.82}
+    bounds: {x0: 0.4307, y0: 0.7640, x1: 0.5000, y1: 0.8281}
 
   - id: savory_snacks
     category: SAVORY SNACKS
     label: Savory Snacks
-    bounds: {x0: 0.50, y0: 0.72, x1: 0.60, y1: 0.82}
+    bounds: {x0: 0.5038, y0: 0.7640, x1: 0.5730, y1: 0.8281}
 
   - id: sauces
     category: SAUCES
     label: Sauces
-    bounds: {x0: 0.70, y0: 0.80, x1: 0.80, y1: 0.88}
+    bounds: {x0: 0.6574, y0: 0.7631, x1: 0.7254, y1: 0.8264}
 
   - id: gluten_free
     category: GLUTEN FREE
     label: Gluten Free
-    bounds: {x0: 0.80, y0: 0.80, x1: 0.86, y1: 0.88}
+    bounds: {x0: 0.7292, y0: 0.7631, x1: 0.7985, y1: 0.8272}

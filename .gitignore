@@ -2,3 +2,4 @@ spark-checkpoints/.DS_Store
 spark-checkpoints
 delta
 data/sim_out
+.DS_Store

@@ -40,12 +40,8 @@ def is_delta(path: str) -> bool:
     except Exception:
         return False
 
-if not is_delta(DL_SHELF_STATE) or not is_delta(DL_SHELF_BATCH):
-    raise RuntimeError(
-        f"Delta tables missing. Need:\n"
-        f"- {DL_SHELF_STATE}\n"
-        f"- {DL_SHELF_BATCH}"
-    )
+def delta_ready() -> bool:
+    return is_delta(DL_SHELF_STATE) and is_delta(DL_SHELF_BATCH)
 
 def run_once(sim_date_str: str, sim_ts_str: str) -> None:
     """
@@ -242,8 +238,21 @@ def main() -> None:
     """
     print("[removal_scheduler] Started (simulated-time daily trigger)")
     last_processed_day = None
+    warned_missing = False
 
     while True:
+        if not delta_ready():
+            if not warned_missing:
+                print(
+                    "[removal_scheduler] Delta tables missing. Waiting for:\n"
+                    f"- {DL_SHELF_STATE}\n"
+                    f"- {DL_SHELF_BATCH}"
+                )
+                warned_missing = True
+            time.sleep(POLL_SECONDS)
+            continue
+        warned_missing = False
+
         sim_day = get_simulated_date()
         sim_ts  = get_simulated_timestamp()
 

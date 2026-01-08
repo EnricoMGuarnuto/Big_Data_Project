@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import time
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,9 +57,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_LAYOUT_YAML = PROJECT_ROOT / "dashboard" / "store_layout.yaml"
 DEFAULT_INVENTORY_CSV = PROJECT_ROOT / "data" / "db_csv" / "store_inventory_final.csv"
-DEFAULT_DELTA_SHELF_EVENTS = PROJECT_ROOT / "delta" / "raw" / "shelf_events"
 DEFAULT_DELTA_SUPPLIER_PLAN = PROJECT_ROOT / "delta" / "ops" / "wh_supplier_plan"
 DEFAULT_DELTA_SUPPLIER_ORDERS = PROJECT_ROOT / "delta" / "ops" / "wh_supplier_orders"
+DEFAULT_DELTA_SHELF_STATE = PROJECT_ROOT / "delta" / "cleansed" / "shelf_state"
+DEFAULT_DELTA_WH_STATE = PROJECT_ROOT / "delta" / "cleansed" / "wh_state"
+DEFAULT_DELTA_SHELF_BATCH_STATE = PROJECT_ROOT / "delta" / "cleansed" / "shelf_batch_state"
+DEFAULT_DELTA_WH_BATCH_STATE = PROJECT_ROOT / "delta" / "cleansed" / "wh_batch_state"
 
 def _env_path(*keys: str, default: Path) -> Path:
     for k in keys:
@@ -73,17 +75,17 @@ def _env_path(*keys: str, default: Path) -> Path:
 LAYOUT_YAML_PATH = _env_path("DASH_LAYOUT_YAML", "LAYOUT_YAML", "LAYOUT_YAML_PATH", default=DEFAULT_LAYOUT_YAML)
 INVENTORY_CSV_PATH = _env_path("INVENTORY_CSV_PATH", "INVENTORY_CSV", default=DEFAULT_INVENTORY_CSV)
 
-DELTA_SHELF_EVENTS_PATH = _env_path("DELTA_SHELF_EVENTS_PATH", "DELTA_EVENTS_PATH", default=DEFAULT_DELTA_SHELF_EVENTS)
 DELTA_SUPPLIER_PLAN_PATH = _env_path("DELTA_SUPPLIER_PLAN_PATH", default=DEFAULT_DELTA_SUPPLIER_PLAN)
 DELTA_SUPPLIER_ORDERS_PATH = _env_path("DELTA_SUPPLIER_ORDERS_PATH", default=DEFAULT_DELTA_SUPPLIER_ORDERS)
+DELTA_SHELF_STATE_PATH = _env_path("DL_SHELF_STATE_PATH", "DELTA_SHELF_STATE_PATH", default=DEFAULT_DELTA_SHELF_STATE)
+DELTA_WH_STATE_PATH = _env_path("DL_WH_STATE_PATH", "DELTA_WH_STATE_PATH", default=DEFAULT_DELTA_WH_STATE)
+DELTA_SHELF_BATCH_STATE_PATH = _env_path("DL_SHELF_BATCH_PATH", "DELTA_SHELF_BATCH_STATE_PATH", default=DEFAULT_DELTA_SHELF_BATCH_STATE)
+DELTA_WH_BATCH_STATE_PATH = _env_path("DL_WH_BATCH_PATH", "DELTA_WH_BATCH_STATE_PATH", default=DEFAULT_DELTA_WH_BATCH_STATE)
 
 ALERTS_TABLE_NAME = os.getenv("ALERTS_TABLE", "ops.alerts").strip()
 SUPPLIER_PLAN_TABLE_NAME = os.getenv("SUPPLIER_PLAN_TABLE", "ops.wh_supplier_plan").strip()
-STATE_SCHEMA = os.getenv("STATE_SCHEMA", "state").strip()
 
 AUTOREFRESH_MS = int(os.getenv("DASH_AUTOREFRESH_MS", os.getenv("DASH_REFRESH_MS", "1500")))
-WEIGHT_EVENT_LOOKBACK_SEC = int(os.getenv("WEIGHT_EVENT_LOOKBACK_SEC", "8"))
-WEIGHT_EVENT_TYPE = os.getenv("WEIGHT_EVENT_TYPE", "weight_change").strip()
 
 # -----------------------------
 # DATA STRUCTURES
@@ -293,11 +295,7 @@ def fetch_pg_table(table_name: str, limit: int = 2000) -> pd.DataFrame:
     base_name = raw_name.split(".")[-1]
     if base_name not in allow:
         raise ValueError(f"Tabella non permessa: {table_name}")
-    table_ref = raw_name if "." in raw_name else (f"{STATE_SCHEMA}.{base_name}" if STATE_SCHEMA else base_name)
-    eng = get_pg_engine()
-    q = text(f"SELECT * FROM {table_ref} ORDER BY 1 DESC LIMIT {int(limit)}")
-    with eng.connect() as c:
-        return pd.read_sql(q, c)
+    raise RuntimeError("fetch_pg_table is deprecated; use Delta paths in fetch_state_delta.")
 
 # ML registry + predictions
 @st.cache_data(ttl=5, show_spinner=False)
@@ -361,43 +359,6 @@ def _is_delta_table(delta_path: Path) -> bool:
             return True
     return False
 
-@st.cache_data(ttl=1, show_spinner=False)
-def fetch_recent_weight_events(delta_path: Path, lookback_sec: int) -> pd.DataFrame:
-    if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
-        return pd.DataFrame()
-
-    try:
-        dt = DeltaTable(str(delta_path))
-    except Exception as e:
-        log.warning("Delta table not available at %s: %s", delta_path, e)
-        return pd.DataFrame()
-
-    df = dt.to_pandas()
-    if df.empty:
-        return df
-
-    if "shelf_id" in df.columns:
-        df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
-
-    et_col = "event_type" if "event_type" in df.columns else ("type" if "type" in df.columns else None)
-    if et_col is None:
-        return pd.DataFrame()
-
-    df[et_col] = df[et_col].astype(str).str.strip().str.lower()
-    df = df[df[et_col] == WEIGHT_EVENT_TYPE.lower()].copy()
-    if df.empty:
-        return df
-
-    ts_col = _pick_timestamp_column(df)
-    if ts_col is None:
-        return pd.DataFrame()
-
-    df["_ts"] = _to_datetime(df[ts_col])
-    now = now_utc_ts()
-    cutoff = now - pd.Timedelta(seconds=int(lookback_sec))
-    df = df[df["_ts"] >= cutoff].copy()
-    return df
-
 @st.cache_data(ttl=10, show_spinner=False)
 def fetch_supplier_orders(delta_path: Path) -> pd.DataFrame:
     if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
@@ -441,6 +402,47 @@ def fetch_supplier_plan_delta(delta_path: Path) -> pd.DataFrame:
         df["plan_date"] = pd.to_datetime(df["plan_date"], errors="coerce").dt.date
     return df
 
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_state_delta(table_name: str, limit: int = 2000) -> pd.DataFrame:
+    allow = {
+        "shelf_state": DELTA_SHELF_STATE_PATH,
+        "wh_state": DELTA_WH_STATE_PATH,
+        "shelf_batch_state": DELTA_SHELF_BATCH_STATE_PATH,
+        "wh_batch_state": DELTA_WH_BATCH_STATE_PATH,
+    }
+    raw_name = table_name.strip()
+    base_name = raw_name.split(".")[-1]
+    if base_name not in allow:
+        raise ValueError(f"Tabella non permessa: {table_name}")
+
+    delta_path = allow[base_name]
+    if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
+        return pd.DataFrame()
+    try:
+        dt = DeltaTable(str(delta_path))
+    except Exception as e:
+        log.warning("Delta table not available at %s: %s", delta_path, e)
+        return pd.DataFrame()
+
+    df = dt.to_pandas()
+    if df.empty:
+        return df
+
+    ts_col = _pick_timestamp_column(df)
+    if ts_col is not None:
+        df["_ts"] = _to_datetime(df[ts_col])
+        df = df.sort_values("_ts", ascending=False).drop(columns=["_ts"])
+    elif df.columns.tolist():
+        try:
+            df = df.sort_values(df.columns[0], ascending=False)
+        except Exception:
+            pass
+
+    limit = int(limit)
+    if limit > 0:
+        df = df.head(limit)
+    return df
+
 def next_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str]]:
     if orders_df.empty:
         return None
@@ -479,7 +481,7 @@ def next_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str
 # -----------------------------
 # MAP FIGURE
 # -----------------------------
-def build_map_figure(map_img: Image.Image, zones: List[Zone], red_categories: set[str], green_categories: set[str], blink_on: bool) -> go.Figure:
+def build_map_figure(map_img: Image.Image, zones: List[Zone], red_categories: set[str]) -> go.Figure:
     fig = go.Figure()
     fig.add_layout_image(
         dict(
@@ -501,11 +503,9 @@ def build_map_figure(map_img: Image.Image, zones: List[Zone], red_categories: se
     for z in zones:
         cat = normalize_cat(z.category)
         is_red = cat in red_categories
-        is_green = (cat in green_categories) and blink_on
-
-        fillcolor = "rgba(255,0,0,0.25)" if is_red else ("rgba(0,255,0,0.18)" if is_green else "rgba(0,0,0,0.0)")
-        line_color = "rgba(255,0,0,0.9)" if is_red else ("rgba(0,255,0,0.95)" if is_green else "rgba(0,0,0,0.0)")
-        line_width = 3 if (is_red or is_green) else 1
+        fillcolor = "rgba(255,0,0,0.25)" if is_red else "rgba(0,0,0,0.0)"
+        line_color = "rgba(255,0,0,0.9)" if is_red else "rgba(0,0,0,0.0)"
+        line_width = 3 if is_red else 1
 
         xs, ys = z.polygon()
         fig.add_trace(
@@ -556,8 +556,6 @@ def main():
 
     tabs = st.tabs(["🗺️ Map Live", "📦 States", "🚚 Supplier Plan", "🤖 ML Model", "🚨 Alerts (raw)", "⚙️ Debug"])
 
-    blink_on = (int(time.time() * 2) % 2 == 0)
-
     # TAB 0: MAP LIVE
     with tabs[0]:
         col_left, col_right = st.columns([1.15, 0.85], gap="large")
@@ -572,21 +570,14 @@ def main():
             tmp["item_category"] = tmp["shelf_id"].map(shelf_to_cat).map(normalize_cat)
             red_cats = set(tmp["item_category"].dropna().unique().tolist())
 
-        weight_df = fetch_recent_weight_events(DELTA_SHELF_EVENTS_PATH, WEIGHT_EVENT_LOOKBACK_SEC)
-        green_cats = set()
-        if not weight_df.empty and "shelf_id" in weight_df.columns:
-            tmpw = weight_df.copy()
-            tmpw["item_category"] = tmpw["shelf_id"].map(shelf_to_cat).map(normalize_cat)
-            green_cats = set(tmpw["item_category"].dropna().unique().tolist())
-
         with col_left:
-            st.subheader("Mappa live (rosso=alert store, verde=weight_change recente)")
+            st.subheader("Mappa live (rosso=alert store)")
             if not map_img_path.exists():
                 st.error(f"Immagine mappa non trovata: {map_img_path}")
                 st.stop()
 
             map_img = Image.open(map_img_path).convert("RGB")
-            fig = build_map_figure(map_img, zones, red_cats, green_cats, blink_on=blink_on)
+            fig = build_map_figure(map_img, zones, red_cats)
 
             events = plotly_events(
                 fig,
@@ -601,7 +592,6 @@ def main():
             st.subheader("Dettagli store")
             st.metric("Alerts attivi (store)", int(len(store_alerts)))
             st.metric("Alerts attivi (warehouse)", int(len(wh_alerts)))
-            st.metric("Weight events recenti", int(len(weight_df)))
 
             st.markdown("**Riepilogo warehouse (grafico)**")
             if wh_alerts.empty:
@@ -669,12 +659,9 @@ def main():
             else:
                 st.caption("Clicca su una sezione della mappa per vedere gli alert di quella zona.")
 
-            if DeltaTable is None:
-                st.warning("DeltaTable (deltalake) non installato: weight_change non mostrati.")
-
     # TAB 1: STATES
     with tabs[1]:
-        st.subheader("States (Postgres)")
+        st.subheader("States (Delta)")
         left, right = st.columns([0.35, 0.65], gap="large")
 
         with left:
@@ -700,7 +687,7 @@ def main():
 
         with right:
             try:
-                df_state = fetch_pg_table(table, limit=limit)
+                df_state = fetch_state_delta(table, limit=limit)
             except Exception as e:
                 st.error(f"Errore fetch {table}: {e}")
                 df_state = pd.DataFrame()
@@ -848,14 +835,11 @@ def main():
         st.write("PROJECT_ROOT:", str(PROJECT_ROOT))
         st.write("LAYOUT_YAML_PATH:", str(LAYOUT_YAML_PATH))
         st.write("INVENTORY_CSV_PATH:", str(INVENTORY_CSV_PATH))
-        st.write("DELTA_SHELF_EVENTS_PATH:", str(DELTA_SHELF_EVENTS_PATH))
         st.write("DELTA_SUPPLIER_PLAN_PATH:", str(DELTA_SUPPLIER_PLAN_PATH))
         st.write("DELTA_SUPPLIER_ORDERS_PATH:", str(DELTA_SUPPLIER_ORDERS_PATH))
         st.write("ALERTS_TABLE_NAME:", ALERTS_TABLE_NAME)
         st.write("SUPPLIER_PLAN_TABLE_NAME:", SUPPLIER_PLAN_TABLE_NAME)
         st.write("AUTOREFRESH_MS:", AUTOREFRESH_MS)
-        st.write("WEIGHT_EVENT_LOOKBACK_SEC:", WEIGHT_EVENT_LOOKBACK_SEC)
-        st.write("WEIGHT_EVENT_TYPE:", WEIGHT_EVENT_TYPE)
         st.write("SIM_TIME_OK:", SIM_TIME_OK)
         if SIM_TIME_OK:
             st.write("SIM_NOW_UTC:", now_utc_ts().isoformat())

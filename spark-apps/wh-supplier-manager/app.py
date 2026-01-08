@@ -1,6 +1,7 @@
 import os
 import time
 from datetime import datetime, timedelta, timezone, date
+from typing import Optional
 from simulated_time.clock import get_simulated_now
 
 from pyspark.sql import SparkSession, functions as F, types as T
@@ -88,9 +89,23 @@ schema_receipt = T.StructType([
 # Delta init helpers
 # =========================
 def ensure_delta_table(path: str, schema: T.StructType):
-    if not DeltaTable.isDeltaTable(spark, path):
-        (spark.createDataFrame([], schema)
-              .write.format("delta").mode("overwrite").save(path))
+    if DeltaTable.isDeltaTable(spark, path):
+        return
+    last = None
+    for attempt in range(1, 6):
+        try:
+            (spark.createDataFrame([], schema)
+                  .write.format("delta").mode("overwrite").save(path))
+            return
+        except Exception as e:
+            last = e
+            if DeltaTable.isDeltaTable(spark, path):
+                return
+            msg = str(e)
+            if "DELTA_PROTOCOL_CHANGED" not in msg and "ProtocolChangedException" not in msg:
+                raise
+            time.sleep(0.5 * attempt)
+    raise last
 
 ensure_delta_table(DL_ORDERS_PATH, schema_order)
 ensure_delta_table(DL_RECEIPTS_PATH, schema_receipt)
@@ -100,6 +115,33 @@ ensure_delta_table(DL_RECEIPTS_PATH, schema_receipt)
 # =========================
 def now_utc() -> datetime:
     return get_simulated_now()
+
+_LAST_CUTOFF_DATE: Optional[date] = None
+_LAST_DELIVERY_DATE: Optional[date] = None
+
+def _should_run_cutoff(ts: datetime) -> bool:
+    global _LAST_CUTOFF_DATE
+    if ts.weekday() not in (6, 1, 3):
+        return False
+    trigger_time = ts.replace(hour=CUTOFF_HOUR, minute=CUTOFF_MINUTE, second=0, microsecond=0)
+    if ts < trigger_time:
+        return False
+    if _LAST_CUTOFF_DATE == ts.date():
+        return False
+    _LAST_CUTOFF_DATE = ts.date()
+    return True
+
+def _should_run_delivery(ts: datetime) -> bool:
+    global _LAST_DELIVERY_DATE
+    if ts.weekday() not in (0, 2, 4):
+        return False
+    trigger_time = ts.replace(hour=DELIVERY_HOUR, minute=DELIVERY_MINUTE, second=0, microsecond=0)
+    if ts < trigger_time:
+        return False
+    if _LAST_DELIVERY_DATE == ts.date():
+        return False
+    _LAST_DELIVERY_DATE = ts.date()
+    return True
 
 def is_cutoff_moment(ts: datetime) -> bool:
     # cutoff: Sunday(6), Tuesday(1), Thursday(3) at 12:00
@@ -450,6 +492,25 @@ def do_delivery(now_ts: datetime):
     if not issued_plans_today.rdd.isEmpty():
         publish_plan_updates(issued_plans_today)
 
+    # Resolve related warehouse alerts now that delivery completed
+    alert_resolved = (
+        shelves_today
+        .withColumn("event_type", F.lit("alert_status_change"))
+        .withColumn("alert_event_type", F.lit("supplier_request"))
+        .withColumn("location", F.lit("warehouse"))
+        .withColumn("status", F.lit("resolved"))
+        .withColumn("timestamp", F.lit(get_simulated_now()).cast("timestamp"))
+        .withColumn("value", F.to_json(F.struct(
+            "event_type", "shelf_id", "location", "alert_event_type", "status", "timestamp"
+        )))
+        .select(F.lit(None).cast("string").alias("key"), "value")
+    )
+    if alert_resolved.rdd.isEmpty() is False:
+        alert_resolved.write.format("kafka") \
+            .option("kafka.bootstrap.servers", KAFKA_BROKER) \
+            .option("topic", TOPIC_ALERTS) \
+            .save()
+
     print(f"[wh-supplier-manager] delivery executed for {today} (wh_in emitted, orders delivered, plans completed).")
 
 # =========================
@@ -467,12 +528,12 @@ def on_tick(batch_df, batch_id: int):
     # run only once per microbatch
     ts = now_utc()
 
-    # We run logic only exactly at minute boundary conditions you want.
-    # The stream ticks every minute via window; idempotency handles duplicates anyway.
-    if is_cutoff_moment(ts):
+    # The stream ticks on processing time; if simulated time jumps forward,
+    # fall back to a once-per-day trigger after the scheduled time.
+    if is_cutoff_moment(ts) or _should_run_cutoff(ts):
         do_cutoff(ts)
 
-    if is_delivery_moment(ts):
+    if is_delivery_moment(ts) or _should_run_delivery(ts):
         do_delivery(ts)
 
 query = (

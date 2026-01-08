@@ -8,7 +8,7 @@ from pyspark.sql import SparkSession, functions as F, types as T
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC_ALERTS = os.getenv("TOPIC_ALERTS", "alerts")  # append-only
 STARTING_OFFSETS = os.getenv("STARTING_OFFSETS", "earliest")
-FAIL_ON_DATA_LOSS = os.getenv("FAIL_ON_DATA_LOSS", "1") in ("1", "true", "True")
+FAIL_ON_DATA_LOSS = os.getenv("FAIL_ON_DATA_LOSS", "0") in ("1", "true", "True")
 
 DELTA_ROOT = os.getenv("DELTA_ROOT", "/delta")
 DL_ALERTS_PATH = os.getenv("DL_ALERTS_PATH", f"{DELTA_ROOT}/ops/alerts")

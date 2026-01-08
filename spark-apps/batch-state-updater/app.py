@@ -150,7 +150,21 @@ def bootstrap_if_needed():
         "last_update_ts",
         F.lit(get_simulated_timestamp()).cast("timestamp")
     )
-    df_with_ts.write.format("delta").mode("overwrite").save(BATCH_STATE_PATH)
+    last = None
+    for attempt in range(1, 6):
+        try:
+            df_with_ts.write.format("delta").mode("overwrite").save(BATCH_STATE_PATH)
+            break
+        except Exception as e:
+            last = e
+            if DeltaTable.isDeltaTable(spark, BATCH_STATE_PATH):
+                break
+            msg = str(e)
+            if "DELTA_PROTOCOL_CHANGED" not in msg and "ProtocolChangedException" not in msg:
+                raise
+            time.sleep(0.5 * attempt)
+    else:
+        raise last
     print("[bootstrap] Bootstrapped shelf_batch_state.")
 
     kafka_payload = (

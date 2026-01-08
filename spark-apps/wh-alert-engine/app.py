@@ -67,6 +67,19 @@ def _delta_field_types(path: str) -> dict:
         print(f"[delta-schema] warn reading schema from {path}: {e}")
         return {}
 
+def _ensure_delta_columns(path: str, expected_types: dict) -> None:
+    if not DeltaTable.isDeltaTable(spark, path):
+        return
+    existing = _delta_field_types(path)
+    missing = {name: dtype for name, dtype in expected_types.items() if name not in existing}
+    if not missing:
+        return
+    ddl = ", ".join([f"{name} {dtype.simpleString()}" for name, dtype in missing.items()])
+    try:
+        spark.sql(f"ALTER TABLE delta.`{path}` ADD COLUMNS ({ddl})")
+    except Exception as e:
+        print(f"[delta-schema] warn adding columns to {path}: {e}")
+
 def _is_delta_conflict(err: Exception) -> bool:
     name = err.__class__.__name__
     msg = str(err)
@@ -160,6 +173,16 @@ schema_wh_batch = T.StructType([
     T.StructField("batch_quantity_warehouse", T.IntegerType()),
     T.StructField("batch_quantity_store", T.IntegerType()),
     T.StructField("last_update_ts", T.TimestampType()),
+])
+
+schema_wh_supplier_plan = T.StructType([
+    T.StructField("supplier_plan_id", T.StringType()),
+    T.StructField("shelf_id", T.StringType()),
+    T.StructField("suggested_qty", T.IntegerType()),
+    T.StructField("standard_batch_size", T.IntegerType()),
+    T.StructField("status", T.StringType()),
+    T.StructField("created_at", T.TimestampType()),
+    T.StructField("updated_at", T.TimestampType()),
 ])
 
 # =========================
@@ -519,6 +542,10 @@ def foreach_batch(batch_df, batch_id: int):
 
         # Delta mirror (upsert latest per shelf)
         if DeltaTable.isDeltaTable(spark, DL_SUPPLIER_PLAN_PATH):
+            _ensure_delta_columns(
+                DL_SUPPLIER_PLAN_PATH,
+                {f.name: f.dataType for f in schema_wh_supplier_plan.fields},
+            )
             tgt = DeltaTable.forPath(spark, DL_SUPPLIER_PLAN_PATH)
             tgt.alias("t").merge(
                 plans.alias("s"),
