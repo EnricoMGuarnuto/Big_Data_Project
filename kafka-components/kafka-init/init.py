@@ -9,6 +9,9 @@ BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 # --- General parameters ---
 DEFAULT_PARTITIONS = int(os.getenv("DEFAULT_PARTITIONS", "3"))
 DEFAULT_RF = int(os.getenv("DEFAULT_RF", "1"))
+INIT_RETRIES = int(os.getenv("KAFKA_INIT_RETRIES", "30"))
+INIT_SLEEP_SEC = float(os.getenv("KAFKA_INIT_SLEEP_SEC", "3"))
+CONNECT_TIMEOUT_MS = int(os.getenv("KAFKA_INIT_CONNECT_TIMEOUT_MS", "10000"))
 
 # Base retention for append-only (7 days)
 APPEND_RETENTION_MS = int(os.getenv("APPEND_RETENTION_MS", str(7 * 24 * 60 * 60 * 1000)))
@@ -61,13 +64,21 @@ BASE_COMPACTED_CFG = {
 
 def build_admin() -> KafkaAdminClient:
     last = None
-    for attempt in range(1, 11):
+    for attempt in range(1, INIT_RETRIES + 1):
         try:
-            return KafkaAdminClient(bootstrap_servers=BROKER, client_id="kafka-init")
+            return KafkaAdminClient(
+                bootstrap_servers=BROKER,
+                client_id="kafka-init",
+                request_timeout_ms=CONNECT_TIMEOUT_MS,
+                api_version_auto_timeout_ms=CONNECT_TIMEOUT_MS,
+            )
         except (NoBrokersAvailable, Exception) as e:
             last = e
-            print(f"[init] Broker non disponibile ({attempt}/10). Riprovo tra 3s… ({e})")
-            time.sleep(3)
+            print(
+                f"[init] Broker non disponibile ({attempt}/{INIT_RETRIES}). "
+                f"Riprovo tra {INIT_SLEEP_SEC}s... ({e})"
+            )
+            time.sleep(INIT_SLEEP_SEC)
     raise RuntimeError(f"Kafka non raggiungibile: {last}")
 
 def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]],

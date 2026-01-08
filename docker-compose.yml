@@ -312,7 +312,8 @@ services:
       DL_ALERTS_PATH: /delta/ops/alerts
       DL_RESTOCK_PATH: /delta/ops/shelf_restock_plan
       CHECKPOINT_ROOT: /delta/_checkpoints/shelf_alert_engine
-      STARTING_OFFSETS: earliest
+      STARTING_OFFSETS: latest
+      FAIL_ON_DATA_LOSS: "0"
       NEAR_EXPIRY_DAYS: "5"
       DEFAULT_TARGET_PCT: "80.0"
       LOAD_MAX_FROM_PG: "1"
@@ -348,7 +349,8 @@ services:
       DL_ALERTS_PATH: /delta/ops/alerts
       DL_SUPPLIER_PLAN_PATH: /delta/ops/wh_supplier_plan
       CHECKPOINT_ROOT: /delta/_checkpoints/wh_alert_engine
-      STARTING_OFFSETS: earliest
+      STARTING_OFFSETS: latest
+      FAIL_ON_DATA_LOSS: "0"
       NEAR_EXPIRY_DAYS: "10"
       DEFAULT_MULTIPLIER: "1"
       BOOTSTRAP_WH_POLICIES_FROM_PG: "1"

@@ -35,6 +35,7 @@ BOOTSTRAP_POLICIES_FROM_PG = os.getenv("BOOTSTRAP_POLICIES_FROM_PG", "1") in ("1
 
 # Engine params
 STARTING_OFFSETS        = os.getenv("STARTING_OFFSETS", "earliest")
+FAIL_ON_DATA_LOSS       = os.getenv("FAIL_ON_DATA_LOSS", "0") in ("1", "true", "True")
 NEAR_EXPIRY_DAYS        = int(os.getenv("NEAR_EXPIRY_DAYS", "5"))        # expiry alerts window
 ALERTS_COOLDOWN_MINUTES = int(os.getenv("ALERTS_COOLDOWN_MINUTES", "60"))
 DEFAULT_TARGET_PCT      = float(os.getenv("DEFAULT_TARGET_PCT", "80.0")) # target refill level if none provided
@@ -321,7 +322,7 @@ raw_state = (
     .option("kafka.bootstrap.servers", KAFKA_BROKER)
     .option("subscribe", TOPIC_SHELF_STATE)
     .option("startingOffsets", STARTING_OFFSETS)
-    .option("failOnDataLoss", "false")
+    .option("failOnDataLoss", "true" if FAIL_ON_DATA_LOSS else "false")
     .load()
 )
 

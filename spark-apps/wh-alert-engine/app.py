@@ -39,6 +39,7 @@ BOOTSTRAP_WH_POLICIES_FROM_PG = os.getenv("BOOTSTRAP_WH_POLICIES_FROM_PG", "1") 
 
 # Engine params
 STARTING_OFFSETS         = os.getenv("STARTING_OFFSETS", "earliest")
+FAIL_ON_DATA_LOSS        = os.getenv("FAIL_ON_DATA_LOSS", "0") in ("1", "true", "True")
 NEAR_EXPIRY_DAYS         = int(os.getenv("NEAR_EXPIRY_DAYS", "10"))  # warehouse horizon (default 10)
 DEFAULT_MULTIPLIER       = int(os.getenv("DEFAULT_MULTIPLIER", "1"))  # multiples of standard_batch_size
 CHECKPOINT_ROOT          = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/_checkpoints/wh_alert_engine")
@@ -321,7 +322,7 @@ raw_state = (
     .option("kafka.bootstrap.servers", KAFKA_BROKER)
     .option("subscribe", TOPIC_WH_STATE)
     .option("startingOffsets", STARTING_OFFSETS)
-    .option("failOnDataLoss", "false")
+    .option("failOnDataLoss", "true" if FAIL_ON_DATA_LOSS else "false")
     .load()
 )
 

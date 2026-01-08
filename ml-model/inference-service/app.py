@@ -2,7 +2,7 @@ import glob
 import os
 import re
 import time
-from datetime import timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -99,6 +99,26 @@ def get_latest_model(conn):
     return _latest_model_from_disk()
 
 
+def parse_model_version_ts(version: str):
+    try:
+        return datetime.strptime(version, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def ensure_model_registry(conn, model_version: str, artifact_path: str, trained_at):
+    conn.execute(
+        text("""
+            INSERT INTO analytics.ml_models(
+                model_name, model_version, trained_at, artifact_path
+            )
+            VALUES (:mn, :mv, :ta, :ap)
+            ON CONFLICT (model_name) DO NOTHING;
+        """),
+        {"mn": MODEL_NAME, "mv": model_version, "ta": trained_at, "ap": artifact_path}
+    )
+
+
 def one_hot_like_training(df: pd.DataFrame) -> pd.DataFrame:
     cat_cols = ["item_category", "item_subcategory"]
     for c in cat_cols:
@@ -133,18 +153,32 @@ def write_delta_plans(plans_df: pd.DataFrame):
         return
 
     try:
+        from deltalake import DeltaTable
         from deltalake.writer import write_deltalake
     except Exception as e:
         print(f"[delta] deltalake not available -> skip delta write. error={e}")
         return
 
     try:
+        target_df = plans_df
+        if os.path.exists(DELTA_WHSUPPLIER_PLAN_PATH):
+            try:
+                table = DeltaTable(DELTA_WHSUPPLIER_PLAN_PATH)
+                fields = [f.name for f in table.schema().fields]
+                if fields:
+                    target_df = plans_df.copy()
+                    for col in fields:
+                        if col not in target_df.columns:
+                            target_df[col] = None
+                    target_df = target_df[fields]
+            except Exception as e:
+                print(f"[delta] failed to read existing schema, using input df. error={e}")
         write_deltalake(
             DELTA_WHSUPPLIER_PLAN_PATH,
-            plans_df,
+            target_df,
             mode="append"
         )
-        print(f"[delta] appended {len(plans_df)} rows to {DELTA_WHSUPPLIER_PLAN_PATH}")
+        print(f"[delta] appended {len(target_df)} rows to {DELTA_WHSUPPLIER_PLAN_PATH}")
     except Exception as e:
         print(f"[delta] failed to write delta plans: {e}")
 
@@ -191,6 +225,9 @@ def main():
             if not model_version or not artifact_path:
                 print("[inference] no model available yet (db empty or artifact missing).")
                 continue
+
+            trained_at = parse_model_version_ts(model_version) or sim_now
+            ensure_model_registry(conn, model_version, artifact_path, trained_at)
 
             booster = xgb.Booster()
             booster.load_model(artifact_path)
