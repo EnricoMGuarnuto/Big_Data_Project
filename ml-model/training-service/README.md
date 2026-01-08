@@ -10,6 +10,17 @@ the resulting artifact. This service runs a single training pass on startup.
 - Writes the model artifact to `ARTIFACT_DIR`
 - Upserts metadata into `analytics.ml_models`
 
+## Model logic 
+The target is `batches_to_order`. The model is a gradient-boosted tree regressor
+trained on historical, per-shelf features ordered by `feature_date`. Training
+uses a time-series split (no shuffling) to avoid leakage from the future. The
+best fold is chosen by lowest MAE, and the resulting model is saved as the
+current version.
+
+Categorical inputs are expanded with one-hot encoding (`item_category`,
+`item_subcategory`). The full list of resulting feature columns is persisted to
+disk so inference can align new data to the exact training feature space.
+
 ## Requirements
 - Postgres with `analytics.v_ml_train` and `analytics.ml_models`
 - Redis + `sim-clock` (for simulated time)
@@ -20,6 +31,14 @@ the resulting artifact. This service runs a single training pass on startup.
 - `MODEL_NAME` (default: `xgb_batches_to_order`)
 - `ARTIFACT_DIR` (default: `/models`)
 - `FEATURE_SQL` (default: `SELECT * FROM analytics.v_ml_train ORDER BY shelf_id, feature_date`)
+
+## Training flow
+1. Load `analytics.v_ml_train` (must include `batches_to_order`).
+2. Drop non-feature columns (`batches_to_order`, `feature_date`, `shelf_id`).
+3. One-hot encode categorical features and store the final column list.
+4. Train with 5-fold `TimeSeriesSplit`, early stopping, MAE metric.
+5. Save the best model under a simulated-time version.
+6. Upsert `analytics.ml_models` with version, metrics, and artifact path.
 
 ## Output artifacts
 - Model file: `/models/<MODEL_NAME>_<YYYYMMDD_HHMMSS>.json`
