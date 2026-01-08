@@ -660,9 +660,9 @@ services:
     ports:
       - "8501:8501"
     environment:
-      INVENTORY_CSV: "data/store_inventory_final.csv"
+      INVENTORY_CSV: "data/db_csv/store_inventory_final.csv"
       LAYOUT_YAML: "dashboard/store_layout.yaml"
-      DELTA_EVENTS_PATH: "delta/weight_events"
+      DELTA_EVENTS_PATH: "delta/raw/weight_events"
       DELTA_TIMESTAMP_COL: "event_ts"
       POSTGRES_HOST: "postgres"
       POSTGRES_PORT: "5432"
@@ -672,6 +672,7 @@ services:
       ALERTS_TABLE: "ops.alerts"
       DASH_REFRESH_MS: "1000"
       BLINK_SECONDS: "1.2"
+      PYTHONPATH: /app
     depends_on:
       - postgres
     volumes:
@@ -679,6 +680,7 @@ services:
       - ./dashboard:/app/dashboard
       - ./images:/app/images
       - ./delta:/app/delta
+      - ./simulated_time:/app/simulated_time:ro
 
 
 

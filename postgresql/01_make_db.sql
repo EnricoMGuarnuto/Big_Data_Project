@@ -205,19 +205,22 @@ CREATE INDEX IF NOT EXISTS ix_wh_events_shelf
 
 -- Supplier restock plan (one per shelf per day, idempotent)
 CREATE TABLE IF NOT EXISTS ops.wh_supplier_plan (
-  supplier_plan_id      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  shelf_id              TEXT NOT NULL,
-  plan_date             DATE NOT NULL,  -- <<<<< fondamentale
-  suggested_qty         INTEGER NOT NULL CHECK (suggested_qty >= 0),
-  standard_batch_size   INTEGER NULL,
-  status                plan_status NOT NULL DEFAULT 'pending',
-  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (shelf_id, plan_date)          -- <<<<< fondamentale
+  supplier_plan_id BIGSERIAL PRIMARY KEY,
+  shelf_id TEXT NOT NULL,
+  plan_date DATE NOT NULL,
+  suggested_qty INTEGER NOT NULL,
+  standard_batch_size INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  UNIQUE (shelf_id, plan_date)
 );
 
+CREATE INDEX IF NOT EXISTS ix_wh_supplier_plan_date
+  ON ops.wh_supplier_plan(plan_date);
+
 CREATE INDEX IF NOT EXISTS ix_wh_supplier_plan_status
-  ON ops.wh_supplier_plan (status, plan_date, created_at);
+  ON ops.wh_supplier_plan(status);
 
 
 -- Alerts (Alert Engine output, also on Kafka `alerts`)
@@ -439,18 +442,33 @@ CREATE INDEX IF NOT EXISTS ix_ml_models_name
   ON analytics.ml_models (model_name);
 
 -- log predizioni (necessaria se vuoi tracciare cosa ha predetto il modello)
+-- analytics.ml_predictions_log
 CREATE TABLE IF NOT EXISTS analytics.ml_predictions_log (
+  model_name        TEXT NOT NULL,
   feature_date      DATE NOT NULL,
   shelf_id          TEXT NOT NULL,
   predicted_batches INTEGER NOT NULL,
   suggested_qty     INTEGER NOT NULL,
   model_version     TEXT NOT NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (feature_date, shelf_id, model_version)
+
+  PRIMARY KEY (model_name, feature_date, shelf_id, model_version),
+
+  CONSTRAINT fk_ml_pred_model
+    FOREIGN KEY (model_name)
+    REFERENCES analytics.ml_models(model_name)
+    ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS ix_ml_pred_log_date
   ON analytics.ml_predictions_log (feature_date);
+
+CREATE INDEX IF NOT EXISTS ix_ml_pred_log_shelf_date
+  ON analytics.ml_predictions_log (shelf_id, feature_date DESC);
+
+CREATE INDEX IF NOT EXISTS ix_ml_pred_log_modelver_date
+  ON analytics.ml_predictions_log (model_name, model_version, feature_date DESC);
+
 
 
 
