@@ -13,11 +13,11 @@ COPY ref.store_inventory_snapshot (
   item_category,
   item_subcategory,
   item_visibility,
-  maximum_stock
+  maximum_stock,
   current_stock,
   item_price
 )
-FROM '/import/csv/store_inventory_final.csv'
+FROM '/import/csv/db/store_inventory_final.csv'
 CSV HEADER;
 
 -- ============================
@@ -36,7 +36,7 @@ COPY ref.store_batches_snapshot (
   batch_quantity_warehouse,
   location
 )
-FROM '/import/csv/store_batches.csv'
+FROM '/import/csv/db/store_batches.csv'
 CSV HEADER;
 
 -- ============================
@@ -53,7 +53,7 @@ COPY ref.warehouse_inventory_snapshot (
   current_stock,
   item_price
 )
-FROM '/import/csv/warehouse_inventory_final.csv'
+FROM '/import/csv/db/warehouse_inventory_final.csv'
 CSV HEADER;
 
 -- ============================
@@ -72,5 +72,5 @@ COPY ref.warehouse_batches_snapshot (
   batch_quantity_warehouse,
   location
 )
-FROM '/import/csv/warehouse_batches.csv'
+FROM '/import/csv/db/warehouse_batches.csv'
 CSV HEADER;

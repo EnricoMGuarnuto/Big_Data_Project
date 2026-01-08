@@ -1,22 +1,19 @@
 import os
 import json
 import time
-from datetime import timedelta
 from datetime import timezone
 
-
-import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
 
-from simulated_time.redis_helpers import get_simulated_now  # ✅
+from simulated_time.redis_helpers import get_simulated_now
 
 MODEL_NAME = os.getenv("MODEL_NAME", "xgb_batches_to_order")
 ARTIFACT_DIR = os.getenv("ARTIFACT_DIR", "/models")
-RETRAIN_DAYS = int(os.getenv("RETRAIN_DAYS", "7"))
 
 PG_DSN = os.getenv(
     "PG_DSN",
@@ -28,22 +25,53 @@ FEATURE_SQL = os.getenv(
     "SELECT * FROM analytics.v_ml_train ORDER BY shelf_id, feature_date"
 )
 
+def ensure_utc(dt):
+    """Ensure datetime is timezone-aware (UTC)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 def one_hot(df: pd.DataFrame) -> pd.DataFrame:
     cat_cols = ["item_category", "item_subcategory"]
     for c in cat_cols:
-        df[c] = df[c].astype("category")
-    df = pd.get_dummies(df, columns=cat_cols, drop_first=False)
+        if c in df.columns:
+            df[c] = df[c].astype("category")
+    df = pd.get_dummies(df, columns=[c for c in cat_cols if c in df.columns], drop_first=False)
     return df
+
+def wait_for_db(engine, retries=20, delay_seconds=3):
+    for attempt in range(1, retries + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return
+        except OperationalError:
+            if attempt == retries:
+                raise
+            print(f"[training] waiting for postgres ({attempt}/{retries})...")
+            time.sleep(delay_seconds)
 
 def train_once(engine):
     df = pd.read_sql(FEATURE_SQL, engine)
+    if df.empty:
+        print("[training] v_ml_train is empty, skipping training")
+        return
 
     y = df["batches_to_order"].astype(int)
     drop_cols = ["batches_to_order", "feature_date", "shelf_id"]
     X = df.drop(columns=drop_cols)
 
+    # 1) One-hot encoding (defines the final training feature space)
     X = one_hot(X)
 
+    # 2) Save the exact feature columns used during training
+    os.makedirs(ARTIFACT_DIR, exist_ok=True)
+    feature_cols_path = os.path.join(ARTIFACT_DIR, f"{MODEL_NAME}_feature_columns.json")
+    with open(feature_cols_path, "w") as f:
+        json.dump(list(X.columns), f)
+    print(f"[training] saved feature columns to {feature_cols_path} (n={len(X.columns)})")
+
+    # 3) TimeSeries CV
     tscv = TimeSeriesSplit(n_splits=5)
 
     best_model = None
@@ -89,15 +117,14 @@ def train_once(engine):
                 "features": int(X.shape[1])
             }
 
-    os.makedirs(ARTIFACT_DIR, exist_ok=True)
-
-    simulated_now = get_simulated_now()        # ✅ tempo simulato unico
+    # 4) Save model artifact versioned by simulated time
+    simulated_now = ensure_utc(get_simulated_now())
     version = simulated_now.strftime("%Y%m%d_%H%M%S")
-    artifact_path = os.path.join(
-        ARTIFACT_DIR, f"{MODEL_NAME}_{version}.json"
-    )
+
+    artifact_path = os.path.join(ARTIFACT_DIR, f"{MODEL_NAME}_{version}.json")
     best_model.save_model(artifact_path)
 
+    # 5) Upsert registry entry
     upsert_sql = text("""
         INSERT INTO analytics.ml_models(
             model_name,
@@ -106,7 +133,7 @@ def train_once(engine):
             metrics_json,
             artifact_path
         )
-        VALUES (:mn, :mv, :ta, :mj, :ap)
+        VALUES (:mn, :mv, :ta, CAST(:mj AS jsonb), :ap)
         ON CONFLICT (model_name)
         DO UPDATE SET
           model_version = EXCLUDED.model_version,
@@ -119,7 +146,7 @@ def train_once(engine):
         conn.execute(upsert_sql, {
             "mn": MODEL_NAME,
             "mv": version,
-            "ta": simulated_now,          # ✅
+            "ta": simulated_now,
             "mj": json.dumps(best_metrics),
             "ap": artifact_path
         })
@@ -127,36 +154,9 @@ def train_once(engine):
     print(f"[training] saved {artifact_path} metrics={best_metrics}")
 
 def main():
-    engine = create_engine(PG_DSN)
-
-    # train at startup
+    engine = create_engine(PG_DSN, pool_pre_ping=True)
+    wait_for_db(engine)
     train_once(engine)
-
-    # retrain loop
-    while True:
-        time.sleep(60)
-
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT trained_at FROM analytics.ml_models "
-                    "WHERE model_name=:mn"
-                ),
-                {"mn": MODEL_NAME}
-            ).fetchone()
-
-        if row is None:
-            train_once(engine)
-            continue
-
-        trained_at = row[0]              # timezone-aware (Postgres)
-        now = get_simulated_now()         # naive
-
-        now = now.replace(tzinfo=timezone.utc)
-
-        if now - trained_at >= timedelta(days=RETRAIN_DAYS):
-            train_once(engine)
-
 
 if __name__ == "__main__":
     main()

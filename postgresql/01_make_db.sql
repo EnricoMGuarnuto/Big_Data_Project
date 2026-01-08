@@ -426,6 +426,34 @@ CREATE TABLE IF NOT EXISTS analytics.shelf_daily_features (
   PRIMARY KEY (shelf_id, feature_date)
 );
 
+-- registry modelli (necessaria a training + inference)
+CREATE TABLE IF NOT EXISTS analytics.ml_models (
+  model_name    TEXT PRIMARY KEY,
+  model_version TEXT NOT NULL,
+  trained_at    TIMESTAMPTZ NOT NULL,
+  metrics_json  JSONB,
+  artifact_path TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_ml_models_name
+  ON analytics.ml_models (model_name);
+
+-- log predizioni (necessaria se vuoi tracciare cosa ha predetto il modello)
+CREATE TABLE IF NOT EXISTS analytics.ml_predictions_log (
+  feature_date      DATE NOT NULL,
+  shelf_id          TEXT NOT NULL,
+  predicted_batches INTEGER NOT NULL,
+  suggested_qty     INTEGER NOT NULL,
+  model_version     TEXT NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (feature_date, shelf_id, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ml_pred_log_date
+  ON analytics.ml_predictions_log (feature_date);
+
+
+
 -- ======================================================
 -- HOUSEKEEPING TRIGGERS (auto-update updated_at)
 -- ======================================================

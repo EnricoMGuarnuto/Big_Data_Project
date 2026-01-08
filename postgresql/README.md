@@ -12,7 +12,7 @@ and seed configuration tables. These scripts are intended to be run in order.
 
 ## Expected inputs
 `02_load_ref_from_csv.sql` assumes the following CSVs are mounted inside the
-Postgres container at `/import/csv`:
+Postgres container at `/import/csv/db`:
 - `store_inventory_final.csv`
 - `store_batches.csv`
 - `warehouse_inventory_final.csv`

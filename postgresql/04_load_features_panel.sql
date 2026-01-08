@@ -40,5 +40,5 @@ COPY analytics.shelf_daily_features (
   sales_last_14d,
   label_next_day_stockout
 )
-FROM '/import/csv/synthetic_1y_panel.csv'
+FROM '/import/csv/sim/synthetic_1y_panel.csv'
 CSV HEADER;

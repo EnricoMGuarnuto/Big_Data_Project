@@ -111,9 +111,9 @@ WHERE warehouse_capacity > 0
 
 
 -- Inference giornaliera: solo shelf in warehouse alert (o vuoi anche shelf alert? scegli tu)
-CREATE OR REPLACE VIEW analytics.v_ml_infer_today AS
-SELECT *
-FROM analytics.v_ml_features
-WHERE feature_date = CURRENT_DATE
-  AND is_warehouse_alert = 1
-  AND warehouse_capacity > 0;
+-- CREATE OR REPLACE VIEW analytics.v_ml_infer_today AS
+-- SELECT *
+-- FROM analytics.v_ml_features
+-- WHERE feature_date = CURRENT_DATE
+  -- AND is_warehouse_alert = 1
+  -- AND warehouse_capacity > 0;

@@ -3,3 +3,5 @@ numpy==2.1.3
 psycopg2-binary==2.9.9
 sqlalchemy==2.0.36
 xgboost==2.1.3
+deltalake
+pyarrow==17.0.0

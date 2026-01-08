@@ -1,111 +1,299 @@
+import glob
 import os
-import math
+import re
 import time
-from datetime import datetime
+from datetime import timezone
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 import xgboost as xgb
 
-from simulated_time.redis_helpers import get_simulated_now  # ✅
+from simulated_time.redis_helpers import get_simulated_now  # tempo simulato
 
-PG_DSN = os.getenv(
-    "PG_DSN",
-    "postgresql+psycopg2://postgres:example@db:5432/postgres"
-)
+# -----------------------------
+# ENV / CONFIG
+# -----------------------------
+PG_DSN = os.getenv("PG_DSN", "postgresql+psycopg2://postgres:example@db:5432/postgres")
 MODEL_NAME = os.getenv("MODEL_NAME", "xgb_batches_to_order")
 ARTIFACT_DIR = os.getenv("ARTIFACT_DIR", "/models")
+ALLOW_DISK_MODEL = os.getenv("ALLOW_DISK_MODEL", "1") == "1"
 
 RUN_HOUR = int(os.getenv("RUN_HOUR", "0"))
 RUN_MINUTE = int(os.getenv("RUN_MINUTE", "5"))
+HEARTBEAT_SECONDS = int(os.getenv("HEARTBEAT_SECONDS", "60"))
 
+# NON usare v_ml_infer_today (usa CURRENT_DATE del DB = tempo reale)
 INFER_SQL = os.getenv(
     "INFER_SQL",
-    "SELECT * FROM analytics.v_ml_infer_today ORDER BY shelf_id"
+    """
+    SELECT *
+    FROM analytics.v_ml_features
+    WHERE feature_date = :today
+      AND is_warehouse_alert = 1
+      AND warehouse_capacity > 0
+    ORDER BY shelf_id
+    """
 )
 
-def get_latest_model(engine):
-    row = engine.execute(
-        text("SELECT model_version, artifact_path FROM analytics.ml_models WHERE model_name=:mn"),
+# Delta output (append)
+DELTA_ENABLED = os.getenv("DELTA_ENABLED", "1") == "1"
+DELTA_WHSUPPLIER_PLAN_PATH = os.getenv(
+    "DELTA_WHSUPPLIER_PLAN_PATH",
+    "/delta/ops/wh_supplier_plan"
+)
+
+# Optional: file con lista colonne training per allineare one-hot
+# (se non esiste, si prova comunque ma è meno sicuro)
+FEATURE_COLUMNS_PATH = os.getenv(
+    "FEATURE_COLUMNS_PATH",
+    os.path.join(ARTIFACT_DIR, f"{MODEL_NAME}_feature_columns.json")
+)
+
+# -----------------------------
+# HELPERS
+# -----------------------------
+def ensure_utc(dt):
+    """Ensure datetime is timezone-aware (UTC)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+def _latest_model_from_disk():
+    pattern = os.path.join(ARTIFACT_DIR, f"{MODEL_NAME}_*.json")
+    candidates = []
+
+    for path in sorted(glob.glob(pattern)):
+        fname = os.path.basename(path)
+        match = re.match(rf"^{re.escape(MODEL_NAME)}_(\d{{8}}_\d{{6}})\.json$", fname)
+        if not match:
+            continue
+        version = match.group(1)
+        candidates.append((version, path))
+
+    if not candidates:
+        return None, None
+
+    # versions are YYYYMMDD_HHMMSS, so lexicographic sort works
+    version, path = sorted(candidates)[-1]
+    return version, path
+
+def get_latest_model(conn):
+    row = conn.execute(
+        text("""
+            SELECT model_version, artifact_path
+            FROM analytics.ml_models
+            WHERE model_name = :mn
+            ORDER BY trained_at DESC
+            LIMIT 1
+        """),
         {"mn": MODEL_NAME}
     ).fetchone()
-    if row is None:
-        raise RuntimeError("No model in analytics.ml_models. Start training-service first.")
-    return row[0], row[1]
+
+    if row is not None and row[1] and os.path.exists(row[1]):
+        return row[0], row[1]
+
+    if not ALLOW_DISK_MODEL:
+        return None, None
+
+    return _latest_model_from_disk()
 
 def one_hot_like_training(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    One-hot su category/subcategory.
+    Nota: per essere perfettamente consistente con training dovresti salvare
+    la lista colonne dal training e riallinearla qui. Lo facciamo sotto.
+    """
     cat_cols = ["item_category", "item_subcategory"]
     for c in cat_cols:
-        df[c] = df[c].astype("category")
-    df = pd.get_dummies(df, columns=cat_cols, drop_first=False)
+        if c in df.columns:
+            df[c] = df[c].astype("category")
+    df = pd.get_dummies(df, columns=[c for c in cat_cols if c in df.columns], drop_first=False)
     return df
 
-def should_run_now():
-    now = get_simulated_now()  # ✅ usa tempo simulato
-    return now.hour == RUN_HOUR and now.minute == RUN_MINUTE
+def align_columns(X: pd.DataFrame, training_cols: list) -> pd.DataFrame:
+    """
+    Riallinea le colonne di inference a quelle viste in training:
+    - aggiunge colonne mancanti con 0
+    - rimuove colonne extra
+    - riordina nello stesso ordine del training
+    """
+    return X.reindex(columns=training_cols, fill_value=0)
 
+def load_training_feature_columns():
+    """Carica le colonne usate in training se hai salvato il file."""
+    try:
+        import json
+        if os.path.exists(FEATURE_COLUMNS_PATH):
+            with open(FEATURE_COLUMNS_PATH, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+def should_run_now(sim_now):
+    run_dt = sim_now.replace(hour=RUN_HOUR, minute=RUN_MINUTE, second=0, microsecond=0)
+    return sim_now >= run_dt
+
+def write_delta_plans(plans_df: pd.DataFrame):
+    """
+    Scrive in Delta in modalità append.
+    Richiede la libreria 'deltalake' (delta-rs).
+    """
+    if not DELTA_ENABLED:
+        return
+
+    try:
+        from deltalake.writer import write_deltalake
+    except Exception as e:
+        print(f"[delta] deltalake not available -> skip delta write. error={e}")
+        return
+
+    if plans_df.empty:
+        return
+
+    # Consiglio: usare schema coerente e lasciare che delta-rs inferisca
+    # oppure definire schema esplicito. Qui inferenza va bene.
+    try:
+        write_deltalake(
+            DELTA_WHSUPPLIER_PLAN_PATH,
+            plans_df,
+            mode="append"
+            # volendo: partition_by=["plan_date"]
+        )
+        print(f"[delta] appended {len(plans_df)} rows to {DELTA_WHSUPPLIER_PLAN_PATH}")
+    except Exception as e:
+        print(f"[delta] failed to write delta plans: {e}")
+
+# -----------------------------
+# MAIN
+# -----------------------------
 def main():
     engine = create_engine(PG_DSN)
 
     last_run_day = None
+    training_cols = load_training_feature_columns()
+    last_heartbeat = 0.0
+
+    print(
+        f"[inference] starting with RUN_HOUR={RUN_HOUR} RUN_MINUTE={RUN_MINUTE} "
+        f"HEARTBEAT_SECONDS={HEARTBEAT_SECONDS}"
+    )
 
     while True:
         time.sleep(20)
 
-        if not should_run_now():
+        sim_now = ensure_utc(get_simulated_now())
+        if not should_run_now(sim_now):
+            if HEARTBEAT_SECONDS > 0 and time.time() - last_heartbeat >= HEARTBEAT_SECONDS:
+                run_dt = sim_now.replace(hour=RUN_HOUR, minute=RUN_MINUTE, second=0, microsecond=0)
+                print(f"[inference] waiting for {run_dt.isoformat()} (sim_now={sim_now.isoformat()})")
+                last_heartbeat = time.time()
             continue
 
-        today = get_simulated_now().date()  # ✅ usa tempo simulato
+        today = sim_now.date()
         if last_run_day == today:
             continue  # già fatto oggi
 
         with engine.begin() as conn:
-            df = pd.read_sql(INFER_SQL, conn)
+            # 1) leggi features di oggi (TEMPO SIMULATO)
+            df = pd.read_sql(text(INFER_SQL), conn, params={"today": today})
 
             if df.empty:
-                print("[inference] no shelves to infer today")
+                print(f"[inference] no shelves to infer on {today}")
                 last_run_day = today
                 continue
 
+            # 2) carica latest model
             model_version, artifact_path = get_latest_model(conn)
+            if not model_version or not artifact_path:
+                print("[inference] no model available yet (db empty or artifact missing).")
+                continue
             booster = xgb.Booster()
             booster.load_model(artifact_path)
 
-            y_cols = ["batches_to_order", "feature_date", "shelf_id"]
-            drop_cols = [c for c in y_cols if c in df.columns]
+            # 3) prepara X
+            drop_cols = [c for c in ["batches_to_order", "feature_date", "shelf_id"] if c in df.columns]
             X = df.drop(columns=drop_cols)
             X = one_hot_like_training(X)
 
+            # Allinea colonne se hai il file training
+            if training_cols is not None:
+                X = align_columns(X, training_cols)
+
             dmat = xgb.DMatrix(X.values)
             pred = booster.predict(dmat)
-
             pred_batches = [max(0, int(round(p))) for p in pred]
 
-            insert_plan = text("""
-                INSERT INTO ops.wh_supplier_plan(shelf_id, suggested_qty, standard_batch_size, status, created_at, updated_at)
-                VALUES (:sid, :qty, :bs, 'pending', NOW(), NOW())
-                ON CONFLICT DO NOTHING;
+            # 4) SQL: upsert plan idempotente (1 per shelf per giorno) + log pred
+            upsert_plan_sql = text("""
+                INSERT INTO ops.wh_supplier_plan(
+                    shelf_id, plan_date, suggested_qty, standard_batch_size, status, created_at, updated_at
+                )
+                VALUES (:sid, :pd, :qty, :bs, 'pending', :now_ts, :now_ts)
+                ON CONFLICT (shelf_id, plan_date)
+                DO UPDATE SET
+                    suggested_qty = EXCLUDED.suggested_qty,
+                    standard_batch_size = EXCLUDED.standard_batch_size,
+                    status = 'pending',
+                    updated_at = EXCLUDED.updated_at;
             """)
 
-            log_pred = text("""
-                INSERT INTO analytics.ml_predictions_log(feature_date, shelf_id, predicted_batches, suggested_qty, model_version)
-                VALUES (:fd, :sid, :pb, :sq, :mv);
+            # log idempotente: evita duplicati se re-run
+            log_pred_sql = text("""
+                INSERT INTO analytics.ml_predictions_log(
+                    feature_date, shelf_id, predicted_batches, suggested_qty, model_version
+                )
+                VALUES (:fd, :sid, :pb, :sq, :mv)
+                ON CONFLICT (feature_date, shelf_id, model_version)
+                DO NOTHING;
             """)
+
+            # 5) esegui insert per ogni shelf + prepara dataframe per Delta
+            delta_rows = []
 
             for i, row in df.reset_index(drop=True).iterrows():
                 sid = row["shelf_id"]
-                bs = int(row["standard_batch_size"])
+                bs = int(row.get("standard_batch_size", 1))
                 pb = int(pred_batches[i])
                 sq = int(pb * bs)
 
                 if sq <= 0:
                     continue
 
-                conn.execute(insert_plan, {"sid": sid, "qty": sq, "bs": bs})
-                conn.execute(log_pred, {"fd": today, "sid": sid, "pb": pb, "sq": sq, "mv": model_version})
+                conn.execute(upsert_plan_sql, {
+                    "sid": sid,
+                    "pd": today,
+                    "qty": sq,
+                    "bs": bs,
+                    "now_ts": sim_now
+                })
 
-        print(f"[inference] wrote pending plans for {today}")
+                conn.execute(log_pred_sql, {
+                    "fd": today,
+                    "sid": sid,
+                    "pb": pb,
+                    "sq": sq,
+                    "mv": model_version
+                })
+
+                delta_rows.append({
+                    "shelf_id": sid,
+                    "plan_date": str(today),
+                    "suggested_qty": sq,
+                    "standard_batch_size": bs,
+                    "status": "pending",
+                    "model_version": model_version,
+                    "created_at": sim_now.isoformat(),
+                    "updated_at": sim_now.isoformat()
+                })
+
+        # 6) Scrittura Delta (fuori dalla transazione DB va bene)
+        plans_df = pd.DataFrame(delta_rows)
+        write_delta_plans(plans_df)
+
+        print(f"[inference] wrote pending plans for {today} (rows={len(delta_rows)})")
         last_run_day = today
+
 
 if __name__ == "__main__":
     main()

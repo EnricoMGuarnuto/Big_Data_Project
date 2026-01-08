@@ -266,4 +266,4 @@ docker compose up -d --build kafka-producer-shelf spark-shelf-aggregator
 - Se vuoi rilanciare solo l’inizializzazione dei connector: `docker compose run --rm connect-init`.
 - Se `kafka-init` o `connect-init` falliscono, controllare i log con `docker compose logs -f kafka-init connect-init`.
 - Se Spark non parte durante la build, verificare l’accesso a Internet (download JAR/`--packages`).
-- Se Postgres non carica i CSV, verificare che `data/db_csv/*.csv` esistano e che il volume `./data/db_csv:/import/csv:ro` sia montato correttamente.
+- Se Postgres non carica i CSV, verificare che `data/db_csv/*.csv` esistano e che il volume `./data/db_csv:/import/csv/db:ro` sia montato correttamente.
