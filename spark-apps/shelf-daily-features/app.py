@@ -102,7 +102,7 @@ def run_for_day(run_date_str: str, sim_ts_str: str):
             )
         )
 
-        # standard_batch_size: prendo dal ref.store_batches_snapshot (più affidabile di batch_catalog se non lo popolate)
+        # standard_batch_size: take from ref.store_batches_snapshot (more reliable than batch_catalog if you do not populate it)
         store_batches_snap = spark.read.jdbc(url, "ref.store_batches_snapshot", properties=props) \
             .select("shelf_id", F.col("standard_batch_size").cast("int").alias("standard_batch_size"))
 
@@ -239,7 +239,7 @@ def run_for_day(run_date_str: str, sim_ts_str: str):
             base
             .withColumn("is_weekend", F.col("day_of_week").isin([5, 6]))
             .withColumn("warehouse_inbound_day", F.col("day_of_week").isin(list(SUPPLIER_INBOUND_DOW)))
-            # refill_day: se volete "sempre", mettete True. Qui lo lascio come False e lo riempite quando avete moved_wh_to_shelf.
+            # refill_day: if you want "always", set True. Here it stays False and you fill it when you have moved_wh_to_shelf.
             .withColumn("refill_day", F.lit(False))
             .withColumn("warehouse_capacity", F.coalesce(F.col("warehouse_capacity"), F.lit(0)).cast("int"))
             .withColumn("current_stock_shelf", F.coalesce(F.col("current_stock_shelf"), F.lit(0)).cast("int"))
@@ -249,15 +249,15 @@ def run_for_day(run_date_str: str, sim_ts_str: str):
             .withColumn("discount", F.coalesce(F.col("discount"), F.lit(0.0)))
             .withColumn("is_discounted", (F.col("discount") > 0))
             .withColumn("is_discounted_next_7d", F.coalesce(F.col("is_discounted_next_7d"), F.lit(False)))
-            .withColumn("people_count", F.lit(None).cast("int"))  # se non avete footfall, resta NULL
-            .withColumn("stockout_events", F.lit(0).cast("int"))  # lo calcoli davvero solo se hai domanda attesa; altrimenti 0
+            .withColumn("people_count", F.lit(None).cast("int"))  # if you do not have footfall, it stays NULL
+            .withColumn("stockout_events", F.lit(0).cast("int"))  # only compute this if you have expected demand; otherwise 0
             .withColumn("shelf_fill_ratio",
                         F.when(F.col("shelf_capacity") > 0, (F.col("current_stock_shelf") / F.col("shelf_capacity")).cast("double"))
                         .otherwise(F.lit(0.0)))
             .withColumn("warehouse_fill_ratio",
                         F.when(F.col("warehouse_capacity") > 0, (F.col("current_stock_warehouse") / F.col("warehouse_capacity")).cast("double"))
                         .otherwise(F.lit(0.0)))
-            # questi li popolano i vostri servizi/policy; qui li metto neutri
+            # these are populated by your services/policy; here they are neutral
             .withColumn("shelf_threshold_qty", F.lit(None).cast("int"))
             .withColumn("alerts_last_30d_shelf", F.coalesce(F.col("alerts_last_30d_shelf"), F.lit(0)).cast("int"))
             .withColumn("is_shelf_alert", F.lit(False))
@@ -420,4 +420,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

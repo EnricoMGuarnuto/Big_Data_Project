@@ -455,8 +455,8 @@ product_hierarchy = {
 
 def compute_standard_batch_size(category, subcategory, item_weight):
     """
-    Ritorna una dimensione standard del lotto (numero di pezzi)
-    coerente con il tipo di prodotto e il suo peso.
+    Return a standard batch size (number of pieces) that is consistent
+    with the product type and its weight.
     """
     # Beverage-like: multiple of 6
     beverage_like_categories = {
@@ -477,7 +477,7 @@ def compute_standard_batch_size(category, subcategory, item_weight):
     # 1) Beverage-like products
     # -------------------------------
     if category in beverage_like_categories:
-        # tipicamente pacchi da 6, 12 o 24
+        # typically packs of 6, 12, or 24
         return int(np.random.choice([18, 24, 30, 36, 42, 48, 60]))
 
     # -------------------------------
@@ -485,18 +485,18 @@ def compute_standard_batch_size(category, subcategory, item_weight):
     # -------------------------------
     if category in perishable_categories: 
 
-        # Frutta e verdura: lotti medio-piccoli, non 200 pezzi
+        # Fruits and vegetables: medium-small batches, not 200 pieces
         if category == 'FRUITS AND VEGETABLES':
-            if item_weight <= 80:          # ciliegie, frutti piccoli
+            if item_weight <= 80:          # cherries, small fruits
                 return int(np.random.choice([20, 25, 30, 35, 40]))
-            elif item_weight <= 300:       # mele, arance, ecc.
+            elif item_weight <= 300:       # apples, oranges, etc.
                 return int(np.random.choice([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]))
-            elif item_weight <= 1000:      # verdura medio-grande
+            elif item_weight <= 1000:      # medium-to-large vegetables
                 return int(np.random.choice([8, 9, 10, 11, 12]))
-            else:                          # angurie, zucche, meloni...
+            else:                          # watermelons, pumpkins, melons...
                 return int(np.random.choice([8, 9, 10, 11, 12]))
-        # 2b) Altri deperibili (frigo, surgelato, carne, pesce)
-        #    → lotti piccoli, per non riempire troppo il magazzino
+        # 2b) Other perishables (chilled, frozen, meat, fish)
+        #    -> small batches, to avoid overfilling the warehouse
         if item_weight <= 300:
             return int(np.random.choice([15, 20, 25, 30, 35, 40]))
         elif item_weight <= 800:
@@ -506,7 +506,7 @@ def compute_standard_batch_size(category, subcategory, item_weight):
         else:
             return int(np.random.choice([5, 6, 8, 10, 12]))
 
-    # Default per the rest of products 
+    # Default for the rest of products
     if item_weight <= 200:
         return int(np.random.choice([20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]))
     if item_weight <= 500:
@@ -535,7 +535,7 @@ def generate_product_catalog(product_hierarchy):
 
             for i in range(sub_props['count']):
                 global_counter += 1
-                # es: WINSPA0001, WINSPA0002, ...
+                # e.g., WINSPA0001, WINSPA0002, ...
                 shelf_id = f"{shelf_id_prefix}{subcategory_prefix}{global_counter:04d}"
 
                 if 'weight_options' in sub_props:

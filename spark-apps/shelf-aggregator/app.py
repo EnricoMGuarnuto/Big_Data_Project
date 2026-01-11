@@ -110,7 +110,7 @@ def bootstrap_state_if_missing():
         return
 
     if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
-        raise RuntimeError("Parametri JDBC mancanti per bootstrap: JDBC_PG_URL, JDBC_PG_USER, JDBC_PG_PASSWORD.")
+        raise RuntimeError("Missing JDBC params for bootstrap: JDBC_PG_URL, JDBC_PG_USER, JDBC_PG_PASSWORD.")
 
     last_err = None
     for attempt in range(1, 10):

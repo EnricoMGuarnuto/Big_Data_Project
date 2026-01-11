@@ -100,9 +100,9 @@ def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]]
             try:
                 res = ConfigResource(ConfigResourceType.TOPIC, name, configs=cfg)
                 admin.alter_configs([res])
-                print(f"[init] Aggiornata config topic esistente: {name}")
+                print(f"[init] Updated config for existing topic: {name}")
             except Exception as e:
-                print(f"[init] Warning: impossibile aggiornare config per {name}: {e}")
+                print(f"[init] Warning: unable to update config for {name}: {e}")
 
     if to_create:
         try:
@@ -111,17 +111,17 @@ def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]]
                 getattr(t, "name", None) or getattr(t, "topic", None) or str(t)
                 for t in to_create
             ]
-            print(f"[init] Creati {len(to_create)} topic: {created_names}")
+            print(f"[init] Created {len(to_create)} topics: {created_names}")
         except TopicAlreadyExistsError:
-            print("[init] Alcuni topic esistevano già (race condition), ok.")
+            print("[init] Some topics already existed (race condition), ok.")
         except Exception as e:
-            print(f"[init] Errore nella creazione dei topic: {e}")
+            print(f"[init] Error while creating topics: {e}")
 
 def main():
     admin = None
     try:
         admin = build_admin()
-        print(f"[init] Connesso a {BROKER}")
+        print(f"[init] Connected to {BROKER}")
 
         # Append-only
         ensure_topics(admin, APPEND_ONLY, DEFAULT_PARTITIONS, DEFAULT_RF, BASE_APPEND_CFG)

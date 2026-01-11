@@ -13,24 +13,24 @@ np.random.seed(SEED)
 START_DATE = date(2025, 1, 1)
 N_DAYS = 365
 
-# Giorni inbound (fornitore -> warehouse) FISSI: Martedì=1, Venerdì=4
+# Fixed inbound days (supplier -> warehouse): Tuesday=1, Friday=4
 WH_INBOUND_DOW = {1, 4}
 
-# Categorie deperibili
+# Perishable categories
 PERISHABLE_CATEGORIES = {'FRUITS AND VEGETABLES', 'REFRIGERATED', 'FROZEN', 'MEAT', 'FISH'}
 
-# Policy "corrente" (per generare alert/refill coerenti)
-SHELF_THRESHOLD_PCT = 0.18      # alert shelf se stock < 18% capacità
+# Current policy (to generate consistent alert/refill data)
+SHELF_THRESHOLD_PCT = 0.18      # shelf alert if stock < 18% capacity
 SHELF_TARGET_PCT = 0.80         # refill shelf fino all'80%
-WH_COVER_DAYS_REORDER = 10      # reorder point: giorni copertura
-WH_ORDER_COVER_DAYS = 14        # quando ordini, punti a ~14 giorni copertura
+WH_COVER_DAYS_REORDER = 10      # reorder point: coverage days
+WH_ORDER_COVER_DAYS = 14        # when ordering, target ~14 days of coverage
 
-# Promo sintetiche
+# Synthetic promos
 PROMO_PROB = 0.08
 PROMO_LEVELS = [0.10, 0.15, 0.20, 0.25]
 PROMO_UPLIFT = 1.35
 
-# Domanda: moltiplicatori categoria
+# Demand: category multipliers
 CATEGORY_DEMAND_MULT = {
     "BEVERAGES": 1.15,
     "BEERS": 1.05,
@@ -66,7 +66,7 @@ DEFAULT_MULT = 0.60
 
 
 # ============================================================
-# HELPERS: stagionalità
+# HELPERS: seasonality
 # ============================================================
 def seasonality_multiplier(d: date) -> float:
     if d.month in (6, 7, 8):
@@ -165,7 +165,7 @@ def load_fixed_discounts(all_discounts_path: str) -> pd.DataFrame:
     required = {"week_start", "week_end", "shelf_id", "discount_pct"}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"all_discounts.parquet: mancano colonne {missing}. Colonne presenti: {list(df.columns)}")
+        raise ValueError(f"all_discounts.parquet: missing columns {missing}. Available columns: {list(df.columns)}")
 
     # Converti epoch ms -> date (UTC)
     df = df.copy()
@@ -181,17 +181,17 @@ def load_fixed_discounts(all_discounts_path: str) -> pd.DataFrame:
         start = r["week_start_date"]
         end = r["week_end_date"]
 
-        # Alcuni dataset hanno week_end “inclusivo” (diff=6), altri “esclusivo” (diff=7).
+        # Some datasets have an inclusive week_end (diff=6), others exclusive (diff=7).
         delta = (end - start).days
 
         if delta == 6:
-            # inclusivo: start..end (7 giorni)
+            # inclusive: start..end (7 days)
             dates = pd.date_range(start, end, freq="D")
         elif delta == 7:
-            # esclusivo: start..(end-1) (7 giorni)
+            # exclusive: start..(end-1) (7 days)
             dates = pd.date_range(start, end - timedelta(days=1), freq="D")
         else:
-            # fallback: prova inclusivo (meglio di rompere tutto)
+            # fallback: try inclusive (better than breaking everything)
             dates = pd.date_range(start, end, freq="D")
 
         for d in dates:
@@ -203,14 +203,14 @@ def load_fixed_discounts(all_discounts_path: str) -> pd.DataFrame:
 
     out = pd.DataFrame(out_rows)
 
-    # Se ci sono sovrapposizioni (stesso shelf e stesso giorno), tieni lo sconto massimo
+    # If there are overlaps (same shelf and same day), keep the maximum discount
     out = out.groupby(["shelf_id", "discount_date"], as_index=False)["discount"].max()
     return out
 
 
 
 # ============================================================
-# HELPERS: expiry sampling (coerente col tuo generatore)
+# HELPERS: expiry sampling (consistent with your generator)
 # ============================================================
 def sample_expiry_days(is_perishable: bool, batch_index_hint: int = 0) -> int:
     if is_perishable:
@@ -314,7 +314,7 @@ def simulate_year(
     shelf_batches = build_batches(store_batches_df, "batch_quantity_store")
     wh_batches = build_batches(wh_batches_df, "batch_quantity_warehouse")
 
-    # assicurati che esistano le chiavi
+    # ensure the keys exist
     for sid in products["shelf_id"].tolist():
         shelf_batches.setdefault(sid, [])
         wh_batches.setdefault(sid, [])
@@ -334,7 +334,7 @@ def simulate_year(
         arr[promo_days] = np.random.choice(PROMO_LEVELS, size=int(promo_days.sum()))
         promo_map[sid] = arr
 
-    # esporta analytics.daily_discounts usando sconto effettivo
+    # export analytics.daily_discounts using the effective discount
     dd_rows = []
     shelf_ids = products["shelf_id"].tolist()
 
@@ -384,11 +384,11 @@ def simulate_year(
         is_weekend = 1 if dow in (5, 6) else 0
         warehouse_inbound_day = 1 if dow in WH_INBOUND_DOW else 0
 
-        # traffico (unico PV)
+        # traffic (single store)
         base_traffic = 1100 + 120 * is_weekend
         people_count = int(max(250, np.random.normal(base_traffic * seasonality_multiplier(d), 70)))
 
-        # ---------- 1) inbound supplier -> warehouse (solo Mar/Ven) ----------
+        # ---------- 1) inbound supplier -> warehouse (Tue/Fri only) ----------
         if warehouse_inbound_day == 1:
             for _, pr in products.iterrows():
                 sid = pr["shelf_id"]
@@ -401,9 +401,9 @@ def simulate_year(
                 shelf_cap = int(pr["shelf_capacity"])
                 wh_cap = int(pr["warehouse_capacity"])
 
-                # Perishables: consegna diretta allo shelf (altrimenti muoiono)
+                # Perishables: deliver directly to the shelf (otherwise they spoil)
                 if is_perishable or wh_cap <= 0:
-                    # rispetta capacità shelf (spazio disponibile)
+                    # respect shelf capacity (available space)
                     shelf_now = total_qty(shelf_batches[sid])
                     free_shelf = max(0, shelf_cap - shelf_now)
                     delivered = min(order_qty, free_shelf)
@@ -418,7 +418,7 @@ def simulate_year(
                     pending_supplier_orders[sid] = order_qty - delivered
                     continue
 
-                # Non-perishables: consegna in warehouse (rispetta capacità)
+                # Non-perishables: deliver to warehouse (respect capacity)
                 wh_now = total_qty(wh_batches[sid])
                 free_wh = max(0, wh_cap - wh_now)
                 delivered = min(order_qty, free_wh)
@@ -432,7 +432,7 @@ def simulate_year(
                     sort_batches(wh_batches[sid])
                 pending_supplier_orders[sid] = order_qty - delivered
 
-        # ---------- 2) per ogni SKU: scadenze, vendite, refill, decisione ordine ----------
+        # ---------- 2) for each SKU: expirations, sales, refill, order decision ----------
         for _, pr in products.iterrows():
             sid = pr["shelf_id"]
             cat = pr["item_category"]
@@ -451,7 +451,7 @@ def simulate_year(
             stock_shelf_before = total_qty(shelf_batches[sid])
             stock_wh_before = total_qty(wh_batches[sid])
 
-            # sconto effettivo (fixed + promo)
+            # effective discount (fixed + promo)
             promo = float(promo_map[sid][t])
             fixed = float(fixed_lookup.get((sid, d), 0.0))
             if discount_combine_mode == "add":
@@ -485,10 +485,10 @@ def simulate_year(
             consume_fefo(shelf_batches[sid], sales_qty)
             stock_shelf_after_sales = total_qty(shelf_batches[sid])
 
-            # aggiorna ewma su vendite osservate
+            # update EWMA based on observed sales
             demand_ewma[sid] = 0.90 * demand_ewma[sid] + 0.10 * sales_qty
 
-            # soglie
+            # thresholds
             shelf_threshold_qty = int(math.ceil(SHELF_THRESHOLD_PCT * shelf_cap))
             wh_reorder_point_qty = int(math.ceil(demand_ewma[sid] * WH_COVER_DAYS_REORDER))
 
@@ -497,7 +497,7 @@ def simulate_year(
             if (not is_perishable) and wh_cap > 0:
                 is_warehouse_alert = 1 if stock_wh_before < wh_reorder_point_qty else 0
 
-            # refill shelf IMMEDIATO: se shelf alert, sposta da WH->SHELF nello stesso giorno
+            # immediate shelf refill: if shelf alert, move from WH->SHELF on the same day
             moved_wh_to_shelf = 0
             refill_day = 0
             if (not is_perishable) and wh_cap > 0 and is_shelf_alert == 1:
@@ -510,7 +510,7 @@ def simulate_year(
                     )
                     refill_day = 1
 
-            # decisione ordine fornitore: OGNI GIORNO, ma entra SOLO Mar/Ven (pending)
+            # supplier order decision: EVERY DAY, but arrives only Tue/Fri (pending)
             batches_to_order = 0
             if (not is_perishable) and wh_cap > 0:
                 wh_now = total_qty(wh_batches[sid])
@@ -542,7 +542,7 @@ def simulate_year(
             a30_shelf = int(sum(shelf_alert_hist[sid][-30:-1])) if len(shelf_alert_hist[sid]) > 1 else 0
             a30_wh = int(sum(wh_alert_hist[sid][-30:-1])) if len(wh_alert_hist[sid]) > 1 else 0
 
-            # salva riga
+            # save row
             curr_shelf = total_qty(shelf_batches[sid])
             curr_wh = total_qty(wh_batches[sid])
 

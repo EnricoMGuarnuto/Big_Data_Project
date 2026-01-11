@@ -133,7 +133,7 @@ def load_discounts_from_parquet(path: str) -> Dict[str, float]:
 
     df = pd.read_parquet(path)
 
-    sim_now = now()   # ⬅️ TEMPO SIMULATO
+    sim_now = now()   # SIMULATED TIME
     iso = sim_now.isocalendar()
     week_str = f"{iso.year}-W{iso.week:02}"
 
@@ -211,7 +211,7 @@ def load_daily_discounts_from_pg() -> Dict[str, float]:
 carts: DefaultDict[str, DefaultDict[str, int]] = defaultdict(lambda: defaultdict(int))
 carts_lock = threading.Lock()
 
-# batch_state[shelf_id] = deque([{"batch_code", "expiry_date", "qty_store"}...]) ordinata per expiry asc
+# batch_state[shelf_id] = deque([{"batch_code", "expiry_date", "qty_store"}...]) ordered by expiry asc
 batch_state: Dict[str, Deque[Dict]] = {}
 batches_lock = threading.Lock()
 
@@ -220,8 +220,8 @@ entries_lock = threading.Lock()
 
 def load_store_batches(path: str) -> Dict[str, Deque[Dict]]:
     """
-    Bootstrap da store_batches.parquet
-    Richieste colonne:
+    Bootstrap from store_batches.parquet
+    Required columns:
       shelf_id, batch_code, expiry_date, batch_quantity_store
     """
     if not os.path.exists(path):
@@ -363,7 +363,7 @@ def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date
                 break
 
             # take a reference to the chosen batch
-            # Deque non supporta accesso diretto efficiente a idx >0 per pop; usiamo lista temporanea
+            # Deque does not support efficient direct access for idx > 0 pops; use a temporary list
             tmp = list(q)
             b = tmp[idx]
             take = min(remaining, b["qty_store"])
@@ -400,7 +400,7 @@ def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date
 def emit_pos_transaction(customer_id: str, timestamp: datetime):
     global producer, rconn
 
-    # snapshot carrello
+    # cart snapshot
     with carts_lock:
         items_map = dict(carts.get(customer_id, {}))
 
@@ -537,7 +537,7 @@ def foot_consumer_loop():
 
 def janitor_loop():
     while True:
-        time.sleep(20)  # meglio per simulazione veloce
+        time.sleep(20)  # better for fast simulation
         current_time = now()
         stale = []
         with entries_lock:
@@ -568,7 +568,7 @@ def checkout_loop():
         for cid in to_checkout:
             emit_pos_transaction(cid, timestamp=current_time)
 
-        # loop leggero, NON temporale
+        # lightweight loop, NOT time-based
         time.sleep(0.01)
 
 # ========================

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY dashboard/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Copia solo dashboard + assets necessari
+# Copy only required dashboard + assets
 COPY dashboard /app/dashboard
 COPY images /app/images
 COPY data /app/data

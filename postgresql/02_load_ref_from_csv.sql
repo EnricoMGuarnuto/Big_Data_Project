@@ -1,6 +1,6 @@
 -- load_ref_from_csv.sql
 -- Assumes CSVs are mounted for the Postgres server at /import/csv
--- snapshot_ts è omesso: usa il DEFAULT NOW() definito nella DDL.
+-- snapshot_ts is omitted: it uses the DEFAULT NOW() defined in the DDL.
 
 -- ============================
 -- STORE INVENTORY SNAPSHOT

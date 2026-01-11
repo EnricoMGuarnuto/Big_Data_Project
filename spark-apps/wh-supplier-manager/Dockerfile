@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir redis
 WORKDIR /app
 COPY app.py /app/app.py
 
-# Postgres JDBC (non obbligatorio qui, ma utile se poi aggiungi enrichment/reads)
+# Postgres JDBC (not required here, but useful if you later add enrichment/reads)
 RUN curl -L --retry 5 -o /opt/spark/jars/postgresql-42.7.3.jar \
     https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.3/postgresql-42.7.3.jar
 

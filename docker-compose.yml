@@ -172,7 +172,7 @@ services:
       REDIS_STREAM: pos_transactions
       SLEEP: '0.25'
       TIME_SCALE: '4.0'
-      PYTHONPATH: /app   # ✅ importa i moduli clock + config
+      PYTHONPATH: /app   # imports clock + config modules
     volumes:
     - ./data:/data:ro
     - ./simulated_time:/app/simulated_time:ro

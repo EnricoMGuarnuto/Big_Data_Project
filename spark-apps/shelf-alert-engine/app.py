@@ -168,15 +168,15 @@ schema_batch = T.StructType([
 # =========================
 def bootstrap_policies_if_missing():
     """
-    Se il topic shelf_policies è vuoto e BOOTSTRAP_POLICIES_FROM_PG=1,
-    legge le policy da Postgres e le pubblica su Kafka (compacted).
-    Key = shelf_id (oppure '__GLOBAL__' se NULL).
+    If the shelf_policies topic is empty and BOOTSTRAP_POLICIES_FROM_PG=1,
+    read policies from Postgres and publish them to Kafka (compacted).
+    Key = shelf_id (or '__GLOBAL__' if NULL).
     """
     if not BOOTSTRAP_POLICIES_FROM_PG:
         print("[policies-bootstrap] BOOTSTRAP_POLICIES_FROM_PG=0 -> skip.")
         return
 
-    # 1) Controlla se il topic ha già dati
+    # 1) Check whether the topic already has data
     if kafka_topic_exists(TOPIC_SHELF_POLICIES):
         try:
             existing = (
@@ -188,19 +188,19 @@ def bootstrap_policies_if_missing():
                 .load()
             )
             if existing.limit(1).count() > 0:
-                print(f"[policies-bootstrap] Topic {TOPIC_SHELF_POLICIES} non è vuoto -> skip.")
+                print(f"[policies-bootstrap] Topic {TOPIC_SHELF_POLICIES} is not empty -> skip.")
                 return
         except Exception as e:
-            print(f"[policies-bootstrap] warning durante il check del topic: {e}")
+            print(f"[policies-bootstrap] warning while checking topic: {e}")
     else:
-        print(f"[policies-bootstrap] Topic {TOPIC_SHELF_POLICIES} non esiste ancora -> bootstrap necessario.")
+        print(f"[policies-bootstrap] Topic {TOPIC_SHELF_POLICIES} does not exist yet -> bootstrap required.")
 
-    # 2) Parametri JDBC
+    # 2) JDBC parameters
     if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
-        print("[policies-bootstrap] JDBC params mancanti -> skip.")
+        print("[policies-bootstrap] Missing JDBC params -> skip.")
         return
 
-    # 3) Leggi Postgres (ultima policy per shelf_id, includendo la globale shelf_id NULL)
+    # 3) Read Postgres (latest policy per shelf_id, including the global NULL shelf_id)
     last_err = None
     for attempt in range(1, 6):
         try:
@@ -553,7 +553,7 @@ def foreach_batch_alerts(batch_df, batch_id: int):
         .cache()
     )
 
-    # 🔑 materializza UNA volta sola
+    # materialize only once
     plans.count()
     
     if plans.rdd.isEmpty() is False:

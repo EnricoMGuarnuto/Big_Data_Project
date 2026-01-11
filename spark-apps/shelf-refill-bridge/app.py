@@ -135,14 +135,14 @@ def foreach_batch(batch_df, batch_id: int):
         ]))
         still_pending = due_from_pending
 
-    # 2) Nuovi wh_out di questo micro-batch → split tra due e not-yet
+    # 2) New wh_out in this micro-batch -> split into due and not-yet
     due_now   = batch_df.filter(F.col("available_at") <= F.lit(now_ts))
     not_yet   = batch_df.filter(F.col("available_at") >  F.lit(now_ts))
 
-    # 3) Unisci tutti i “due” (pending maturi + batch maturi)
+    # 3) Merge all due (mature pending + mature batch)
     due_all = due_from_pending.unionByName(due_now)
 
-    # 4) Emetti eventi shelf_events (putback + weight_change)
+    # 4) Emit shelf_events (putback + weight_change)
     if not due_all.rdd.isEmpty():
         putbacks = (
             due_all.select(

@@ -197,18 +197,18 @@ def process_batch(batch_df, batch_id: int):
     if batch_df.rdd.isEmpty():
         return
 
-    # Leggo lo stato corrente (serve per mappare batch_code -> shelf_id)
+    # Read the current state (needed to map batch_code -> shelf_id)
     state_df = spark.read.format("delta").load(BATCH_STATE_PATH).select(
         "shelf_id", "batch_code", "expiry_date"
     )
 
-    # Timestamp ISO8601 con timezone: 2025-10-01T10:00:50+00:00
-    # Spark spesso lo parse-a ok, ma questo è più robusto.
+    # ISO8601 timestamp with timezone: 2025-10-01T10:00:50+00:00
+    # Spark often parses it fine, but this is more robust.
     event_ts_col = F.to_timestamp(
         F.regexp_replace(F.col("timestamp"), "Z$", "+00:00")
     )
 
-    # 1) Flatten dei POS items
+    # 1) Flatten POS items
     items = (
         batch_df
         .withColumn("event_ts", event_ts_col)
@@ -225,8 +225,8 @@ def process_batch(batch_df, batch_id: int):
         .filter(F.col("event_ts").isNotNull())
     )
 
-    # 2) Enrichment: recupero shelf_id dallo stato tramite batch_code
-    # Se vuoi essere super-strict, puoi anche matchare expiry_date quando presente.
+    # 2) Enrichment: fetch shelf_id from state via batch_code
+    # If you want to be super-strict, you can also match expiry_date when present.
     enriched = (
         items.alias("i")
         .join(
@@ -239,18 +239,18 @@ def process_batch(batch_df, batch_id: int):
         .select(
             F.col("s.shelf_id").alias("shelf_id"),
             F.col("i.batch_code").alias("batch_code"),
-            # preferisco l'expiry_date dello stato (coerenza), ma se vuoi quella POS, inverti coalesce
+            # prefer the state's expiry_date (consistency), but if you want POS, invert coalesce
             F.col("s.expiry_date").alias("expiry_date"),
             F.col("i.quantity").alias("quantity"),
             F.col("i.event_ts").alias("event_ts")
         )
     )
 
-    # (Opzionale) loggare batch_code sconosciuti (utile in demo)
+    # (Optional) log unknown batch_code values (useful in demos)
     # unknown = items.join(state_df, on="batch_code", how="left_anti")
     # unknown.show(5, truncate=False)
 
-    # 3) Aggregazione per key di stato
+    # 3) Aggregate by state key
     grouped = (
         enriched
         .groupBy("shelf_id", "batch_code", "expiry_date")
@@ -266,8 +266,8 @@ def process_batch(batch_df, batch_id: int):
         .withColumnRenamed("last_event_ts", "last_update_ts")  # EVENT-TIME!
     )
 
-    # 4) Merge Delta (aggiorna quantità e timestamp)
-    # 4) Merge Delta (aggiorna quantità e timestamp) con retry
+    # 4) Delta merge (update quantity and timestamp)
+    # 4) Delta merge (update quantity and timestamp) with retries
     _merge_with_retries(
         spark,
         updates_df=updates,
@@ -277,7 +277,7 @@ def process_batch(batch_df, batch_id: int):
     )
 
 
-    # 5) Publish Kafka (solo chiavi aggiornate)
+    # 5) Publish to Kafka (updated keys only)
     keys = grouped.select("shelf_id", "batch_code").distinct()
     refreshed = (
         keys.join(

@@ -305,7 +305,7 @@ def upsert_receipts(receipts_df):
     }).execute()
 
 # =========================
-# Core logic per tick
+# Core logic for each tick
 # =========================
 def do_cutoff(now_ts: datetime):
     """

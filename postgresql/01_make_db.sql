@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS config.wh_policies (
   item_category    TEXT NULL,
   item_subcategory TEXT NULL,
 
-  reorder_point_qty  INTEGER NULL,       -- oppure soglia in pezzi assoluti
+  reorder_point_qty  INTEGER NULL,       -- or threshold in absolute units
 
   active           BOOLEAN NOT NULL DEFAULT TRUE,
   notes            TEXT NULL,
@@ -509,4 +509,3 @@ CREATE INDEX IF NOT EXISTS ix_ml_pred_log_modelver_date
 --     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 --   END IF;
 -- END$$;
-

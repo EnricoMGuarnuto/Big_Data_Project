@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openjdk-21-jre-headless ca-certificates procps \
     && rm -rf /var/lib/apt/lists/*
 
-# (su amd64 puoi omettere JAVA_HOME: Spark lo risolve da solo)
+# (on amd64 you can omit JAVA_HOME: Spark resolves it automatically)
 # ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
 # ENV PATH="${PATH}:${JAVA_HOME}/bin"
 

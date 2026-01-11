@@ -88,7 +88,7 @@ def run_once(sim_date_str: str, sim_ts_str: str) -> None:
 
     if expired_batches.rdd.isEmpty():
         print(f"[removal_scheduler] No expired in-store batches to remove for {sim_date_str}.")
-        return  # ✅ do NOT exit the container; we'll check again next simulated day
+        return  # do NOT exit the container; we'll check again next simulated day
 
     # 2) Aggregate removed qty per shelf for shelf_state update
     removed_per_shelf = (

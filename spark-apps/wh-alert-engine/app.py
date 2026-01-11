@@ -4,7 +4,7 @@ from typing import Optional
 from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
-from simulated_time.clock import get_simulated_now  # ✅ clock simulato
+from simulated_time.clock import get_simulated_now  # simulated clock
 from datetime import timedelta
 
 
@@ -190,15 +190,15 @@ schema_wh_supplier_plan = T.StructType([
 # =========================
 def bootstrap_wh_policies_if_missing():
     """
-    Se il topic wh_policies è vuoto e BOOTSTRAP_WH_POLICIES_FROM_PG=1,
-    legge le policy da Postgres e le pubblica su Kafka (compacted).
-    Key = shelf_id (se NULL, usa '__GLOBAL__' per eventuale fallback globale).
+    If the wh_policies topic is empty and BOOTSTRAP_WH_POLICIES_FROM_PG=1,
+    read policies from Postgres and publish them to Kafka (compacted).
+    Key = shelf_id (if NULL, use '__GLOBAL__' as a global fallback).
     """
     if not BOOTSTRAP_WH_POLICIES_FROM_PG:
         print("[wh-policies-bootstrap] BOOTSTRAP_WH_POLICIES_FROM_PG=0 -> skip.")
         return
 
-    # 1) Il topic ha già dati?
+    # 1) Does the topic already have data?
     if kafka_topic_exists(TOPIC_WH_POLICIES):
         try:
             existing = (
@@ -210,19 +210,19 @@ def bootstrap_wh_policies_if_missing():
                 .load()
             )
             if existing.limit(1).count() > 0:
-                print(f"[wh-policies-bootstrap] Topic {TOPIC_WH_POLICIES} non è vuoto -> skip.")
+                print(f"[wh-policies-bootstrap] Topic {TOPIC_WH_POLICIES} is not empty -> skip.")
                 return
         except Exception as e:
-            print(f"[wh-policies-bootstrap] warning controllo topic: {e}")
+            print(f"[wh-policies-bootstrap] warning while checking topic: {e}")
     else:
-        print(f"[wh-policies-bootstrap] Topic {TOPIC_WH_POLICIES} non esiste ancora -> bootstrap necessario.")
+        print(f"[wh-policies-bootstrap] Topic {TOPIC_WH_POLICIES} does not exist yet -> bootstrap required.")
 
-    # 2) Parametri JDBC
+    # 2) JDBC parameters
     if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
-        print("[wh-policies-bootstrap] JDBC params mancanti -> skip.")
+        print("[wh-policies-bootstrap] Missing JDBC params -> skip.")
         return
 
-    # 3) Leggi Postgres e tieni l'ultima policy per shelf_id (active=true)
+    # 3) Read Postgres and keep the latest policy per shelf_id (active=true)
     last_err = None
     for attempt in range(1, 6):
         try:
@@ -514,7 +514,7 @@ def foreach_batch(batch_df, batch_id: int):
         .select("shelf_id", "suggested_qty", "standard_batch_size")
     )
 
-    # 🔑 COLLAPSE: guarantee 1 row per shelf_id
+    # COLLAPSE: guarantee 1 row per shelf_id
     plans = (
         plans_raw
         .groupBy("shelf_id")

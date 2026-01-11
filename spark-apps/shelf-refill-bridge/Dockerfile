@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir redis
 WORKDIR /app
 COPY app.py /app/app.py
 
-# Postgres JDBC non strettamente necessario qui; lo lascio fuori per ora
+# Postgres JDBC not strictly needed here; leaving it out for now
 CMD ["/opt/spark/bin/spark-submit", \
      "--packages", "io.delta:delta-spark_2.12:3.2.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1", \
      "--conf", "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension", \

@@ -2,21 +2,21 @@ FROM apache/spark:3.5.1-python3
 
 USER root
 
-# Utilità opzionali
+# Optional utilities
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir redis
 
 WORKDIR /app
 
-# Copia l'app Spark
+# Copy the Spark app
 COPY app.py /app/app.py
 
-# JDBC Postgres (non strettamente necessario qui, ma lo usi altrove e non fa danni)
+# Postgres JDBC (not strictly needed here, but you use it elsewhere and it does no harm)
 RUN curl -L --retry 5 -o /opt/spark/jars/postgresql-42.7.3.jar \
     https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.3/postgresql-42.7.3.jar
 
-# Avvio: spark-submit con Delta + Kafka
+# Start: spark-submit with Delta + Kafka
 CMD ["/opt/spark/bin/spark-submit", \
      "--packages", "io.delta:delta-spark_2.12:3.2.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.3", \
      "--conf", "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension", \

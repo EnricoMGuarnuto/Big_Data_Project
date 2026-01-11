@@ -71,7 +71,7 @@ def _env_path(*keys: str, default: Path) -> Path:
             return Path(v)
     return default
 
-# supporta sia i nomi “nuovi” che quelli che avevi nel compose precedente
+# supports both the new names and the ones from the previous compose
 LAYOUT_YAML_PATH = _env_path("DASH_LAYOUT_YAML", "LAYOUT_YAML", "LAYOUT_YAML_PATH", default=DEFAULT_LAYOUT_YAML)
 INVENTORY_CSV_PATH = _env_path("INVENTORY_CSV_PATH", "INVENTORY_CSV", default=DEFAULT_INVENTORY_CSV)
 
@@ -153,15 +153,15 @@ def split_alerts_by_location(alerts_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.
 @st.cache_data(show_spinner=False)
 def _load_layout_cached(layout_path_str: str) -> Tuple[str, List[Dict[str, Any]], str]:
     if yaml is None:
-        raise RuntimeError("pyyaml non installato. Aggiungi 'pyyaml' ai requirements.")
+        raise RuntimeError("pyyaml not installed. Add 'pyyaml' to requirements.")
     layout_path = Path(layout_path_str)
     if not layout_path.exists():
-        raise FileNotFoundError(f"Layout YAML non trovato: {layout_path}")
+        raise FileNotFoundError(f"Layout YAML not found: {layout_path}")
 
     data = yaml.safe_load(layout_path.read_text())
     coord_type = str(data.get("coord_type", "normalized")).strip().lower()
     if coord_type != "normalized":
-        raise ValueError("Supporto solo coord_type=normalized (0..1).")
+        raise ValueError("Only coord_type=normalized (0..1) is supported.")
 
     img_rel = str(data["image"]["path"])
     zones_payload: List[Dict[str, Any]] = []
@@ -194,11 +194,11 @@ def load_layout(layout_path: Path) -> Tuple[Path, List[Zone], str]:
 @st.cache_data(show_spinner=False)
 def load_inventory(csv_path: Path) -> pd.DataFrame:
     if not csv_path.exists():
-        raise FileNotFoundError(f"Inventory CSV non trovato: {csv_path}")
+        raise FileNotFoundError(f"Inventory CSV not found: {csv_path}")
     df = pd.read_csv(csv_path)
     for col in ["shelf_id", "item_category", "item_subcategory"]:
         if col not in df.columns:
-            raise ValueError(f"Nel CSV manca '{col}'. Colonne: {list(df.columns)}")
+            raise ValueError(f"CSV is missing '{col}'. Columns: {list(df.columns)}")
 
     df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
     df["item_category"] = df["item_category"].astype(str).map(normalize_cat)
@@ -215,7 +215,7 @@ def build_shelf_maps(inv: pd.DataFrame) -> Tuple[Dict[str, str], Dict[str, str]]
 # POSTGRES
 # -----------------------------
 def postgres_url_from_env() -> str:
-    host = os.getenv("POSTGRES_HOST", "postgres")  # questo è il nome servizio docker
+    host = os.getenv("POSTGRES_HOST", "postgres")  # this is the docker service name
     port = os.getenv("POSTGRES_PORT", "5432")
     db = os.getenv("POSTGRES_DB", os.getenv("POSTGRES_DATABASE", "smart_shelf"))
     user = os.getenv("POSTGRES_USER", "bdt_user")
@@ -549,12 +549,12 @@ def main():
     inv = load_inventory(INVENTORY_CSV_PATH)
     shelf_to_cat, shelf_to_sub = build_shelf_maps(inv)
 
-    st.title("📍 Supermarket Live Dashboard")
+    st.title("Supermarket Live Dashboard")
 
     if SIM_TIME_OK:
         st.caption(f"Simulated time (UTC): {now_utc_ts().isoformat()}")
 
-    tabs = st.tabs(["🗺️ Map Live", "📦 States", "🚚 Supplier Plan", "🤖 ML Model", "🚨 Alerts (raw)", "⚙️ Debug"])
+    tabs = st.tabs(["Map Live", "States", "Supplier Plan", "ML Model", "Alerts (raw)", "Debug"])
 
     # TAB 0: MAP LIVE
     with tabs[0]:
@@ -571,9 +571,9 @@ def main():
             red_cats = set(tmp["item_category"].dropna().unique().tolist())
 
         with col_left:
-            st.subheader("Mappa live (rosso=alert store)")
+            st.subheader("Live map (red=store alerts)")
             if not map_img_path.exists():
-                st.error(f"Immagine mappa non trovata: {map_img_path}")
+                st.error(f"Map image not found: {map_img_path}")
                 st.stop()
 
             map_img = Image.open(map_img_path).convert("RGB")
@@ -589,17 +589,17 @@ def main():
             )
 
         with col_right:
-            st.subheader("Dettagli store")
-            st.metric("Alerts attivi (store)", int(len(store_alerts)))
-            st.metric("Alerts attivi (warehouse)", int(len(wh_alerts)))
+            st.subheader("Store details")
+            st.metric("Active alerts (store)", int(len(store_alerts)))
+            st.metric("Active alerts (warehouse)", int(len(wh_alerts)))
 
-            st.markdown("**Riepilogo warehouse (grafico)**")
+            st.markdown("**Warehouse summary (chart)**")
             if wh_alerts.empty:
-                st.info("Nessun alert warehouse attivo.")
+                st.info("No active warehouse alerts.")
             else:
                 chart_col = "severity" if "severity" in wh_alerts.columns else ("event_type" if "event_type" in wh_alerts.columns else None)
                 if chart_col is None:
-                    st.info("Mancano colonne severity/event_type.")
+                    st.info("Missing severity/event_type columns.")
                 else:
                     wh_counts = (
                         wh_alerts[chart_col]
@@ -638,7 +638,7 @@ def main():
                         pass
 
             if clicked_cat:
-                st.markdown(f"### Sezione selezionata: **{clicked_cat}**")
+                st.markdown(f"### Selected section: **{clicked_cat}**")
                 sub = store_alerts.copy()
                 if not sub.empty and "shelf_id" in sub.columns:
                     sub["item_category"] = sub["shelf_id"].map(shelf_to_cat).map(normalize_cat)
@@ -646,18 +646,18 @@ def main():
                     sub = sub[sub["item_category"] == clicked_cat].copy()
 
                 if sub.empty:
-                    st.info("Nessun alert store attivo in questa sezione.")
+                    st.info("No active store alerts in this section.")
                 else:
-                    st.error(f"Alert store attivi nella sezione: {len(sub)}")
+                    st.error(f"Active store alerts in this section: {len(sub)}")
                     shelf_list = sorted(sub["shelf_id"].dropna().unique().tolist())
                     st.markdown("**Shelf in alert:**")
                     st.write(shelf_list)
                     cols = ["alert_id", "event_type", "shelf_id", "severity", "current_stock", "max_stock", "target_pct", "suggested_qty", "status", "created_at"]
                     cols = [c for c in cols if c in sub.columns]
-                    st.markdown("**Dettagli alerts (ultimi):**")
+                    st.markdown("**Alert details (latest):**")
                     st.dataframe(sub[cols].head(200), use_container_width=True)
             else:
-                st.caption("Clicca su una sezione della mappa per vedere gli alert di quella zona.")
+                st.caption("Click a map section to see alerts in that area.")
 
     # TAB 1: STATES
     with tabs[1]:
@@ -665,49 +665,49 @@ def main():
         left, right = st.columns([0.35, 0.65], gap="large")
 
         with left:
-            table = st.selectbox("Scegli tabella state", ["shelf_state", "wh_state", "shelf_batch_state", "wh_batch_state"], index=0)
-            categories = ["(tutte)"] + sorted(inv["item_category"].dropna().unique().tolist())
-            sel_cat = st.selectbox("Categoria", categories, index=0)
-            subcats = ["(tutte)"]
-            if sel_cat != "(tutte)":
+            table = st.selectbox("Choose state table", ["shelf_state", "wh_state", "shelf_batch_state", "wh_batch_state"], index=0)
+            categories = ["(all)"] + sorted(inv["item_category"].dropna().unique().tolist())
+            sel_cat = st.selectbox("Category", categories, index=0)
+            subcats = ["(all)"]
+            if sel_cat != "(all)":
                 subcats += sorted(inv.loc[inv["item_category"] == sel_cat, "item_subcategory"].dropna().unique().tolist())
             else:
                 subcats += sorted(inv["item_subcategory"].dropna().unique().tolist())
-            sel_sub = st.selectbox("Subcategoria", subcats, index=0)
+            sel_sub = st.selectbox("Subcategory", subcats, index=0)
 
-            shelves = ["(tutte)"]
+            shelves = ["(all)"]
             filt = inv.copy()
-            if sel_cat != "(tutte)":
+            if sel_cat != "(all)":
                 filt = filt[filt["item_category"] == sel_cat]
-            if sel_sub != "(tutte)":
+            if sel_sub != "(all)":
                 filt = filt[filt["item_subcategory"] == sel_sub]
             shelves += sorted(filt["shelf_id"].dropna().unique().tolist())
             sel_shelf = st.selectbox("Shelf ID", shelves, index=0)
-            limit = st.slider("Righe max", 100, 5000, 1500, step=100)
+            limit = st.slider("Max rows", 100, 5000, 1500, step=100)
 
         with right:
             try:
                 df_state = fetch_state_delta(table, limit=limit)
             except Exception as e:
-                st.error(f"Errore fetch {table}: {e}")
+                st.error(f"Error fetching {table}: {e}")
                 df_state = pd.DataFrame()
 
             if df_state.empty:
-                st.info("Nessun dato.")
+                st.info("No data.")
             else:
                 show = df_state.copy()
-                if "shelf_id" in show.columns and sel_shelf != "(tutte)":
+                if "shelf_id" in show.columns and sel_shelf != "(all)":
                     show["shelf_id"] = show["shelf_id"].astype(str).str.strip()
                     show = show[show["shelf_id"] == sel_shelf]
 
-                if sel_cat != "(tutte)":
+                if sel_cat != "(all)":
                     for c in ["item_category", "category"]:
                         if c in show.columns:
                             show[c] = show[c].map(normalize_cat)
                             show = show[show[c] == sel_cat]
                             break
 
-                if sel_sub != "(tutte)":
+                if sel_sub != "(all)":
                     for c in ["item_subcategory", "subcategory"]:
                         if c in show.columns:
                             show[c] = show[c].astype(str).str.strip()
@@ -724,14 +724,14 @@ def main():
         next_order = next_supplier_order_date(orders_df)
         if next_order is not None:
             next_value, source = next_order
-            st.info(f"Prossimo ordine supplier ({source}): {next_value}")
+            st.info(f"Next supplier order ({source}): {next_value}")
         else:
-            st.info("Nessun ordine fornitore pianificato (o delta non disponibile).")
+            st.info("No supplier order planned (or delta not available).")
 
         left, right = st.columns([0.35, 0.65], gap="large")
         with left:
-            limit = st.slider("Righe max", 100, 5000, 1500, step=100, key="supplier_plan_limit")
-            status_filter = st.selectbox("Status", ["(tutti)", "pending", "issued", "completed", "canceled"], index=0, key="supplier_plan_status")
+            limit = st.slider("Max rows", 100, 5000, 1500, step=100, key="supplier_plan_limit")
+            status_filter = st.selectbox("Status", ["(all)", "pending", "issued", "completed", "canceled"], index=0, key="supplier_plan_status")
 
         df_plan = fetch_supplier_plan_delta(DELTA_SUPPLIER_PLAN_PATH)
         data_source = "delta"
@@ -741,10 +741,10 @@ def main():
                 if not df_plan.empty:
                     data_source = "postgres"
             except Exception as e:
-                st.error(f"Errore fetch {SUPPLIER_PLAN_TABLE_NAME}: {e}")
+                st.error(f"Error fetching {SUPPLIER_PLAN_TABLE_NAME}: {e}")
                 df_plan = pd.DataFrame()
 
-        if status_filter != "(tutti)" and "status" in df_plan.columns:
+        if status_filter != "(all)" and "status" in df_plan.columns:
             df_plan = df_plan[df_plan["status"] == status_filter]
         if "plan_date" in df_plan.columns:
             df_plan = df_plan.sort_values(["plan_date"], ascending=False)
@@ -754,20 +754,20 @@ def main():
 
         with right:
             if df_plan.empty:
-                st.info("Nessun piano supplier trovato.")
+                st.info("No supplier plan found.")
             else:
-                st.caption(f"Fonte dati: {data_source}")
+                st.caption(f"Data source: {data_source}")
                 st.dataframe(df_plan, use_container_width=True)
 
     # TAB 3: ML MODEL
     with tabs[3]:
-        st.subheader("🤖 ML Model")
+        st.subheader("ML Model")
 
         reg = fetch_ml_model_registry()
         preds = fetch_ml_predictions(limit=12000)
 
         if reg.empty:
-            st.warning("Nessun modello registrato in analytics.ml_models.")
+            st.warning("No model registered in analytics.ml_models.")
         else:
             latest = reg.iloc[0]
             c1, c2, c3 = st.columns(3)
@@ -783,25 +783,25 @@ def main():
         st.divider()
 
         if preds.empty:
-            st.info("Nessuna predizione trovata in analytics.ml_predictions_log.")
+            st.info("No predictions found in analytics.ml_predictions_log.")
         else:
-            model_names = ["(tutti)"] + sorted(preds["model_name"].dropna().unique().tolist())
+            model_names = ["(all)"] + sorted(preds["model_name"].dropna().unique().tolist())
             sel_model = st.selectbox("Model", model_names, index=0)
 
-            all_shelves = ["(tutte)"] + sorted(preds["shelf_id"].dropna().unique().tolist())
+            all_shelves = ["(all)"] + sorted(preds["shelf_id"].dropna().unique().tolist())
             sel_shelf = st.selectbox("Shelf ID", all_shelves, index=0)
 
             dmin = min(preds["feature_date"])
             dmax = max(preds["feature_date"])
-            date_range = st.date_input("Intervallo date", value=(dmin, dmax))
+            date_range = st.date_input("Date range", value=(dmin, dmax))
 
             show = preds.copy()
-            if sel_model != "(tutti)":
+            if sel_model != "(all)":
                 show = show[show["model_name"] == sel_model]
             if isinstance(date_range, tuple) and len(date_range) == 2:
                 a, b = date_range
                 show = show[(show["feature_date"] >= a) & (show["feature_date"] <= b)]
-            if sel_shelf != "(tutte)":
+            if sel_shelf != "(all)":
                 show = show[show["shelf_id"] == sel_shelf]
 
             k1, k2, k3 = st.columns(3)
@@ -809,7 +809,7 @@ def main():
             k2.metric("Distinct shelves", int(show["shelf_id"].nunique()))
             k3.metric("Total suggested qty", int(show["suggested_qty"].sum()))
 
-            if sel_shelf != "(tutte)" and not show.empty:
+            if sel_shelf != "(all)" and not show.empty:
                 g = show.sort_values("feature_date")
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=g["feature_date"], y=g["predicted_batches"], mode="lines+markers", name="predicted_batches"))
@@ -822,10 +822,10 @@ def main():
 
     # TAB 4: ALERTS RAW
     with tabs[4]:
-        st.subheader("Alerts (tabella Postgres)")
+        st.subheader("Alerts (Postgres table)")
         df = fetch_alerts()
         if df.empty:
-            st.info("Nessun alert trovato.")
+            st.info("No alerts found.")
         else:
             st.dataframe(df, use_container_width=True)
 

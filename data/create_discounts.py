@@ -48,14 +48,14 @@ def generate_weekly_discounts(
 
     rng = np.random.default_rng(seed)
 
-    # allinea start_date al lunedì della sua settimana
+    # align start_date to the Monday of its week
     start = pd.to_datetime(start_date)
     start_monday = start - pd.Timedelta(days=start.weekday())
 
     n_weeks = years * 52
     week_starts = pd.date_range(start_monday, periods=n_weeks, freq="W-MON")
 
-    # rotazione: ordine casuale + puntatore
+    # rotation: random order + pointer
     order = rng.permutation(shelf_ids).tolist()
     ptr = 0
 
@@ -74,7 +74,7 @@ def generate_weekly_discounts(
                 order = rng.permutation(shelf_ids).tolist()
                 ptr = 0
 
-        # sconto random per prodotto scelto
+        # random discount for selected product
         discount_pcts = rng.uniform(discount_range[0], discount_range[1], size=len(chosen))
 
         for sid, dp in zip(chosen, discount_pcts):
@@ -86,14 +86,14 @@ def generate_weekly_discounts(
                 "week_start": ws.normalize(),
                 "week_end": we.normalize(),
                 "shelf_id": sid,
-                "discount_pct": float(round(dp, 4)),   # es. 0.1532
+                "discount_pct": float(round(dp, 4)),   # e.g. 0.1532
                 "original_price": base_price,
                 "discounted_price": discounted_price,
             })
 
     discounts_df = pd.DataFrame(rows)
 
-    # salva parquet
+    # save parquet
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     discounts_df.to_parquet(out_path, index=False)
@@ -107,7 +107,7 @@ if __name__ == "__main__":
         out_path="data/all_discounts.parquet",
         start_date="2025-01-01",
         years=3,
-        discounts_per_week=60,           # <-- QUI scegli "un tot" fisso
+        discounts_per_week=60,           # <-- choose a fixed count here
         discount_range=(0.05, 0.35),
         seed=42,
     )

@@ -45,7 +45,7 @@ kafka_stream = (
     .option("failOnDataLoss", "false")
     .option("kafka.group.id", "foot_traffic_raw_sink")
 
-    # 🔧 timeout robusti
+    # robust timeouts
     .option("kafka.request.timeout.ms", "180000")
     .option("kafka.default.api.timeout.ms", "180000")
     .option("kafka.session.timeout.ms", "30000")

@@ -97,12 +97,12 @@ SELECT
   COALESCE(avg_expiration_days, 9999)::float AS avg_expiration_days,
   COALESCE(qty_expiring_next_7d, 0) AS qty_expiring_next_7d,
 
-  -- target (solo per training)
+  -- target (training only)
   COALESCE(batches_to_order, 0) AS batches_to_order
 FROM analytics.shelf_daily_features;
 
 
--- Dataset training: esclude righe “future” e roba senza warehouse
+-- Training dataset: exclude "future" rows and those without warehouse
 CREATE OR REPLACE VIEW analytics.v_ml_train AS
 SELECT *
 FROM analytics.v_ml_features
@@ -110,7 +110,7 @@ WHERE warehouse_capacity > 0
   AND feature_date IS NOT NULL;
 
 
--- Inference giornaliera: solo shelf in warehouse alert (o vuoi anche shelf alert? scegli tu)
+-- Daily inference: only shelves in warehouse alert (or include shelf alerts too? your choice)
 -- CREATE OR REPLACE VIEW analytics.v_ml_infer_today AS
 -- SELECT *
 -- FROM analytics.v_ml_features

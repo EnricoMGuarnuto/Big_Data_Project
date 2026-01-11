@@ -3,7 +3,7 @@ import time
 from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
-from simulated_time.clock import get_simulated_now  # ✅ clock simulato
+from simulated_time.clock import get_simulated_now  # simulated clock
 
 
 # =========================
@@ -107,7 +107,7 @@ def bootstrap_state_if_missing():
             .select(
                 F.col("shelf_id"),
                 F.col("current_stock").cast("int").alias("wh_current_stock"),
-                F.lit(get_simulated_now()).alias("last_update_ts")  # ✅ simulato
+                F.lit(get_simulated_now()).alias("last_update_ts")  # simulated
             )
     )
 

@@ -82,7 +82,7 @@ if shelf_expiring.rdd.isEmpty():
     time.sleep(3600)
 
 # =========================
-# 3) Calcolo delle date sconto
+# 3) Compute discount dates
 # =========================
 exp_today = (
     shelf_expiring
@@ -106,7 +106,7 @@ candidates = (
 
 
 # =========================
-# 4) Sconti esistenti
+# 4) Existing discounts
 # =========================
 if delta_exists(DL_DAILY_DISC_PATH):
     existing_all = spark.read.format("delta").load(DL_DAILY_DISC_PATH)
@@ -123,7 +123,7 @@ else:
     ]))
 
 # =========================
-# 5) Calcolo nuovi sconti
+# 5) Compute new discounts
 # =========================
 steps = int(round((DISCOUNT_MAX - DISCOUNT_MIN) / 0.10)) + 1
 
