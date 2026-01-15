@@ -265,6 +265,11 @@ def emit_wh_in_events(events_df):
         .save()
 
     # raw delta mirror (append)
+    if DeltaTable.isDeltaTable(spark, DL_WH_EVENTS_RAW):
+        target_schema = DeltaTable.forPath(spark, DL_WH_EVENTS_RAW).toDF().schema
+        for field in target_schema.fields:
+            if field.name in events_df.columns:
+                events_df = events_df.withColumn(field.name, F.col(field.name).cast(field.dataType))
     (events_df.write.format("delta")
         .mode("append")
         .option("mergeSchema", "true")
