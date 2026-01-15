@@ -110,6 +110,20 @@ def ensure_delta_table(path: str, schema: T.StructType):
 ensure_delta_table(DL_ORDERS_PATH, schema_order)
 ensure_delta_table(DL_RECEIPTS_PATH, schema_receipt)
 
+def ensure_delta_columns(path: str, schema: T.StructType):
+    if not DeltaTable.isDeltaTable(spark, path):
+        return
+    existing = {f.name.lower() for f in DeltaTable.forPath(spark, path).toDF().schema.fields}
+    missing_fields = [f for f in schema.fields if f.name.lower() not in existing]
+    if not missing_fields:
+        return
+    for field in missing_fields:
+        dtype = field.dataType.simpleString()
+        spark.sql(f"ALTER TABLE delta.`{path}` ADD COLUMNS ({field.name} {dtype})")
+
+ensure_delta_columns(DL_ORDERS_PATH, schema_order)
+ensure_delta_columns(DL_RECEIPTS_PATH, schema_receipt)
+
 # =========================
 # Time helpers (UTC)
 # =========================
