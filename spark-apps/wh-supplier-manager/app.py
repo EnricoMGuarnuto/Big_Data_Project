@@ -73,6 +73,8 @@ schema_order = T.StructType([
     T.StructField("shelf_id", T.StringType()),
     T.StructField("total_qty", T.IntegerType()),
     T.StructField("status", T.StringType()),  # issued / delivered
+    T.StructField("cutoff_ts", T.TimestampType()),
+    T.StructField("delivery_ts", T.TimestampType()),
     T.StructField("created_at", T.TimestampType()),
     T.StructField("updated_at", T.TimestampType()),
 ])
@@ -289,6 +291,7 @@ def upsert_orders(orders_df):
     ).whenMatchedUpdate(set={
         "total_qty":  F.col("s.total_qty"),
         "status":     F.col("s.status"),
+        "delivery_ts": F.coalesce(F.col("s.delivery_ts"), F.col("t.delivery_ts")),
         "updated_at": F.col("s.updated_at"),
     }).whenNotMatchedInsert(values={
         "order_id":     F.col("s.order_id"),
@@ -296,6 +299,8 @@ def upsert_orders(orders_df):
         "shelf_id":     F.col("s.shelf_id"),
         "total_qty":    F.col("s.total_qty"),
         "status":       F.col("s.status"),
+        "cutoff_ts":    F.col("s.cutoff_ts"),
+        "delivery_ts":  F.col("s.delivery_ts"),
         "created_at":   F.col("s.created_at"),
         "updated_at":   F.col("s.updated_at"),
     }).execute()
@@ -339,15 +344,23 @@ def do_cutoff(now_ts: datetime):
         return
 
     # aggregate orders per shelf
+    delivery_ts = datetime.combine(delivery, datetime.min.time()).replace(
+        tzinfo=timezone.utc, hour=DELIVERY_HOUR, minute=DELIVERY_MINUTE
+    )
     orders = (
         pending.groupBy("shelf_id")
         .agg(F.sum(F.col("suggested_qty")).alias("total_qty"))
         .withColumn("delivery_date", F.lit(delivery).cast("date"))
         .withColumn("order_id", F.expr("uuid()"))
         .withColumn("status", F.lit("issued"))
+        .withColumn("cutoff_ts", F.lit(now_ts).cast("timestamp"))
+        .withColumn("delivery_ts", F.lit(delivery_ts).cast("timestamp"))
         .withColumn("created_at", F.lit(get_simulated_now()).cast("timestamp"))
         .withColumn("updated_at", F.lit(get_simulated_now()).cast("timestamp"))
-        .select("order_id","delivery_date","shelf_id","total_qty","status","created_at","updated_at")
+        .select(
+            "order_id","delivery_date","shelf_id","total_qty","status",
+            "cutoff_ts","delivery_ts","created_at","updated_at"
+        )
     )
 
     # idempotent upsert
@@ -491,9 +504,13 @@ def do_delivery(now_ts: datetime):
         due.select("delivery_date","shelf_id","total_qty")
         .withColumn("order_id", F.expr("uuid()"))  # ignored on merge for matched rows
         .withColumn("status", F.lit("delivered"))
+        .withColumn("delivery_ts", F.lit(now_ts).cast("timestamp"))
         .withColumn("created_at", F.lit(get_simulated_now()).cast("timestamp"))
         .withColumn("updated_at", F.lit(get_simulated_now()).cast("timestamp"))
-        .select("order_id","delivery_date","shelf_id",F.col("total_qty"),"status","created_at","updated_at")
+        .select(
+            "order_id","delivery_date","shelf_id",F.col("total_qty"),"status",
+            "delivery_ts","created_at","updated_at"
+        )
         .withColumnRenamed("total_qty", "total_qty")
     )
     upsert_orders(delivered_orders)

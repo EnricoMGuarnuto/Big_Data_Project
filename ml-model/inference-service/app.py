@@ -118,6 +118,17 @@ def ensure_model_registry(conn, model_version: str, artifact_path: str, trained_
         {"mn": MODEL_NAME, "mv": model_version, "ta": trained_at, "ap": artifact_path}
     )
 
+def get_latest_feature_date(conn, today):
+    row = conn.execute(
+        text("""
+            SELECT MAX(feature_date)
+            FROM analytics.v_ml_features
+            WHERE feature_date <= :today
+        """),
+        {"today": today}
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
 
 def one_hot_like_training(df: pd.DataFrame) -> pd.DataFrame:
     cat_cols = ["item_category", "item_subcategory"]
@@ -214,7 +225,13 @@ def main():
             continue
 
         with engine.begin() as conn:
-            df = pd.read_sql(text(INFER_SQL), conn, params={"today": today})
+            feature_date = today
+            df = pd.read_sql(text(INFER_SQL), conn, params={"today": feature_date})
+            if df.empty:
+                feature_date = get_latest_feature_date(conn, today)
+                if feature_date:
+                    print(f"[inference] no features for {today}, using latest {feature_date}")
+                    df = pd.read_sql(text(INFER_SQL), conn, params={"today": feature_date})
 
             if df.empty:
                 print(f"[inference] no shelves to infer on {today}")
@@ -275,7 +292,7 @@ def main():
 
                 conn.execute(log_pred_sql, {
                     "mn": MODEL_NAME,
-                    "fd": today,
+                    "fd": feature_date,
                     "sid": sid,
                     "pb": pb,
                     "sq": sq,
@@ -287,7 +304,7 @@ def main():
 
                 conn.execute(upsert_plan_sql, {
                     "sid": sid,
-                    "pd": today,
+                    "pd": feature_date,
                     "qty": sq,
                     "bs": bs,
                     "now_ts": sim_now
@@ -295,7 +312,7 @@ def main():
 
                 delta_rows.append({
                     "shelf_id": sid,
-                    "plan_date": str(today),
+                    "plan_date": str(feature_date),
                     "suggested_qty": sq,
                     "standard_batch_size": bs,
                     "status": "pending",
@@ -307,7 +324,10 @@ def main():
 
         write_delta_plans(pd.DataFrame(delta_rows))
 
-        print(f"[inference] wrote pending plans for {today} (rows={len(delta_rows)})")
+        if feature_date != today:
+            print(f"[inference] wrote pending plans for {feature_date} (sim day={today}, rows={len(delta_rows)})")
+        else:
+            print(f"[inference] wrote pending plans for {today} (rows={len(delta_rows)})")
         last_run_day = today
 
 

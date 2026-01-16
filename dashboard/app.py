@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -103,6 +103,8 @@ DEFAULT_DELTA_SHELF_STATE = PROJECT_ROOT / "delta" / "cleansed" / "shelf_state"
 DEFAULT_DELTA_WH_STATE = PROJECT_ROOT / "delta" / "cleansed" / "wh_state"
 DEFAULT_DELTA_SHELF_BATCH_STATE = PROJECT_ROOT / "delta" / "cleansed" / "shelf_batch_state"
 DEFAULT_DELTA_WH_BATCH_STATE = PROJECT_ROOT / "delta" / "cleansed" / "wh_batch_state"
+DEFAULT_DELTA_WH_EVENTS_RAW = PROJECT_ROOT / "delta" / "raw" / "wh_events"
+DEFAULT_DELTA_FOOT_TRAFFIC = PROJECT_ROOT / "delta" / "raw" / "foot_traffic"
 
 def _env_path(*keys: str, default: Path) -> Path:
     for k in keys:
@@ -121,6 +123,8 @@ DELTA_SHELF_STATE_PATH = _env_path("DL_SHELF_STATE_PATH", "DELTA_SHELF_STATE_PAT
 DELTA_WH_STATE_PATH = _env_path("DL_WH_STATE_PATH", "DELTA_WH_STATE_PATH", default=DEFAULT_DELTA_WH_STATE)
 DELTA_SHELF_BATCH_STATE_PATH = _env_path("DL_SHELF_BATCH_PATH", "DELTA_SHELF_BATCH_STATE_PATH", default=DEFAULT_DELTA_SHELF_BATCH_STATE)
 DELTA_WH_BATCH_STATE_PATH = _env_path("DL_WH_BATCH_PATH", "DELTA_WH_BATCH_STATE_PATH", default=DEFAULT_DELTA_WH_BATCH_STATE)
+DELTA_WH_EVENTS_RAW_PATH = _env_path("DL_WH_EVENTS_RAW", "DELTA_WH_EVENTS_RAW_PATH", default=DEFAULT_DELTA_WH_EVENTS_RAW)
+DELTA_FOOT_TRAFFIC_PATH = _env_path("DL_FOOT_TRAFFIC_PATH", "DELTA_FOOT_TRAFFIC_PATH", default=DEFAULT_DELTA_FOOT_TRAFFIC)
 
 ALERTS_TABLE_NAME = os.getenv("ALERTS_TABLE", "ops.alerts").strip()
 SUPPLIER_PLAN_TABLE_NAME = os.getenv("SUPPLIER_PLAN_TABLE", "ops.wh_supplier_plan").strip()
@@ -335,6 +339,55 @@ def fetch_supplier_plan_pg(limit: int = 2000) -> pd.DataFrame:
         df["plan_date"] = pd.to_datetime(df["plan_date"], errors="coerce").dt.date
     return df
 
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_store_foot_traffic(target_date: date) -> Tuple[Optional[date], Optional[int]]:
+    eng = get_pg_engine()
+    q = text("""
+        SELECT feature_date, COALESCE(SUM(people_count), 0) AS people_count
+        FROM analytics.shelf_daily_features
+        WHERE feature_date = :day
+        GROUP BY feature_date
+    """)
+    with eng.connect() as c:
+        df = pd.read_sql(q, c, params={"day": target_date})
+    if not df.empty:
+        return pd.to_datetime(df.loc[0, "feature_date"], errors="coerce").date(), int(df.loc[0, "people_count"])
+
+    q_latest = text("""
+        SELECT MAX(feature_date) AS feature_date
+        FROM analytics.shelf_daily_features
+        WHERE feature_date <= :day
+    """)
+    with eng.connect() as c:
+        df_latest = pd.read_sql(q_latest, c, params={"day": target_date})
+    if df_latest.empty or pd.isna(df_latest.loc[0, "feature_date"]):
+        return None, None
+
+    latest_date = pd.to_datetime(df_latest.loc[0, "feature_date"], errors="coerce").date()
+    with eng.connect() as c:
+        df_latest_sum = pd.read_sql(q, c, params={"day": latest_date})
+    if df_latest_sum.empty:
+        return latest_date, 0
+    return latest_date, int(df_latest_sum.loc[0, "people_count"])
+
+def compute_live_foot_traffic(now_ts: pd.Timestamp) -> Optional[int]:
+    df = fetch_foot_traffic_raw(DELTA_FOOT_TRAFFIC_PATH)
+    if df.empty or "entry_time" not in df.columns:
+        return None
+    df = df[df["entry_time"].notna()].copy()
+    if df.empty:
+        return None
+    cutoff = now_ts - pd.Timedelta(days=1)
+    df = df[df["entry_time"] >= cutoff]
+    if df.empty:
+        return 0
+    if "exit_time" in df.columns:
+        exit_ts = df["exit_time"]
+        active = df[(df["entry_time"] <= now_ts) & (exit_ts.isna() | (exit_ts > now_ts))]
+    else:
+        active = df[df["entry_time"] <= now_ts]
+    return int(len(active))
+
 def active_alerts(alerts_df: pd.DataFrame) -> pd.DataFrame:
     if alerts_df.empty or "status" not in alerts_df.columns:
         return alerts_df
@@ -425,6 +478,9 @@ def fetch_supplier_orders(delta_path: Path) -> pd.DataFrame:
         return df
     if "delivery_date" in df.columns:
         df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date
+    for col in ["cutoff_ts", "delivery_ts"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
     if "status" in df.columns:
         df["status"] = df["status"].astype(str).str.strip().str.lower()
     return df
@@ -452,6 +508,50 @@ def fetch_supplier_plan_delta(delta_path: Path) -> pd.DataFrame:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
     if "plan_date" in df.columns:
         df["plan_date"] = pd.to_datetime(df["plan_date"], errors="coerce").dt.date
+    return df
+
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_wh_events_raw(delta_path: Path) -> pd.DataFrame:
+    if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
+        return pd.DataFrame()
+    try:
+        dt = DeltaTable(str(delta_path))
+    except Exception as e:
+        log.warning("Delta table not available at %s: %s", delta_path, e)
+        return pd.DataFrame()
+
+    df = dt.to_pandas()
+    if df.empty:
+        return df
+
+    if "event_type" in df.columns:
+        df["event_type"] = df["event_type"].astype(str).str.strip().str.lower()
+    if "shelf_id" in df.columns:
+        df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    if "received_date" in df.columns:
+        df["received_date"] = pd.to_datetime(df["received_date"], errors="coerce").dt.date
+    return df
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_foot_traffic_raw(delta_path: Path) -> pd.DataFrame:
+    if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
+        return pd.DataFrame()
+    try:
+        dt = DeltaTable(str(delta_path))
+    except Exception as e:
+        log.warning("Delta table not available at %s: %s", delta_path, e)
+        return pd.DataFrame()
+
+    df = dt.to_pandas()
+    if df.empty:
+        return df
+
+    if "entry_time" in df.columns:
+        df["entry_time"] = pd.to_datetime(df["entry_time"], errors="coerce", utc=True)
+    if "exit_time" in df.columns:
+        df["exit_time"] = pd.to_datetime(df["exit_time"], errors="coerce", utc=True)
     return df
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -505,6 +605,17 @@ def next_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str
     if df.empty:
         return None
 
+    if "delivery_ts" in df.columns:
+        df["delivery_ts"] = pd.to_datetime(df["delivery_ts"], errors="coerce", utc=True)
+        df = df[df["delivery_ts"].notna()]
+        if df.empty:
+            return None
+        now = now_utc_ts()
+        future = df[df["delivery_ts"] >= now]
+        if future.empty:
+            return None
+        return future["delivery_ts"].min(), "delivery_ts"
+
     if "cutoff_ts" in df.columns:
         df["cutoff_ts"] = pd.to_datetime(df["cutoff_ts"], errors="coerce", utc=True)
         df = df[df["cutoff_ts"].notna()]
@@ -526,6 +637,39 @@ def next_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str
         if df.empty:
             return None
         return df["delivery_date"].min(), "delivery_date"
+
+    return None
+
+def last_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str]]:
+    if orders_df.empty:
+        return None
+    df = orders_df.copy()
+    if "status" in df.columns:
+        df["status"] = df["status"].astype(str).str.strip().str.lower()
+        df = df[~df["status"].isin(["canceled", "cancelled"])]
+    if df.empty:
+        return None
+
+    if "delivery_ts" in df.columns:
+        df["delivery_ts"] = pd.to_datetime(df["delivery_ts"], errors="coerce", utc=True)
+        df = df[df["delivery_ts"].notna()]
+        if df.empty:
+            return None
+        return df["delivery_ts"].max(), "delivery_ts"
+
+    if "cutoff_ts" in df.columns:
+        df["cutoff_ts"] = pd.to_datetime(df["cutoff_ts"], errors="coerce", utc=True)
+        df = df[df["cutoff_ts"].notna()]
+        if df.empty:
+            return None
+        return df["cutoff_ts"].max(), "cutoff_ts"
+
+    if "delivery_date" in df.columns:
+        df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date
+        df = df[df["delivery_date"].notna()]
+        if df.empty:
+            return None
+        return df["delivery_date"].max(), "delivery_date"
 
     return None
 
@@ -603,6 +747,23 @@ def main():
 
     st.title("Supermarket Live Dashboard")
     render_simulated_time()
+
+    st.markdown("**Current foot traffic**")
+    try:
+        sim_day = now_utc_ts().date()
+        live_count = compute_live_foot_traffic(now_utc_ts())
+        if live_count is not None:
+            st.metric("People count (live)", int(live_count))
+        else:
+            ft_date, ft_count = fetch_store_foot_traffic(sim_day)
+            if ft_date is None:
+                st.info("Foot traffic data not available.")
+            else:
+                st.metric("People count (latest)", int(ft_count))
+                if ft_date != sim_day:
+                    st.caption(f"Latest available date: {ft_date}")
+    except Exception as e:
+        st.warning(f"Foot traffic error: {e}")
 
     tabs = st.tabs(["Map Live", "States", "Supplier Plan", "ML Model", "Alerts (raw)", "Debug"])
 
@@ -777,6 +938,58 @@ def main():
             st.info(f"Next supplier order ({source}): {next_value}")
         else:
             st.info("No supplier order planned (or delta not available).")
+            last_order = last_supplier_order_date(orders_df)
+            if last_order is not None:
+                last_value, last_source = last_order
+                st.caption(f"Last supplier order ({last_source}): {last_value}")
+
+        st.markdown("**Warehouse restock status**")
+        events_df = fetch_wh_events_raw(DELTA_WH_EVENTS_RAW_PATH)
+        if events_df.empty or "event_type" not in events_df.columns:
+            st.info("No restock events found (wh_events delta not available).")
+        else:
+            restocks = events_df[events_df["event_type"] == "wh_in"].copy()
+            if restocks.empty:
+                st.info("No restock events found.")
+            else:
+                if "timestamp" in restocks.columns and restocks["timestamp"].notna().any():
+                    restocks = restocks.sort_values("timestamp")
+                    last_restock_ts = restocks["timestamp"].dropna().max()
+                    last_restock_day = last_restock_ts.date()
+                    day_df = restocks[restocks["timestamp"].dt.date == last_restock_day].copy()
+                elif "received_date" in restocks.columns and restocks["received_date"].notna().any():
+                    last_restock_day = restocks["received_date"].dropna().max()
+                    last_restock_ts = None
+                    day_df = restocks[restocks["received_date"] == last_restock_day].copy()
+                else:
+                    last_restock_day = None
+                    last_restock_ts = None
+                    day_df = restocks.copy()
+
+                total_qty = int(day_df["qty"].sum()) if "qty" in day_df.columns and not day_df.empty else 0
+                shelves_count = int(day_df["shelf_id"].nunique()) if "shelf_id" in day_df.columns and not day_df.empty else 0
+
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Last restock day", str(last_restock_day) if last_restock_day else "n/a")
+                k2.metric("Last restock time", str(last_restock_ts) if last_restock_ts else "n/a")
+                k3.metric("Items restocked (day)", total_qty)
+                st.caption(f"Shelves restocked (day): {shelves_count}")
+
+                if not day_df.empty:
+                    if "shelf_id" in day_df.columns:
+                        day_df["item_category"] = day_df["shelf_id"].map(shelf_to_cat)
+                        day_df["item_subcategory"] = day_df["shelf_id"].map(shelf_to_sub)
+                    show_cols = [
+                        c for c in [
+                            "shelf_id", "item_category", "item_subcategory",
+                            "qty", "unit", "received_date", "timestamp", "batch_code", "reason"
+                        ] if c in day_df.columns
+                    ]
+                    st.markdown("**Restocked products (last restock day):**")
+                    if show_cols:
+                        st.dataframe(day_df[show_cols].sort_values(show_cols[0]).head(3000), use_container_width=True)
+                    else:
+                        st.info("Restock event columns not available.")
 
         left, right = st.columns([0.35, 0.65], gap="large")
         with left:
@@ -835,6 +1048,9 @@ def main():
         if preds.empty:
             st.info("No predictions found in analytics.ml_predictions_log.")
         else:
+            latest_feature_date = max(preds["feature_date"])
+            st.caption(f"Latest feature_date in predictions: {latest_feature_date}")
+
             model_names = ["(all)"] + sorted(preds["model_name"].dropna().unique().tolist())
             sel_model = st.selectbox("Model", model_names, index=0)
 
