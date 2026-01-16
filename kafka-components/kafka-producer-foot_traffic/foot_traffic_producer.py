@@ -28,6 +28,7 @@ REDIS_STREAM = os.getenv("REDIS_STREAM", "foot_traffic")
 DEFAULT_DAILY_CUSTOMERS = int(os.getenv("DEFAULT_DAILY_CUSTOMERS", 1000))
 BASE_DAILY_CUSTOMERS = int(os.getenv("BASE_DAILY_CUSTOMERS", DEFAULT_DAILY_CUSTOMERS))
 DAILY_CUSTOMERS = os.getenv("DAILY_CUSTOMERS")
+TRAFFIC_MULTIPLIER = float(os.getenv("TRAFFIC_MULTIPLIER", "0.8"))
 
 DAILY_VARIATION_PCT = float(os.getenv("DAILY_VARIATION_PCT", 0.10))
 DISABLE_DAILY_VARIATION = os.getenv("DISABLE_DAILY_VARIATION", "0") in ("1", "true", "True")
@@ -149,6 +150,7 @@ def decide_daily_total(weekday_idx: int) -> int:
     mean_total = BASE_DAILY_CUSTOMERS
     if AVG_DAY_WEIGHT > 0:
         mean_total = BASE_DAILY_CUSTOMERS * (DAY_WEIGHTS_SUM[weekday_idx] / AVG_DAY_WEIGHT)
+    mean_total *= max(0.0, TRAFFIC_MULTIPLIER)
 
     if DISABLE_DAILY_VARIATION or DAILY_VARIATION_PCT <= 0:
         return max(1, round(mean_total))

@@ -607,25 +607,23 @@ def next_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str
 
     if "delivery_ts" in df.columns:
         df["delivery_ts"] = pd.to_datetime(df["delivery_ts"], errors="coerce", utc=True)
-        df = df[df["delivery_ts"].notna()]
-        if df.empty:
-            return None
-        now = now_utc_ts()
-        future = df[df["delivery_ts"] >= now]
-        if future.empty:
-            return None
-        return future["delivery_ts"].min(), "delivery_ts"
+        if df["delivery_ts"].notna().any():
+            df = df[df["delivery_ts"].notna()]
+            now = now_utc_ts()
+            future = df[df["delivery_ts"] >= now]
+            if future.empty:
+                return None
+            return future["delivery_ts"].min(), "delivery_ts"
 
     if "cutoff_ts" in df.columns:
         df["cutoff_ts"] = pd.to_datetime(df["cutoff_ts"], errors="coerce", utc=True)
-        df = df[df["cutoff_ts"].notna()]
-        if df.empty:
-            return None
-        now = now_utc_ts()
-        future = df[df["cutoff_ts"] >= now]
-        if future.empty:
-            return None
-        return future["cutoff_ts"].min(), "cutoff_ts"
+        if df["cutoff_ts"].notna().any():
+            df = df[df["cutoff_ts"].notna()]
+            now = now_utc_ts()
+            future = df[df["cutoff_ts"] >= now]
+            if future.empty:
+                return None
+            return future["cutoff_ts"].min(), "cutoff_ts"
 
     if "delivery_date" in df.columns:
         df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date
@@ -652,17 +650,15 @@ def last_supplier_order_date(orders_df: pd.DataFrame) -> Optional[Tuple[Any, str
 
     if "delivery_ts" in df.columns:
         df["delivery_ts"] = pd.to_datetime(df["delivery_ts"], errors="coerce", utc=True)
-        df = df[df["delivery_ts"].notna()]
-        if df.empty:
-            return None
-        return df["delivery_ts"].max(), "delivery_ts"
+        if df["delivery_ts"].notna().any():
+            df = df[df["delivery_ts"].notna()]
+            return df["delivery_ts"].max(), "delivery_ts"
 
     if "cutoff_ts" in df.columns:
         df["cutoff_ts"] = pd.to_datetime(df["cutoff_ts"], errors="coerce", utc=True)
-        df = df[df["cutoff_ts"].notna()]
-        if df.empty:
-            return None
-        return df["cutoff_ts"].max(), "cutoff_ts"
+        if df["cutoff_ts"].notna().any():
+            df = df[df["cutoff_ts"].notna()]
+            return df["cutoff_ts"].max(), "cutoff_ts"
 
     if "delivery_date" in df.columns:
         df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date

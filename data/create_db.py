@@ -449,6 +449,20 @@ product_hierarchy = {
     }
 }
 
+def _scale_max_stock_ranges(hierarchy: dict, multiplier: float) -> None:
+    for cat in hierarchy.values():
+        subs = cat.get("subcategories", {})
+        for props in subs.values():
+            for key in ("store_max_stock_range", "warehouse_max_stock_range"):
+                if key not in props:
+                    continue
+                rng = props[key]
+                if isinstance(rng, tuple) and len(rng) == 2:
+                    low, high = rng
+                    props[key] = (low, int(math.ceil(high * multiplier)))
+
+_scale_max_stock_ranges(product_hierarchy, 1.3)
+
 # -------------------------------------------------------------------
 # Helper: compute a realistic standard batch size per product
 # -------------------------------------------------------------------

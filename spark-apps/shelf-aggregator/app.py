@@ -58,6 +58,35 @@ schema_profiles = T.StructType([
 ])
 
 # =========================
+# Delta init helpers (avoid concurrent create)
+# =========================
+def ensure_delta_table(path: str, schema: T.StructType):
+    if DeltaTable.isDeltaTable(spark, path):
+        return
+    last = None
+    for attempt in range(1, 6):
+        try:
+            (spark.createDataFrame([], schema)
+                  .write.format("delta").mode("overwrite").save(path))
+            return
+        except Exception as e:
+            last = e
+            if DeltaTable.isDeltaTable(spark, path):
+                return
+            msg = str(e)
+            if "DELTA_PROTOCOL_CHANGED" not in msg and "ProtocolChangedException" not in msg:
+                raise
+            time.sleep(0.5 * attempt)
+    raise last
+
+schema_shelf_state = T.StructType([
+    T.StructField("shelf_id", T.StringType()),
+    T.StructField("current_stock", T.IntegerType()),
+    T.StructField("shelf_weight", T.DoubleType()),
+    T.StructField("last_update_ts", T.TimestampType()),
+])
+
+# =========================
 # 0) Static snapshot of shelf profiles (compacted)
 # =========================
 profiles_kafka_df = (
@@ -150,7 +179,8 @@ def bootstrap_state_if_missing():
                )
     )
 
-    # Write initial Delta state
+    # Write initial Delta state (create ahead to avoid concurrent protocol conflicts)
+    ensure_delta_table(STATE_PATH, schema_shelf_state)
     latest.write.format("delta").mode("overwrite").save(STATE_PATH)
 
     # Publish to compacted topic `shelf_state` (key=shelf_id)
@@ -175,6 +205,8 @@ def bootstrap_state_if_missing():
 
     print(f"[bootstrap] Initial state created from Postgres and published on {TOPIC_SHELF_STATE}.")
 
+ensure_delta_table(RAW_PATH, schema_shelf_events)
+ensure_delta_table(STATE_PATH, schema_shelf_state)
 bootstrap_state_if_missing()
 
 # =========================

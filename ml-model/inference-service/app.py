@@ -22,8 +22,8 @@ MODEL_NAME = os.getenv("MODEL_NAME", "xgb_batches_to_order")
 ARTIFACT_DIR = os.getenv("ARTIFACT_DIR", "/models")
 ALLOW_DISK_MODEL = os.getenv("ALLOW_DISK_MODEL", "1") == "1"
 
-RUN_HOUR = int(os.getenv("RUN_HOUR", "0"))
-RUN_MINUTE = int(os.getenv("RUN_MINUTE", "5"))
+RUN_HOUR = int(os.getenv("RUN_HOUR", "15"))
+RUN_MINUTE = int(os.getenv("RUN_MINUTE", "0"))
 HEARTBEAT_SECONDS = int(os.getenv("HEARTBEAT_SECONDS", "60"))
 
 INFER_SQL = os.getenv(

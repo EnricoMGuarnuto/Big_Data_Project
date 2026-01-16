@@ -1,5 +1,7 @@
 import os
+import time
 from pyspark.sql import SparkSession, functions as F, types as T
+from delta.tables import DeltaTable
 
 # =========================
 # Env / Config
@@ -33,6 +35,30 @@ schema_foot = T.StructType([
     T.StructField("weekday", T.StringType()),
     T.StructField("time_slot", T.StringType()),
 ])
+
+# =========================
+# Delta init (avoid concurrent create)
+# =========================
+def ensure_delta_table(path: str, schema: T.StructType):
+    if DeltaTable.isDeltaTable(spark, path):
+        return
+    last = None
+    for attempt in range(1, 6):
+        try:
+            (spark.createDataFrame([], schema)
+                  .write.format("delta").mode("overwrite").save(path))
+            return
+        except Exception as e:
+            last = e
+            if DeltaTable.isDeltaTable(spark, path):
+                return
+            msg = str(e)
+            if "DELTA_PROTOCOL_CHANGED" not in msg and "ProtocolChangedException" not in msg:
+                raise
+            time.sleep(0.5 * attempt)
+    raise last
+
+ensure_delta_table(DL_FOOT_TRAFFIC_PATH, schema_foot)
 
 # =========================
 # Streaming read (Kafka) -> Delta append
