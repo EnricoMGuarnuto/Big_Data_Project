@@ -1,0 +1,220 @@
+services:
+  postgres:
+    build:
+        context: ./postgresql
+    restart: no
+    shm_size: 128mb
+    environment:
+      POSTGRES_USER: retail
+      POSTGRES_PASSWORD: retailpass
+      POSTGRES_DB: retaildb
+    ports: 
+      - 5432:5432
+  
+  db-bootstrapper:
+    build: ./postgresql
+    depends_on:
+      - postgres
+    environment:
+      POSTGRES_DB: retaildb
+      POSTGRES_USER: retail
+      POSTGRES_PASSWORD: retailpass
+      PGDATA: /var/lib/postgresql/inventory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/inventory
+
+  db-sql-jobs:
+    build: ./postgresql/sql_scripts
+    depends_on:
+      - postgres
+    environment:
+      DB_NAME: retaildb
+      DB_USER: retail
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_PASSWORD: retailpass
+  
+  minio:    
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - 9000:9000
+      - 9001:9001
+    volumes:
+      - minio_data:/data
+  
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.3
+    environment:
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root s3://mlflow/
+    ports:
+      - "5000:5000"
+    depends_on:
+      - minio
+    volumes:
+      - ./mlflow:/mlflow
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+  
+  # Kafka broker
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  
+  # Kafka producers + kafka consumers
+  kafka-producer-shelf:
+    build:
+      context: ./kafka-components/producers
+      dockerfile: ./producer_shelves/Dockerfile
+    depends_on:
+      - kafka
+    environment: 
+      - SLEEP=0.3
+      - KAFKA_TOPIC=shelf_sensors
+  
+  kafka-consumer-shelf:
+    build:
+      context: ./kafka-components/consumers
+      dockerfile: ./consumer_shelves/Dockerfile
+    depends_on:
+      - kafka
+      - kafka-producer-shelf
+      - minio
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+      - MINIO_PREFIX=raw/shelf_sensors
+    ports:
+      - 8010:8000
+
+  kafka-producer-pos:
+    build:
+      context: ./kafka-components/producers
+      dockerfile: ./producer_pos/Dockerfile
+    depends_on:
+      - kafka
+    environment:
+      - SLEEP=0.2
+      - KAFKA_TOPIC=pos_transactions
+
+  kafka-consumer-pos:
+    build:
+      context: ./kafka-components/consumers
+      dockerfile: .consumer_pos/Dockerfile
+    depends_on:
+      - kafka
+      - kafka-producer-pos
+      - minio
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+      - MINIO_PREFIX=raw/pos_transactions
+    ports:
+      - 8011:8000
+
+  kafka-producer-traffic:
+    build:
+      context: ./kafka-components/producers
+      dockerfile: ./producer_traffic/Dockerfile
+    depends_on:
+      - kafka
+    environment:
+      - SLEEP=0.3
+      - KAFKA_TOPIC=foot_traffic
+  
+  kafka-consumer-traffic:
+    build:
+      context: ./kafka-components/consumers
+      dockerfile: ./consumer_traffic/Dockerfile
+    depends_on:
+      - kafka
+      - kafka-producer-traffic
+      - minio
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+      - MINIO_PREFIX=raw/foot_traffic
+    ports:
+      - 8012:8000
+
+  spark:
+      image: bitnami/spark:3.4
+      environment:
+        SPARK_MODE: master
+      ports:
+        - 7077:7077
+        - 8080:8080
+      volumes:
+        - ./spark-components:/app
+      depends_on:
+        - kafka
+        - minio
+        - postgres
+
+  fastapi-service:
+    build: ./fastapi-service
+    ports:
+      - 8000:8000
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio123
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: retaildb
+      POSTGRES_USER: retail
+      POSTGRES_PASSWORD: retailpass
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - minio
+      - postgres
+      - mlflow
+  
+  streamlit-dashboard:
+    build: ./streamlit-dashboard
+    ports:
+      - 8501:8501
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: retaildb
+      POSTGRES_USER: retail
+      POSTGRES_PASSWORD: retailpass
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio123
+    depends_on:
+      - minio
+      - postgres
+      - fastapi-service
+  
+  ml-model:
+    build: ./ml-model
+    depends_on:
+      - minio
+      - mlflow
+      - spark
+      - postgres
+
+volumes:
+  minio_data:
+  postgres_data:
