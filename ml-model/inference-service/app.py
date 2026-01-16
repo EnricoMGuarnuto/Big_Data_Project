@@ -273,6 +273,15 @@ def main():
                 pb = int(pred_batches[i])
                 sq = int(pb * bs)
 
+                conn.execute(log_pred_sql, {
+                    "mn": MODEL_NAME,
+                    "fd": today,
+                    "sid": sid,
+                    "pb": pb,
+                    "sq": sq,
+                    "mv": model_version
+                })
+
                 if sq <= 0:
                     continue
 
@@ -282,15 +291,6 @@ def main():
                     "qty": sq,
                     "bs": bs,
                     "now_ts": sim_now
-                })
-
-                conn.execute(log_pred_sql, {
-                    "mn": MODEL_NAME,
-                    "fd": today,
-                    "sid": sid,
-                    "pb": pb,
-                    "sq": sq,
-                    "mv": model_version
                 })
 
                 delta_rows.append({

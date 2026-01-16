@@ -111,6 +111,43 @@ def _write_alerts_delta_with_retries(df, batch_id: int) -> None:
             time.sleep(sleep_s)
     raise last  # pragma: no cover
 
+def _merge_supplier_plans_with_retries(plans_df) -> None:
+    last = None
+    for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
+        try:
+            _ensure_delta_columns(
+                DL_SUPPLIER_PLAN_PATH,
+                {f.name: f.dataType for f in schema_wh_supplier_plan.fields},
+            )
+            tgt = DeltaTable.forPath(spark, DL_SUPPLIER_PLAN_PATH)
+            (tgt.alias("t").merge(
+                plans_df.alias("s"),
+                "t.shelf_id = s.shelf_id"
+            ).whenMatchedUpdate(set={
+                "supplier_plan_id": F.col("s.supplier_plan_id"),
+                "suggested_qty": F.col("s.suggested_qty"),
+                "standard_batch_size": F.col("s.standard_batch_size"),
+                "status": F.col("s.status"),
+                "updated_at": F.col("s.updated_at")
+            }).whenNotMatchedInsert(values={
+                "supplier_plan_id": F.col("s.supplier_plan_id"),
+                "shelf_id": F.col("s.shelf_id"),
+                "suggested_qty": F.col("s.suggested_qty"),
+                "standard_batch_size": F.col("s.standard_batch_size"),
+                "status": F.col("s.status"),
+                "created_at": F.col("s.created_at"),
+                "updated_at": F.col("s.updated_at")
+            }).execute())
+            return
+        except Exception as e:
+            last = e
+            if not _is_delta_conflict(e) or attempt == DELTA_WRITE_MAX_RETRIES:
+                raise
+            sleep_s = DELTA_WRITE_RETRY_BASE_S * attempt
+            print(f"[delta-retry] wh_alert_engine merge conflict ({attempt}/{DELTA_WRITE_MAX_RETRIES}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last  # pragma: no cover
+
 def _filter_recent_alerts(alerts_df, cutoff_ts):
     if ALERTS_COOLDOWN_MINUTES <= 0:
         return alerts_df
@@ -542,29 +579,7 @@ def foreach_batch(batch_df, batch_id: int):
 
         # Delta mirror (upsert latest per shelf)
         if DeltaTable.isDeltaTable(spark, DL_SUPPLIER_PLAN_PATH):
-            _ensure_delta_columns(
-                DL_SUPPLIER_PLAN_PATH,
-                {f.name: f.dataType for f in schema_wh_supplier_plan.fields},
-            )
-            tgt = DeltaTable.forPath(spark, DL_SUPPLIER_PLAN_PATH)
-            tgt.alias("t").merge(
-                plans.alias("s"),
-                "t.shelf_id = s.shelf_id"
-            ).whenMatchedUpdate(set={
-                "supplier_plan_id": F.col("s.supplier_plan_id"),
-                "suggested_qty": F.col("s.suggested_qty"),
-                "standard_batch_size": F.col("s.standard_batch_size"),
-                "status": F.col("s.status"),
-                "updated_at": F.col("s.updated_at")
-            }).whenNotMatchedInsert(values={
-                "supplier_plan_id": F.col("s.supplier_plan_id"),
-                "shelf_id": F.col("s.shelf_id"),
-                "suggested_qty": F.col("s.suggested_qty"),
-                "standard_batch_size": F.col("s.standard_batch_size"),
-                "status": F.col("s.status"),
-                "created_at": F.col("s.created_at"),
-                "updated_at": F.col("s.updated_at")
-            }).execute()
+            _merge_supplier_plans_with_retries(plans)
         else:
             plans.write.format("delta").mode("overwrite").save(DL_SUPPLIER_PLAN_PATH)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,13 +40,52 @@ except Exception:
     st_autorefresh = None
 
 # Simulated time (optional)
+SIM_TIME_OK = False
 try:
-    from simulated_time.redis_helpers import get_simulated_now
-    from datetime import timezone
+    from simulated_time.redis_helpers import get_simulated_now as _get_simulated_now
+    get_simulated_now = _get_simulated_now
     SIM_TIME_OK = True
 except Exception:
-    SIM_TIME_OK = False
-    timezone = None
+    try:
+        import socket
+
+        def _redis_get_sim_now(host: str, port: int, key: str = "sim:now") -> Optional[str]:
+            cmd = f"*2\r\n$3\r\nGET\r\n${len(key)}\r\n{key}\r\n"
+            with socket.create_connection((host, port), timeout=1.5) as sock:
+                sock.sendall(cmd.encode("ascii"))
+                data = sock.recv(4096)
+            if not data:
+                return None
+            if data.startswith(b"$-1"):
+                return None
+            if not data.startswith(b"$"):
+                raise RuntimeError(f"Unexpected Redis reply: {data[:100]!r}")
+            header, rest = data.split(b"\r\n", 1)
+            length = int(header[1:].decode("ascii"))
+            return rest[:length].decode("utf-8")
+
+        def get_simulated_now():
+            host = os.getenv("REDIS_HOST", "redis")
+            port = int(os.getenv("REDIS_PORT", "6379"))
+            s = _redis_get_sim_now(host, port)
+            if not s:
+                raise RuntimeError(
+                    "Redis sim:now not initialized yet. Start sim-clock "
+                    "(e.g. `docker compose up -d sim-clock`)."
+                )
+            try:
+                dt = datetime.fromisoformat(s)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Invalid sim:now value: {s}. Restart sim-clock to reset it."
+                ) from exc
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+
+        SIM_TIME_OK = True
+    except Exception:
+        SIM_TIME_OK = False
 
 
 log = logging.getLogger("dashboard")
@@ -135,6 +175,18 @@ def now_utc_ts() -> pd.Timestamp:
             dt = dt.replace(tzinfo=timezone.utc)
         return pd.Timestamp(dt)
     return pd.Timestamp.utcnow().tz_localize("UTC")
+
+def render_simulated_time() -> None:
+    if not SIM_TIME_OK:
+        st.info("Simulated time unavailable (redis helper not installed).")
+        return
+    try:
+        dt = get_simulated_now()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        st.metric("Simulated time (UTC)", dt.isoformat())
+    except Exception as e:
+        st.warning(f"Simulated time error: {e}")
 
 def split_alerts_by_location(alerts_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if alerts_df.empty or "location" not in alerts_df.columns:
@@ -550,9 +602,7 @@ def main():
     shelf_to_cat, shelf_to_sub = build_shelf_maps(inv)
 
     st.title("Supermarket Live Dashboard")
-
-    if SIM_TIME_OK:
-        st.caption(f"Simulated time (UTC): {now_utc_ts().isoformat()}")
+    render_simulated_time()
 
     tabs = st.tabs(["Map Live", "States", "Supplier Plan", "ML Model", "Alerts (raw)", "Debug"])
 
