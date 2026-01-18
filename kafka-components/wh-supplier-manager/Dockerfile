@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir \
     pandas \
     deltalake \
     confluent-kafka \
-    pyarrow
+    pyarrow \
+    redis
 
 # Copiamo il codice e la tua cartella del tempo simulato
 COPY app.py .
