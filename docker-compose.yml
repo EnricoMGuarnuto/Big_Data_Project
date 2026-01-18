@@ -201,6 +201,98 @@ services:
     - ./simulated_time:/app/simulated_time:ro
     restart: unless-stopped
   
+
+# Kafka consumer
+  wh-supplier-manager:
+      build:
+        context: ./kafka-components/wh-supplier-manager  # Assicurati che il path sia corretto
+        dockerfile: Dockerfile
+      container_name: wh-supplier-manager
+      environment:
+        KAFKA_BROKER: kafka:9092
+        TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
+        TOPIC_WH_EVENTS: wh_events
+        TOPIC_ALERTS: alerts
+        DELTA_ROOT: /delta
+        DL_SUPPLIER_PLAN_PATH: /delta/ops/wh_supplier_plan
+        DL_ORDERS_PATH: /delta/ops/wh_supplier_orders
+        DL_RECEIPTS_PATH: /delta/ops/wh_supplier_receipts
+        TICK_MINUTES: "1"
+        # Orari simulazione
+        CUTOFF_HOUR: "12"
+        DELIVERY_HOUR: "8"
+        PYTHONPATH: /app
+      volumes:
+        - ./delta:/delta
+        - ./simulated_time:/app/simulated_time:ro
+      depends_on:
+        - kafka
+        - redis
+      # LIMITI RAM: Qui 128MB sono più che sufficienti (prima ne servivano 2000!)
+      deploy:
+        resources:
+          limits:
+            memory: 128M
+      restart: unless-stopped
+
+
+  daily-discount-manager:
+      build:
+        context: ./kafka-components/daily-discount-manager 
+        dockerfile: Dockerfile
+      container_name: daily-discount-manager
+      environment:
+        KAFKA_BROKER: kafka:9092
+        TOPIC_DAILY_DISCOUNTS: daily_discounts
+        TOPIC_ALERTS: alerts
+        DELTA_ROOT: /delta
+        DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
+        DL_DAILY_DISC_PATH: /delta/analytics/daily_discounts
+        DISCOUNT_MIN: "0.30"
+        DISCOUNT_MAX: "0.50"
+        POLL_SECONDS: "10.0"
+        PYTHONPATH: /app
+      volumes:
+        - ./delta:/delta
+        - ./simulated_time:/app/simulated_time:ro
+      depends_on:
+        - kafka
+        - redis
+      deploy:
+        resources:
+          limits:
+            memory: 128M # Consumo irrisorio
+      restart: unless-stopped
+
+  removal-scheduler:
+      build:
+        context: ./kafka-components/removal-scheduler
+        dockerfile: Dockerfile
+      container_name: removal-scheduler
+      environment:
+        KAFKA_BROKER: kafka:9092
+        TOPIC_ALERTS: alerts
+        TOPIC_SHELF_STATE: shelf_state
+        TOPIC_SHELF_BATCH_STATE: shelf_batch_state
+        DELTA_ROOT: /delta
+        DL_SHELF_STATE_PATH: /delta/cleansed/shelf_state
+        DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
+        REMOVE_MODE: next_day
+        POLL_SECONDS: "1.0"
+        PYTHONPATH: /app
+      volumes:
+        - ./delta:/delta
+        - ./simulated_time:/app/simulated_time:ro
+      depends_on:
+        - kafka
+        - redis
+      # LIMITI RAM: Anche qui, restiamo leggerissimi
+      deploy:
+        resources:
+          limits:
+            memory: 128M
+      restart: unless-stopped
+
 #Spark Applications
   spark-init-delta:
     build:
@@ -493,99 +585,99 @@ services:
     restart: 'no'
 
 
-  daily-discount-manager:
-    build:
-      context: ./spark-apps/daily-discount-manager
-      dockerfile: Dockerfile
-    container_name: daily-discount-manager
-    env_file:
-    - .env 
-    depends_on:
-      - kafka
-      - redis
-    environment:
-      KAFKA_BROKER: kafka:9092
-      TOPIC_DAILY_DISCOUNTS: daily_discounts
-      TOPIC_ALERTS: alerts
+  # daily-discount-manager:
+  #   build:
+  #     context: ./spark-apps/daily-discount-manager
+  #     dockerfile: Dockerfile
+  #   container_name: daily-discount-manager
+  #   env_file:
+  #   - .env 
+  #   depends_on:
+  #     - kafka
+  #     - redis
+  #   environment:
+  #     KAFKA_BROKER: kafka:9092
+  #     TOPIC_DAILY_DISCOUNTS: daily_discounts
+  #     TOPIC_ALERTS: alerts
 
-      DELTA_ROOT: /delta
-      DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
-      DL_DAILY_DISC_PATH: /delta/analytics/daily_discounts
-      PYTHONPATH: /app
-    volumes:
-      - ./delta:/delta
-      - ./simulated_time:/app/simulated_time:ro
-    restart: 'unless-stopped'
+  #     DELTA_ROOT: /delta
+  #     DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
+  #     DL_DAILY_DISC_PATH: /delta/analytics/daily_discounts
+  #     PYTHONPATH: /app
+  #   volumes:
+  #     - ./delta:/delta
+  #     - ./simulated_time:/app/simulated_time:ro
+  #   restart: 'unless-stopped'
 
-  removal-scheduler:
-    build:
-      context: ./spark-apps/removal-scheduler
-      dockerfile: Dockerfile
-    container_name: removal-scheduler
-    depends_on:
-      - kafka
-      - redis
-    env_file:
-     - .env
-    environment:
-      KAFKA_BROKER: kafka:9092
-      TOPIC_ALERTS: alerts
-      TOPIC_SHELF_STATE: shelf_state
-      TOPIC_SHELF_BATCH_STATE: shelf_batch_state
+  # removal-scheduler:
+  #   build:
+  #     context: ./spark-apps/removal-scheduler
+  #     dockerfile: Dockerfile
+  #   container_name: removal-scheduler
+  #   depends_on:
+  #     - kafka
+  #     - redis
+  #   env_file:
+  #    - .env
+  #   environment:
+  #     KAFKA_BROKER: kafka:9092
+  #     TOPIC_ALERTS: alerts
+  #     TOPIC_SHELF_STATE: shelf_state
+  #     TOPIC_SHELF_BATCH_STATE: shelf_batch_state
 
-      DELTA_ROOT: /delta
-      DL_SHELF_STATE_PATH: /delta/cleansed/shelf_state
-      DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
+  #     DELTA_ROOT: /delta
+  #     DL_SHELF_STATE_PATH: /delta/cleansed/shelf_state
+  #     DL_SHELF_BATCH_PATH: /delta/cleansed/shelf_batch_state
 
-      PYTHONPATH: /app
+  #     PYTHONPATH: /app
 
-      # remove next day by default
-      REMOVE_MODE: next_day
-      EMIT_ALERTS: "1"
-    volumes:
-      - ./delta:/delta
-      - ./simulated_time:/app/simulated_time:ro
-    restart: 'no'
+  #     # remove next day by default
+  #     REMOVE_MODE: next_day
+  #     EMIT_ALERTS: "1"
+  #   volumes:
+  #     - ./delta:/delta
+  #     - ./simulated_time:/app/simulated_time:ro
+  #   restart: 'no'
 
 
-  wh-supplier-manager:
-    build:
-      context: ./spark-apps/wh-supplier-manager
-      dockerfile: Dockerfile
-    container_name: wh-supplier-manager
-    env_file:
-    - .env
-    environment:
-      KAFKA_BROKER: kafka:9092
-      TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
-      TOPIC_WH_EVENTS: wh_events
+  # wh-supplier-manager:
+  #   build:
+  #     context: ./spark-apps/wh-supplier-manager
+  #     dockerfile: Dockerfile
+  #   container_name: wh-supplier-manager
+  #   env_file:
+  #   - .env
+  #   environment:
+  #     KAFKA_BROKER: kafka:9092
+  #     TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
+  #     TOPIC_WH_EVENTS: wh_events
 
-      DELTA_ROOT: /delta
-      DL_SUPPLIER_PLAN_PATH: /delta/ops/wh_supplier_plan
-      DL_ORDERS_PATH: /delta/ops/wh_supplier_orders
-      DL_RECEIPTS_PATH: /delta/ops/wh_supplier_receipts
-      DL_WH_EVENTS_RAW: /delta/raw/wh_events
+  #     DELTA_ROOT: /delta
+  #     DL_SUPPLIER_PLAN_PATH: /delta/ops/wh_supplier_plan
+  #     DL_ORDERS_PATH: /delta/ops/wh_supplier_orders
+  #     DL_RECEIPTS_PATH: /delta/ops/wh_supplier_receipts
+  #     DL_WH_EVENTS_RAW: /delta/raw/wh_events
 
-      CHECKPOINT_ROOT: /delta/_checkpoints/wh_supplier_manager
-      TICK_MINUTES: "1"
-      PYTHONPATH: /app
+  #     CHECKPOINT_ROOT: /delta/_checkpoints/wh_supplier_manager
+  #     TICK_MINUTES: "1"
+  #     PYTHONPATH: /app
 
-      # Schedule (UTC)
-      CUTOFF_HOUR: "12"
-      CUTOFF_MINUTE: "0"
-      DELIVERY_HOUR: "8"
-      DELIVERY_MINUTE: "0"
+  #     # Schedule (UTC)
+  #     CUTOFF_HOUR: "12"
+  #     CUTOFF_MINUTE: "0"
+  #     DELIVERY_HOUR: "8"
+  #     DELIVERY_MINUTE: "0"
 
-      DEFAULT_EXPIRY_DAYS: "365"
-    volumes:
-      - ./delta:/delta
-      - ./simulated_time:/app/simulated_time:ro
-    depends_on:
-      - kafka
-      - spark-init-delta
-      - wh-alert-engine
-      - redis
-    restart: 'no'
+  #     DEFAULT_EXPIRY_DAYS: "365"
+  #   volumes:
+  #     - ./delta:/delta
+  #     - ./simulated_time:/app/simulated_time:ro
+  #   depends_on:
+  #     - kafka
+  #     - spark-init-delta
+  #     - wh-alert-engine
+  #     - redis
+  #   restart: 'no'
 
   shelf-daily-features:
     build:
