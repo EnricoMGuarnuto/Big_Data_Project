@@ -445,7 +445,7 @@ services:
       FAIL_ON_DATA_LOSS: "0"
       NEAR_EXPIRY_DAYS: "10"
       DEFAULT_MULTIPLIER: "1"
-      WH_SUPPLIER_PLAN_ENABLED: "0"
+      WH_SUPPLIER_PLAN_ENABLED: "1"
       BOOTSTRAP_WH_POLICIES_FROM_PG: "1"
       JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
       JDBC_PG_USER: bdt_user
