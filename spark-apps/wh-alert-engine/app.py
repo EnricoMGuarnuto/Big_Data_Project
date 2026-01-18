@@ -45,6 +45,7 @@ DEFAULT_MULTIPLIER       = int(os.getenv("DEFAULT_MULTIPLIER", "1"))  # multiple
 CHECKPOINT_ROOT          = os.getenv("CHECKPOINT_ROOT", f"{DELTA_ROOT}/_checkpoints/wh_alert_engine")
 CKP_FOREACH              = os.getenv("CKP_FOREACH", f"{CHECKPOINT_ROOT}/foreach")
 ALERTS_COOLDOWN_MINUTES  = int(os.getenv("ALERTS_COOLDOWN_MINUTES", "60"))
+WH_SUPPLIER_PLAN_ENABLED = os.getenv("WH_SUPPLIER_PLAN_ENABLED", "1") in ("1", "true", "True")
 
 # =========================
 # Spark Session
@@ -520,6 +521,9 @@ def foreach_batch(batch_df, batch_id: int):
 	       .save()
 
         _write_alerts_delta_with_retries(alerts_to_delta, batch_id)
+
+    if not WH_SUPPLIER_PLAN_ENABLED:
+        return
 
     # Supplier plan (compacted): compute suggested_qty when below reorder point
     plans_base = reorder_needed.select(

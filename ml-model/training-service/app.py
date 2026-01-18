@@ -1,7 +1,7 @@
 import os
 import json
 import time
-from datetime import timezone
+from datetime import timezone, timedelta
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -14,6 +14,7 @@ from simulated_time.redis_helpers import get_simulated_now
 
 MODEL_NAME = os.getenv("MODEL_NAME", "xgb_batches_to_order")
 ARTIFACT_DIR = os.getenv("ARTIFACT_DIR", "/models")
+RETRAIN_DAYS = int(os.getenv("RETRAIN_DAYS", "0"))  # 0 = always retrain
 
 PG_DSN = os.getenv(
     "PG_DSN",
@@ -51,6 +52,30 @@ def wait_for_db(engine, retries=20, delay_seconds=3):
             print(f"[training] waiting for postgres ({attempt}/{retries})...")
             time.sleep(delay_seconds)
 
+def should_retrain(engine, simulated_now):
+    if RETRAIN_DAYS <= 0:
+        return True
+
+    q = text("""
+        SELECT trained_at
+        FROM analytics.ml_models
+        WHERE model_name = :mn
+        LIMIT 1
+    """)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(q, {"mn": MODEL_NAME}).fetchone()
+    except Exception as e:
+        print(f"[training] warning: cannot read ml_models (will retrain). error={e}")
+        return True
+
+    if not row or not row[0]:
+        return True
+
+    last_trained = ensure_utc(row[0])
+    age = simulated_now - last_trained
+    return age >= timedelta(days=RETRAIN_DAYS)
+
 def train_once(engine):
     df = pd.read_sql(FEATURE_SQL, engine)
     if df.empty:
@@ -78,8 +103,9 @@ def train_once(engine):
     best_mae = 1e18
     best_metrics = None
 
-    X_np = X.values
-    y_np = y.values
+    # Keep memory lower vs default int64/float64.
+    X_np = X.values.astype("float32", copy=False)
+    y_np = y.values.astype("float32", copy=False)
 
     for fold, (tr, va) in enumerate(tscv.split(X_np), start=1):
         dtr = xgb.DMatrix(X_np[tr], label=y_np[tr])
@@ -88,6 +114,7 @@ def train_once(engine):
         params = {
             "objective": "reg:squarederror",
             "eval_metric": "mae",
+            "tree_method": "hist",
             "max_depth": 8,
             "eta": 0.08,
             "subsample": 0.9,
@@ -156,6 +183,10 @@ def train_once(engine):
 def main():
     engine = create_engine(PG_DSN, pool_pre_ping=True)
     wait_for_db(engine)
+    simulated_now = ensure_utc(get_simulated_now())
+    if not should_retrain(engine, simulated_now):
+        print(f"[training] skip: model {MODEL_NAME} trained within last {RETRAIN_DAYS}d (sim_now={simulated_now.isoformat()})")
+        return
     train_once(engine)
 
 if __name__ == "__main__":

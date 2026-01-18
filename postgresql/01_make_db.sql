@@ -203,21 +203,19 @@ CREATE INDEX IF NOT EXISTS ix_wh_events_plan
 CREATE INDEX IF NOT EXISTS ix_wh_events_shelf
   ON ops.wh_events (shelf_id, timestamp);
 
--- Supplier restock plan (one per shelf per day, idempotent)
+-- Supplier restock plan (compacted plan state; lifecycle: pending/issued/completed)
 CREATE TABLE IF NOT EXISTS ops.wh_supplier_plan (
-  supplier_plan_id BIGSERIAL PRIMARY KEY,
+  supplier_plan_id TEXT PRIMARY KEY,          -- UUID from planner (Kafka compaction key is shelf_id)
   shelf_id TEXT NOT NULL,
-  plan_date DATE NOT NULL,
-  suggested_qty INTEGER NOT NULL,
-  standard_batch_size INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
+  suggested_qty INTEGER NOT NULL CHECK (suggested_qty >= 0),
+  standard_batch_size INTEGER NULL,
+  status TEXT NOT NULL DEFAULT 'pending',     -- pending/issued/completed/canceled
   created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL,
-  UNIQUE (shelf_id, plan_date)
+  updated_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS ix_wh_supplier_plan_date
-  ON ops.wh_supplier_plan(plan_date);
+CREATE INDEX IF NOT EXISTS ix_wh_supplier_plan_shelf
+  ON ops.wh_supplier_plan(shelf_id);
 
 CREATE INDEX IF NOT EXISTS ix_wh_supplier_plan_status
   ON ops.wh_supplier_plan(status);

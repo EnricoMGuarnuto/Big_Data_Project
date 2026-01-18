@@ -164,7 +164,7 @@ Note on workload: the system is computationally intensive primarily because it r
 │   └── kafka-producer-pos/            # POS transactions producer (from foot traffic + shelf events)
 ├── ml-model/                          # ML services (training + inference)
 │   ├── training-service/              # Train XGBoost, register in Postgres, write artifacts to /models
-│   └── inference-service/             # Daily inference, write wh_supplier_plan, log predictions
+│   └── inference-service/             # Cutoff-time inference (Sun/Tue/Thu), write pending wh_supplier_plan, log predictions
 ├── models/                            # Model artifacts + feature columns (mounted to /models)
 ├── postgresql/                        # DDL + init SQL (ref/config/state/ops/analytics + views)
 │   ├── 01_make_db.sql
@@ -417,7 +417,7 @@ The ML pipeline consists of:
 1. **Daily feature engineering** – job `spark-apps/shelf-daily-features` that populates `analytics.shelf_daily_features`.
 2. **ML views** – `analytics.v_ml_features` and `analytics.v_ml_train` (defined in `postgresql/05_views.sql`).
 3. **Training** – `ml-model/training-service` service (XGBoost + time-series CV), writes model artifacts to `models/` and registers metadata in `analytics.ml_models`.
-4. **Inference** – `ml-model/inference-service` service that loads the latest model, generates daily plans in `ops.wh_supplier_plan`, and logs predictions in `analytics.ml_predictions_log` (optional Delta mirror).
+4. **Inference** – `ml-model/inference-service` service that loads the latest model, generates pending supplier plans around cutoff times (Sun/Tue/Thu 12:00 UTC), and logs predictions in `analytics.ml_predictions_log` (Delta mirror + optional Kafka publish).
 
 ### Feature set (high level)
 
@@ -444,7 +444,7 @@ The `models/` directory is mounted to `/models` in Docker Compose for both train
 ### Config (env vars)
 
 - Training: `PG_DSN`, `MODEL_NAME`, `ARTIFACT_DIR`, `FEATURE_SQL`
-- Inference: `PG_DSN`, `MODEL_NAME`, `RUN_HOUR`, `RUN_MINUTE`, `DELTA_ENABLED`, `DELTA_WHSUPPLIER_PLAN_PATH`, `FEATURE_COLUMNS_PATH`, `ALLOW_DISK_MODEL`, `HEARTBEAT_SECONDS`
+- Inference: `PG_DSN`, `MODEL_NAME`, `CUTOFF_DOWS`, `CUTOFF_HOUR`, `CUTOFF_MINUTE`, `PREDICT_LEAD_MINUTES`, `DELTA_ENABLED`, `DELTA_WHSUPPLIER_PLAN_PATH`, `FEATURE_COLUMNS_PATH`, `ALLOW_DISK_MODEL`, `HEARTBEAT_SECONDS`, `KAFKA_ENABLED`
 
 ### Run
 
@@ -453,8 +453,8 @@ docker compose up -d sim-clock shelf-daily-features training-service inference-s
 ```
 
 Note:
-- `training-service` runs once and then exits.
-- `inference-service` runs once per (simulated) day based on `RUN_HOUR`/`RUN_MINUTE`.
+- `training-service` runs once and then exits (may skip if `RETRAIN_DAYS` is set and the model is still fresh).
+- `inference-service` stays idle and triggers only around the configured cutoff schedule (see `CUTOFF_*` env vars).
 
 ---
 

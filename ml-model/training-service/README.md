@@ -31,6 +31,7 @@ disk so inference can align new data to the exact training feature space.
 - `MODEL_NAME` (default: `xgb_batches_to_order`)
 - `ARTIFACT_DIR` (default: `/models`)
 - `FEATURE_SQL` (default: `SELECT * FROM analytics.v_ml_train ORDER BY shelf_id, feature_date`)
+- `RETRAIN_DAYS` (default: `0`, when > 0 skip training if the last `trained_at` is newer than this window)
 
 ## Training flow
 1. Load `analytics.v_ml_train` (must include `batches_to_order`).
@@ -50,5 +51,5 @@ docker compose up -d postgres redis sim-clock training-service
 ```
 
 ## Notes
-- The container exits after one training run. Restart the service when you want
-  a new model version.
+- The container exits after one training attempt. With `RETRAIN_DAYS>0`, it may
+  exit immediately without training if the current model is still “fresh”.

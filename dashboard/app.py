@@ -319,14 +319,13 @@ def fetch_supplier_plan_pg(limit: int = 2000) -> pd.DataFrame:
         SELECT
             supplier_plan_id,
             shelf_id,
-            plan_date,
             suggested_qty,
             standard_batch_size,
             status,
             created_at,
             updated_at
         FROM {SUPPLIER_PLAN_TABLE_NAME}
-        ORDER BY plan_date DESC, updated_at DESC
+        ORDER BY updated_at DESC
         LIMIT {int(limit)}
     """)
     with eng.connect() as c:
@@ -335,8 +334,9 @@ def fetch_supplier_plan_pg(limit: int = 2000) -> pd.DataFrame:
         df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
     if "status" in df.columns:
         df["status"] = df["status"].astype(str).str.strip().str.lower()
-    if "plan_date" in df.columns:
-        df["plan_date"] = pd.to_datetime(df["plan_date"], errors="coerce").dt.date
+    for col in ["created_at", "updated_at"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
     return df
 
 @st.cache_data(ttl=5, show_spinner=False)

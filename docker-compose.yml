@@ -353,6 +353,7 @@ services:
       FAIL_ON_DATA_LOSS: "0"
       NEAR_EXPIRY_DAYS: "10"
       DEFAULT_MULTIPLIER: "1"
+      WH_SUPPLIER_PLAN_ENABLED: "0"
       BOOTSTRAP_WH_POLICIES_FROM_PG: "1"
       JDBC_PG_URL: jdbc:postgresql://postgres:5432/smart_shelf
       JDBC_PG_USER: bdt_user
@@ -625,7 +626,7 @@ services:
       - postgres
       - redis
       - sim-clock
-    restart: unless-stopped
+    restart: "no"
 
 
   inference-service:
@@ -635,11 +636,18 @@ services:
       PG_DSN: postgresql+psycopg2://bdt_user:bdt_password@postgres:5432/smart_shelf
       MODEL_NAME: xgb_batches_to_order
       ARTIFACT_DIR: /models
-      RUN_HOUR: 00
-      RUN_MINUTE: 05
+      # Align with wh-supplier-manager cutoff (Sun/Tue/Thu 12:00 UTC).
+      # The inference-service triggers PREDICT_LEAD_MINUTES before cutoff and writes plans as "pending".
+      CUTOFF_DOWS: "6,1,3"
+      CUTOFF_HOUR: "12"
+      CUTOFF_MINUTE: "0"
+      PREDICT_LEAD_MINUTES: "5"
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
       HEARTBEAT_SECONDS: "10"
+      KAFKA_ENABLED: "1"
+      KAFKA_BROKER: kafka:9092
+      TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
     volumes:
       - ./models:/models
       - ./simulated_time:/app/simulated_time:ro   
