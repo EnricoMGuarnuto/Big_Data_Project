@@ -717,6 +717,7 @@ services:
       ARTIFACT_DIR: /models
       RETRAIN_DAYS: 7
       PYTHONPATH: /app                
+      PYTHONUNBUFFERED: "1"
     volumes:
       - ./models:/models
       - ./simulated_time:/app/simulated_time:ro

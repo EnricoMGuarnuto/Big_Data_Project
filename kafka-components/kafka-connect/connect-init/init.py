@@ -22,25 +22,35 @@ ENABLE_ALERTS_SINK = os.getenv("CONNECT_INIT_ENABLE_ALERTS_SINK", "0") in ("1", 
 # POS events contain nested arrays; JDBC sink cannot map them to the normalized tables in this repo.
 ENABLE_POS_SINK = os.getenv("CONNECT_INIT_ENABLE_POS_SINK", "0") in ("1", "true", "True")
 
+CONNECT_INIT_TIMEOUT_S = int(os.getenv("CONNECT_INIT_TIMEOUT_S", "240"))
+CONNECT_INIT_READY_POLL_S = float(os.getenv("CONNECT_INIT_READY_POLL_S", "2"))
+CONNECT_INIT_UPSERT_TIMEOUT_S = int(os.getenv("CONNECT_INIT_UPSERT_TIMEOUT_S", "60"))
+CONNECT_INIT_UPSERT_RETRIES = int(os.getenv("CONNECT_INIT_UPSERT_RETRIES", "8"))
+CONNECT_INIT_UPSERT_BACKOFF_S = float(os.getenv("CONNECT_INIT_UPSERT_BACKOFF_S", "1.5"))
+
 
 def _pg_jdbc_url() -> str:
     # stringtype=unspecified lets Postgres implicitly cast strings to enum/uuid/date columns
     return f"jdbc:postgresql://{PG_HOST}:{PG_PORT}/{PG_DB}?stringtype=unspecified"
 
 
-def wait_for_connect(timeout_s: int = 180) -> None:
+def wait_for_connect(timeout_s: int = CONNECT_INIT_TIMEOUT_S) -> None:
     url = f"{CONNECT_URL}/connectors"
     deadline = time.time() + timeout_s
+    attempt = 0
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3) as r:
+            attempt += 1
+            with urllib.request.urlopen(url, timeout=5) as r:
                 if r.status == 200:
                     print("[connect-init] Kafka Connect ready.")
                     return
         except Exception:
             pass
-        print("[connect-init] Waiting Kafka Connect…")
-        time.sleep(2)
+        if attempt % 5 == 0:
+            remaining = int(max(0, deadline - time.time()))
+            print(f"[connect-init] Waiting Kafka Connect… ({remaining}s left)")
+        time.sleep(CONNECT_INIT_READY_POLL_S)
     raise RuntimeError(f"Kafka Connect not reachable at {CONNECT_URL}")
 
 
@@ -53,16 +63,23 @@ def upsert_connector(name: str, config: dict) -> None:
         method="PUT",
         headers={"Content-Type": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            body = r.read().decode()
-            print(f"[connect-init] Upserted {name}: {r.status} {body}")
-    except urllib.error.HTTPError as e:
-        print(f"[connect-init] HTTPError {name}: {e.code} {e.read().decode()}")
-        raise
-    except Exception as e:
-        print(f"[connect-init] Error {name}: {e}")
-        raise
+    last: Exception | None = None
+    for attempt in range(1, CONNECT_INIT_UPSERT_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=CONNECT_INIT_UPSERT_TIMEOUT_S) as r:
+                body = r.read().decode()
+                print(f"[connect-init] Upserted {name}: {r.status} {body}")
+                return
+        except urllib.error.HTTPError as e:
+            # Non-retryable: caller should fix config/plugin issues.
+            print(f"[connect-init] HTTPError {name}: {e.code} {e.read().decode()}")
+            raise
+        except Exception as e:
+            last = e
+            sleep_s = CONNECT_INIT_UPSERT_BACKOFF_S * attempt
+            print(f"[connect-init] Error {name} (attempt {attempt}/{CONNECT_INIT_UPSERT_RETRIES}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last if last is not None else RuntimeError(f"Failed to upsert connector {name}")
 
 
 # ---------- SOURCE (Postgres -> Kafka) ----------

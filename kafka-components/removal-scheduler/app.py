@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import socket
 import pandas as pd
 from datetime import datetime
 from typing import Optional
@@ -24,9 +25,39 @@ DL_SHELF_BATCH   = os.getenv("DL_SHELF_BATCH_PATH", f"{DELTA_ROOT}/cleansed/shel
 
 REMOVE_MODE      = os.getenv("REMOVE_MODE", "next_day").lower()
 POLL_SECONDS     = float(os.getenv("POLL_SECONDS", "1.0"))
+KAFKA_WAIT_TIMEOUT_S  = int(os.getenv("KAFKA_WAIT_TIMEOUT_S", "180"))
+KAFKA_WAIT_POLL_S     = float(os.getenv("KAFKA_WAIT_POLL_S", "2.0"))
 
-# Kafka Producer
-kp = Producer({'bootstrap.servers': KAFKA_BROKER})
+def _parse_first_broker(brokers: str) -> tuple[str, int]:
+    first = (brokers or "").split(",")[0].strip()
+    if not first:
+        return "kafka", 9092
+    if "://" in first:
+        first = first.split("://", 1)[1]
+    host, _, port_s = first.partition(":")
+    return host, int(port_s or "9092")
+
+
+def wait_for_kafka() -> None:
+    host, port = _parse_first_broker(KAFKA_BROKER)
+    deadline = time.time() + KAFKA_WAIT_TIMEOUT_S
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                print(f"[removal_scheduler] Kafka ready at {host}:{port}")
+                return
+        except Exception as e:
+            if attempt % 5 == 0:
+                remaining = int(max(0, deadline - time.time()))
+                print(f"[removal_scheduler] Waiting Kafka at {host}:{port}… ({remaining}s left) last_err={e}")
+            time.sleep(KAFKA_WAIT_POLL_S)
+    raise RuntimeError(f"Kafka not reachable at {host}:{port} after {KAFKA_WAIT_TIMEOUT_S}s")
+
+
+def _producer() -> Producer:
+    return Producer({"bootstrap.servers": KAFKA_BROKER})
 
 def delta_ready() -> bool:
     return os.path.exists(DL_SHELF_STATE) and os.path.exists(DL_SHELF_BATCH)
@@ -58,6 +89,7 @@ def run_once(sim_date_str: str, sim_ts_str: str) -> None:
     # 3) Calcolo quantità da rimuovere
     removed_per_shelf = expired_batches.groupby('shelf_id')['batch_quantity_store'].sum().reset_index()
     removed_per_shelf.rename(columns={'batch_quantity_store': 'removed_qty'}, inplace=True)
+    removed_qty_map = dict(zip(removed_per_shelf["shelf_id"].astype(str), removed_per_shelf["removed_qty"].astype(int)))
 
     # 4) Aggiornamento stato scaffali (Shelf State)
     new_state = df_state.merge(removed_per_shelf, on='shelf_id', how='inner')
@@ -82,25 +114,39 @@ def run_once(sim_date_str: str, sim_ts_str: str) -> None:
     ).when_matched_update_all().execute()
 
     # 6) Notifiche Kafka
+    kp = _producer()
     for _, row in new_state.iterrows():
-        kp.produce(TOPIC_SHELF_STATE, key=str(row['shelf_id']), value=row.to_json())
+        try:
+            kp.produce(TOPIC_SHELF_STATE, key=str(row['shelf_id']), value=row.to_json())
+        except Exception as e:
+            print(f"[removal_scheduler] Kafka produce failed (shelf_state) shelf={row['shelf_id']}: {e}")
     
     for _, row in expired_batches.iterrows():
         key = f"{row['shelf_id']}::{row['batch_code']}"
-        kp.produce(TOPIC_SHELF_BATCH_STATE, key=key, value=row.to_json())
+        try:
+            kp.produce(TOPIC_SHELF_BATCH_STATE, key=key, value=row.to_json())
+        except Exception as e:
+            print(f"[removal_scheduler] Kafka produce failed (shelf_batch_state) key={key}: {e}")
         
         # Alert rimozione
         alert = {
             "event_type": "expired_removal", "shelf_id": row['shelf_id'], 
-            "location": "store", "severity": "high", "suggested_qty": int(row['removed_qty']),
+            "location": "store", "severity": "high", "suggested_qty": int(removed_qty_map.get(str(row["shelf_id"]), 0)),
             "created_at": sim_ts_str
         }
-        kp.produce(TOPIC_ALERTS, value=json.dumps(alert))
+        try:
+            kp.produce(TOPIC_ALERTS, value=json.dumps(alert))
+        except Exception as e:
+            print(f"[removal_scheduler] Kafka produce failed (alerts) shelf={row['shelf_id']}: {e}")
 
-    kp.flush()
+    try:
+        kp.flush(30)
+    except Exception as e:
+        print(f"[removal_scheduler] Kafka flush failed: {e}")
     print(f"[removal_scheduler] Rimossi {len(expired_batches)} lotti scaduti.")
 
 def main():
+    wait_for_kafka()
     last_processed_day = None
     while True:
         if not delta_ready():

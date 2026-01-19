@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import socket
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -25,7 +26,40 @@ DISCOUNT_MIN          = float(os.getenv("DISCOUNT_MIN", "0.30"))
 DISCOUNT_MAX          = float(os.getenv("DISCOUNT_MAX", "0.50"))
 POLL_SECONDS          = float(os.getenv("POLL_SECONDS", "10.0"))
 
-kp = Producer({'bootstrap.servers': KAFKA_BROKER})
+KAFKA_WAIT_TIMEOUT_S  = int(os.getenv("KAFKA_WAIT_TIMEOUT_S", "180"))
+KAFKA_WAIT_POLL_S     = float(os.getenv("KAFKA_WAIT_POLL_S", "2.0"))
+
+
+def _parse_first_broker(brokers: str) -> tuple[str, int]:
+    first = (brokers or "").split(",")[0].strip()
+    if not first:
+        return "kafka", 9092
+    if "://" in first:
+        first = first.split("://", 1)[1]
+    host, _, port_s = first.partition(":")
+    return host, int(port_s or "9092")
+
+
+def wait_for_kafka() -> None:
+    host, port = _parse_first_broker(KAFKA_BROKER)
+    deadline = time.time() + KAFKA_WAIT_TIMEOUT_S
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                print(f"[daily_discount_manager] Kafka ready at {host}:{port}")
+                return
+        except Exception as e:
+            if attempt % 5 == 0:
+                remaining = int(max(0, deadline - time.time()))
+                print(f"[daily_discount_manager] Waiting Kafka at {host}:{port}… ({remaining}s left) last_err={e}")
+            time.sleep(KAFKA_WAIT_POLL_S)
+    raise RuntimeError(f"Kafka not reachable at {host}:{port} after {KAFKA_WAIT_TIMEOUT_S}s")
+
+
+def _producer() -> Producer:
+    return Producer({"bootstrap.servers": KAFKA_BROKER})
 
 def run_discount_job(sim_date_str, sim_ts_str):
     print(f"[daily_discount_manager] Esecuzione calcolo sconti per {sim_date_str}...")
@@ -97,21 +131,32 @@ def run_discount_job(sim_date_str, sim_ts_str):
         write_deltalake(DL_DAILY_DISC_PATH, result_df, mode="append")
 
     # 7) Invio Kafka
+    kp = _producer()
     for _, row in result_df.iterrows():
         val = row.to_dict()
-        kp.produce(TOPIC_DAILY_DISCOUNTS, key=str(row['shelf_id']), value=json.dumps(val, default=str))
+        try:
+            kp.produce(TOPIC_DAILY_DISCOUNTS, key=str(row['shelf_id']), value=json.dumps(val, default=str))
+        except Exception as e:
+            print(f"[daily_discount_manager] Kafka produce failed (daily_discounts) shelf={row['shelf_id']}: {e}")
         
         # Alert opzionale
         alert = {
             "event_type": "near_expiry_discount", "shelf_id": row['shelf_id'],
             "location": "store", "severity": "high", "created_at": sim_ts_str
         }
-        kp.produce(TOPIC_ALERTS, value=json.dumps(alert))
+        try:
+            kp.produce(TOPIC_ALERTS, value=json.dumps(alert))
+        except Exception as e:
+            print(f"[daily_discount_manager] Kafka produce failed (alerts) shelf={row['shelf_id']}: {e}")
     
-    kp.flush()
+    try:
+        kp.flush(30)
+    except Exception as e:
+        print(f"[daily_discount_manager] Kafka flush failed: {e}")
     print(f"Aggiornati sconti per {len(result_df)} scaffali.")
 
 if __name__ == "__main__":
+    wait_for_kafka()
     last_day = None
     while True:
         sim_day = get_simulated_date()
