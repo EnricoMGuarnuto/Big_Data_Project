@@ -48,6 +48,16 @@ INFER_SQL = os.getenv(
     ORDER BY shelf_id
     """,
 )
+INFER_SQL_FALLBACK = os.getenv(
+    "INFER_SQL_FALLBACK",
+    """
+    SELECT *
+    FROM analytics.v_ml_features
+    WHERE feature_date = :today
+      AND warehouse_capacity > 0
+    ORDER BY shelf_id
+    """,
+)
 
 DELTA_ENABLED = os.getenv("DELTA_ENABLED", "1") == "1"
 DELTA_WHSUPPLIER_PLAN_PATH = os.getenv(
@@ -247,6 +257,15 @@ def iter_infer_frames(conn, feature_date, chunksize: int) -> Iterable:
         return
     yield pd.read_sql(text(INFER_SQL), conn, params={"today": feature_date})
 
+def iter_infer_frames_fallback(conn, feature_date, chunksize: int) -> Iterable:
+    import pandas as pd
+    from sqlalchemy import text
+
+    if chunksize and chunksize > 0:
+        yield from pd.read_sql(text(INFER_SQL_FALLBACK), conn, params={"today": feature_date}, chunksize=chunksize)
+        return
+    yield pd.read_sql(text(INFER_SQL_FALLBACK), conn, params={"today": feature_date})
+
 
 # -----------------------------
 # OUTPUTS (Postgres log, Kafka plan, Delta mirror)
@@ -382,11 +401,21 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
         first = next(iter(frames_iter), None)
 
         if first is None or first.empty:
+            # If the main inference query is too selective (e.g., alert flags not populated yet),
+            # fall back to a broader query for the same feature_date.
+            frames_iter = iter_infer_frames_fallback(conn, feature_date, chunksize=INFER_CHUNK_ROWS)
+            first = next(iter(frames_iter), None)
+
+        if first is None or first.empty:
             feature_date = get_latest_feature_date(conn, today)
             if feature_date:
                 print(f"[inference] no features for {today}, using latest {feature_date}")
                 frames_iter = iter_infer_frames(conn, feature_date, chunksize=INFER_CHUNK_ROWS)
                 first = next(iter(frames_iter), None)
+
+                if first is None or first.empty:
+                    frames_iter = iter_infer_frames_fallback(conn, feature_date, chunksize=INFER_CHUNK_ROWS)
+                    first = next(iter(frames_iter), None)
 
         if first is None or first.empty:
             print(f"[inference] no shelves to infer on {today}")

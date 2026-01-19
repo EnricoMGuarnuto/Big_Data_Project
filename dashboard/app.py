@@ -339,6 +339,37 @@ def fetch_supplier_plan_pg(limit: int = 2000) -> pd.DataFrame:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
     return df
 
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_standard_batch_sizes_pg() -> pd.DataFrame:
+    eng = get_pg_engine()
+    candidates = [
+        ("ref.store_batches_snapshot", "standard_batch_size"),
+        ("analytics.shelf_daily_features", "standard_batch_size"),
+        ("ref.batches_snapshot", "standard_batch_size"),
+        ("config.batch_catalog", "standard_batch_size"),
+    ]
+    last_err: Optional[Exception] = None
+    for table, col in candidates:
+        try:
+            q = text(f"""
+                SELECT shelf_id, MAX({col})::int AS standard_batch_size
+                FROM {table}
+                WHERE shelf_id IS NOT NULL
+                GROUP BY shelf_id
+            """)
+            with eng.connect() as c:
+                df = pd.read_sql(q, c)
+            if not df.empty:
+                df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
+                df["standard_batch_size"] = pd.to_numeric(df["standard_batch_size"], errors="coerce").astype("Int64")
+                return df
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err is not None:
+        log.warning("Cannot fetch standard_batch_size mapping from Postgres: %s", last_err)
+    return pd.DataFrame(columns=["shelf_id", "standard_batch_size"])
+
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_store_foot_traffic(target_date: date) -> Tuple[Optional[date], Optional[int]]:
     eng = get_pg_engine()
@@ -910,7 +941,7 @@ def main():
         next_order = next_supplier_order_date(orders_df)
         if next_order is not None:
             next_value, source = next_order
-            st.info(f"Next supplier order ({source}): {next_value}")
+            st.success(f"WH supplier order planned ({source}): {next_value}")
         else:
             st.info("No supplier order planned (or delta not available).")
             last_order = last_supplier_order_date(orders_df)
@@ -994,6 +1025,23 @@ def main():
             if df_plan.empty:
                 st.info("No supplier plan found.")
             else:
+                # Backfill standard_batch_size for display if upstream services didn't populate it.
+                if "shelf_id" in df_plan.columns:
+                    if "standard_batch_size" not in df_plan.columns:
+                        df_plan["standard_batch_size"] = pd.NA
+                    s = df_plan["standard_batch_size"]
+                    s_num = pd.to_numeric(s, errors="coerce")
+                    if s_num.isna().mean() >= 0.5:
+                        try:
+                            sizes = fetch_standard_batch_sizes_pg()
+                            if not sizes.empty:
+                                m = dict(zip(sizes["shelf_id"], sizes["standard_batch_size"]))
+                                df_plan["standard_batch_size"] = (
+                                    s_num.fillna(df_plan["shelf_id"].astype(str).str.strip().map(m))
+                                    .astype("Int64")
+                                )
+                        except Exception as e:
+                            log.warning("standard_batch_size backfill failed: %s", e)
                 st.caption(f"Data source: {data_source}")
                 st.dataframe(df_plan, use_container_width=True)
 

@@ -13,6 +13,7 @@ from pyspark.sql import SparkSession, functions as F, Window
 
 
 SUPPLIER_INBOUND_DOW = {1, 4}  # Tue, Fri (0=Mon)
+DEFAULT_WH_REORDER_POINT_QTY = int(os.getenv("DEFAULT_WH_REORDER_POINT_QTY", "10"))
 
 
 def env(name, default=None, required=False):
@@ -116,6 +117,37 @@ def run_for_day(run_date_str: str, sim_ts_str: str):
 
         wh_state = spark.read.jdbc(url, "state.wh_state", properties=props) \
             .select("shelf_id", F.col("wh_current_stock").cast("int").alias("current_stock_warehouse"))
+
+        # -----------------------------
+        # 2b) Warehouse reorder policy & pending supplier qty
+        # -----------------------------
+        # Policy table: per-shelf reorder point. If missing, fall back to a conservative default.
+        wh_policies = (
+            spark.read.jdbc(url, "config.wh_policies", properties=props)
+            .select(
+                F.col("shelf_id").cast("string").alias("shelf_id"),
+                F.col("reorder_point_qty").cast("int").alias("wh_reorder_point_qty"),
+                F.col("active").cast("boolean").alias("active"),
+            )
+        )
+        wh_policies = wh_policies.filter(F.col("active") == F.lit(True)).drop("active")
+
+        # Pending/issued supplier qty mirror (1 row per shelf_id in Postgres sink).
+        wh_supplier_plan = (
+            spark.read.jdbc(url, "ops.wh_supplier_plan", properties=props)
+            .select(
+                F.col("shelf_id").cast("string").alias("shelf_id"),
+                F.col("suggested_qty").cast("int").alias("suggested_qty"),
+                F.col("status").cast("string").alias("status"),
+            )
+        )
+        pending_supplier = (
+            wh_supplier_plan
+            .withColumn("status", F.lower(F.trim(F.col("status"))))
+            .filter(F.col("status").isin(["pending", "issued"]))
+            .groupBy("shelf_id")
+            .agg(F.sum(F.col("suggested_qty")).cast("int").alias("pending_supplier_qty"))
+        )
 
         # -----------------------------
         # 3) Expiry features (shelf batches)
@@ -224,6 +256,8 @@ def run_for_day(run_date_str: str, sim_ts_str: str):
             .join(batch_size, "shelf_id", "left")
             .join(shelf_state, "shelf_id", "left")
             .join(wh_state, "shelf_id", "left")
+            .join(wh_policies, "shelf_id", "left")
+            .join(pending_supplier, "shelf_id", "left")
             .join(expiry, "shelf_id", "left")
             .join(sales_day, "shelf_id", "left")
             .join(disc_today, "shelf_id", "left")
@@ -261,10 +295,17 @@ def run_for_day(run_date_str: str, sim_ts_str: str):
             .withColumn("shelf_threshold_qty", F.lit(None).cast("int"))
             .withColumn("alerts_last_30d_shelf", F.coalesce(F.col("alerts_last_30d_shelf"), F.lit(0)).cast("int"))
             .withColumn("is_shelf_alert", F.lit(False))
-            .withColumn("wh_reorder_point_qty", F.lit(None).cast("int"))
-            .withColumn("pending_supplier_qty", F.lit(0).cast("int"))
+            .withColumn(
+                "wh_reorder_point_qty",
+                F.coalesce(F.col("wh_reorder_point_qty"), F.lit(DEFAULT_WH_REORDER_POINT_QTY)).cast("int")
+            )
+            .withColumn("pending_supplier_qty", F.coalesce(F.col("pending_supplier_qty"), F.lit(0)).cast("int"))
             .withColumn("alerts_last_30d_wh", F.coalesce(F.col("alerts_last_30d_wh"), F.lit(0)).cast("int"))
-            .withColumn("is_warehouse_alert", F.lit(False))
+            .withColumn(
+                "is_warehouse_alert",
+                (F.col("warehouse_capacity") > F.lit(0)) &
+                (F.col("current_stock_warehouse") < F.col("wh_reorder_point_qty"))
+            )
             .withColumn("moved_wh_to_shelf", F.lit(0).cast("int"))
             .withColumn("expired_qty_shelf", F.lit(0).cast("int"))
             .withColumn("expired_qty_wh", F.lit(0).cast("int"))
