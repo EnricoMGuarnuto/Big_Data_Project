@@ -744,23 +744,6 @@ def main():
     st.title("Supermarket Live Dashboard")
     render_simulated_time()
 
-    st.markdown("**Current foot traffic**")
-    try:
-        sim_day = now_utc_ts().date()
-        live_count = compute_live_foot_traffic(now_utc_ts())
-        if live_count is not None:
-            st.metric("People count (live)", int(live_count))
-        else:
-            ft_date, ft_count = fetch_store_foot_traffic(sim_day)
-            if ft_date is None:
-                st.info("Foot traffic data not available.")
-            else:
-                st.metric("People count (latest)", int(ft_count))
-                if ft_date != sim_day:
-                    st.caption(f"Latest available date: {ft_date}")
-    except Exception as e:
-        st.warning(f"Foot traffic error: {e}")
-
     tabs = st.tabs(["Map Live", "States", "Supplier Plan", "ML Model", "Alerts (raw)", "Debug"])
 
     # TAB 0: MAP LIVE
@@ -797,29 +780,25 @@ def main():
 
         with col_right:
             st.subheader("Store details")
+            st.markdown("**Current foot traffic**")
+            try:
+                sim_day = now_utc_ts().date()
+                live_count = compute_live_foot_traffic(now_utc_ts())
+                if live_count is not None:
+                    st.metric("People count (live)", int(live_count))
+                else:
+                    ft_date, ft_count = fetch_store_foot_traffic(sim_day)
+                    if ft_date is None:
+                        st.info("Foot traffic data not available.")
+                    else:
+                        st.metric("People count (latest)", int(ft_count))
+                        if ft_date != sim_day:
+                            st.caption(f"Latest available date: {ft_date}")
+            except Exception as e:
+                st.warning(f"Foot traffic error: {e}")
+
             st.metric("Active alerts (store)", int(len(store_alerts)))
             st.metric("Active alerts (warehouse)", int(len(wh_alerts)))
-
-            st.markdown("**Warehouse summary (chart)**")
-            if wh_alerts.empty:
-                st.info("No active warehouse alerts.")
-            else:
-                chart_col = "severity" if "severity" in wh_alerts.columns else ("event_type" if "event_type" in wh_alerts.columns else None)
-                if chart_col is None:
-                    st.info("Missing severity/event_type columns.")
-                else:
-                    wh_counts = (
-                        wh_alerts[chart_col]
-                        .fillna("unknown")
-                        .astype(str)
-                        .str.strip()
-                        .str.lower()
-                        .value_counts()
-                        .sort_index()
-                    )
-                    fig_wh = go.Figure(data=[go.Bar(x=wh_counts.index.tolist(), y=wh_counts.values.tolist())])
-                    fig_wh.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10), xaxis_title=chart_col, yaxis_title="Count")
-                    st.plotly_chart(fig_wh, use_container_width=True)
 
             clicked_zone: Optional[Zone] = None
             clicked_cat: Optional[str] = None
