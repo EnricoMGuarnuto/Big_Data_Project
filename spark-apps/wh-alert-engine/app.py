@@ -372,7 +372,38 @@ def standard_batch_sizes_from_delta() -> Optional["pyspark.sql.dataframe.DataFra
         print(f"[std_batch_size] warn: {e}")
         return None
 
-STD_BATCH_SIZES = standard_batch_sizes_from_delta()
+STD_BATCH_SIZES_PG_TABLE = os.getenv("STD_BATCH_SIZES_PG_TABLE", "config.batch_catalog")
+
+
+def standard_batch_sizes_from_pg() -> Optional["pyspark.sql.dataframe.DataFrame"]:
+    if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
+        return None
+    try:
+        df = (
+            spark.read.format("jdbc")
+            .option("url", JDBC_PG_URL)
+            .option("user", JDBC_PG_USER)
+            .option("password", JDBC_PG_PASSWORD)
+            .option("driver", "org.postgresql.Driver")
+            .option("dbtable", STD_BATCH_SIZES_PG_TABLE)
+            .load()
+        )
+        if not {"shelf_id", "standard_batch_size"}.issubset(set(df.columns)):
+            return None
+        return (
+            df.select("shelf_id", "standard_batch_size")
+            .where(F.col("shelf_id").isNotNull())
+            .where(F.col("standard_batch_size").isNotNull() & (F.col("standard_batch_size") > 0))
+            .groupBy("shelf_id")
+            .agg(F.max("standard_batch_size").alias("standard_batch_size"))
+        )
+    except Exception as e:
+        print(f"[std_batch_size] warn (pg): {e}")
+        return None
+
+
+# Prefer PG snapshot (real batch sizes); fallback to Delta placeholder (may be null-only).
+STD_BATCH_SIZES = standard_batch_sizes_from_pg() or standard_batch_sizes_from_delta()
 
 # =========================
 # Streaming source: wh_state

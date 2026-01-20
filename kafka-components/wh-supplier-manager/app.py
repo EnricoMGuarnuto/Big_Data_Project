@@ -201,9 +201,13 @@ def _normalize_plan_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["created_at", "updated_at"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
-    for col in ["suggested_qty", "standard_batch_size"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
+    if "suggested_qty" in df.columns:
+        df["suggested_qty"] = pd.to_numeric(df["suggested_qty"], errors="coerce").fillna(0).astype("int64")
+    if "standard_batch_size" in df.columns:
+        s = pd.to_numeric(df["standard_batch_size"], errors="coerce")
+        s = s.where(s.notna() & (s > 0), pd.NA)
+        # Keep nullable ints so missing sizes stay null (avoid turning null into 0).
+        df["standard_batch_size"] = s.astype("Int64")
     return df
 
 
@@ -335,14 +339,37 @@ def publish_plan_updates(plans: pd.DataFrame) -> None:
     if "shelf_id" not in plans.columns:
         return
 
+    def _is_na(v) -> bool:
+        try:
+            return v is None or pd.isna(v)
+        except Exception:
+            return v is None
+
+    def _int_or_zero(v) -> int:
+        if _is_na(v):
+            return 0
+        try:
+            return int(v)
+        except Exception:
+            try:
+                return int(float(v))
+            except Exception:
+                return 0
+
+    def _int_or_none(v) -> Optional[int]:
+        if _is_na(v):
+            return None
+        out = _int_or_zero(v)
+        return out if out > 0 else None
+
     p = _producer()
     try:
         for _, row in plans.iterrows():
             msg = {
                 "supplier_plan_id": str(row.get("supplier_plan_id") or ""),
                 "shelf_id": str(row.get("shelf_id") or "").strip(),
-                "suggested_qty": int(row.get("suggested_qty") or 0),
-                "standard_batch_size": int(row.get("standard_batch_size") or 0) or None,
+                "suggested_qty": _int_or_zero(row.get("suggested_qty")),
+                "standard_batch_size": _int_or_none(row.get("standard_batch_size")),
                 "status": str(row.get("status") or "").strip().lower(),
                 "created_at": (
                     row.get("created_at").isoformat()

@@ -317,9 +317,9 @@ def insert_prediction_logs(conn, rows: list) -> None:
     log_pred_sql = text(
         """
         INSERT INTO analytics.ml_predictions_log(
-            model_name, feature_date, shelf_id, predicted_batches, suggested_qty, model_version
+            model_name, feature_date, shelf_id, predicted_batches, suggested_qty, model_version, created_at
         )
-        VALUES (:mn, :fd, :sid, :pb, :sq, :mv)
+        VALUES (:mn, :fd, :sid, :pb, :sq, :mv, :ca)
         ON CONFLICT (model_name, feature_date, shelf_id, model_version)
         DO NOTHING;
         """
@@ -433,6 +433,45 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
     import xgboost as xgb
 
     today = sim_now.date()
+    sim_now = ensure_utc(sim_now)
+
+    def _is_nullish(v) -> bool:
+        try:
+            return v is None or pd.isna(v)
+        except Exception:
+            return v is None
+
+    def _as_int(v, default: int = 0) -> int:
+        if _is_nullish(v):
+            return int(default)
+        try:
+            return int(v)
+        except Exception:
+            try:
+                return int(float(v))
+            except Exception:
+                return int(default)
+
+    def _heuristic_batches(row, batch_size: int) -> int:
+        # Robust fallback based on feature columns (mirrors simulation ordering logic).
+        bs = max(1, int(batch_size or 1))
+        wh_now = _as_int(row.get("current_stock_warehouse"), 0)
+        reorder_point = _as_int(row.get("wh_reorder_point_qty"), 0)
+        wh_cap = _as_int(row.get("warehouse_capacity"), 0)
+
+        # NOTE: pending_supplier_qty can reflect already-queued supplier orders.
+        # For demo/operational simplicity, base the fallback on current stock vs reorder point,
+        # so warehouse alerts don't devolve into "always 0" suggestions.
+        gap = max(0, reorder_point - wh_now)
+        if gap <= 0:
+            return 0
+
+        # Quantize to batch size and cap by remaining capacity.
+        desired_qty = int(math.ceil(gap / bs) * bs)
+        free_future = max(0, wh_cap - wh_now) if wh_cap > 0 else desired_qty
+        add_qty = min(desired_qty, free_future)
+        return max(0, int(add_qty // bs))
+
     with engine.begin() as conn:
         feature_date = today
         frames_iter = iter_infer_frames(conn, feature_date, chunksize=INFER_CHUNK_ROWS)
@@ -491,12 +530,16 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
 
             for i, row in df.iterrows():
                 shelf_id = str(row["shelf_id"]).strip()
-                batch_size = int(row.get("standard_batch_size", 1) or 1)
+                batch_size = _as_int(row.get("standard_batch_size"), 1)
+                if batch_size <= 0:
+                    batch_size = 1
                 # Model predicts expected batches (float). Convert to integer batches
                 # deterministically; avoids the "everything rounds to 0" problem when
                 # predictions cluster below 0.5.
                 stable_key = f"{MODEL_NAME}:{model_version}:{today.isoformat()}:{shelf_id}"
                 predicted_batches = deterministic_stochastic_round(pred[i], stable_key)
+                if predicted_batches <= 0:
+                    predicted_batches = _heuristic_batches(row, batch_size)
                 suggested_qty = int(predicted_batches * batch_size)
 
                 prediction_log_rows.append(
@@ -507,6 +550,7 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
                         "pb": predicted_batches,
                         "sq": suggested_qty,
                         "mv": model_version,
+                        "ca": sim_now,
                     }
                 )
 
