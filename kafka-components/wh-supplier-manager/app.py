@@ -117,11 +117,68 @@ def _read_delta(path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _delta_schema_fields(path: str) -> list[str]:
+    if not _is_delta_table(path):
+        return []
+    try:
+        dt = DeltaTable(path)
+        if hasattr(dt, "schema"):
+            s = dt.schema()
+            if hasattr(s, "fields"):
+                return [getattr(f, "name", str(f)) for f in s.fields]
+        if hasattr(dt, "to_pyarrow_table"):
+            return list(dt.to_pyarrow_table().schema.names)
+        if hasattr(dt, "to_pandas"):
+            return list(dt.to_pandas().columns)
+        return []
+    except Exception:
+        return []
+
+
+def _align_df_to_delta_schema(path: str, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Delta-rs is strict about the incoming schema matching the existing table schema.
+    Align outgoing DataFrames to the target Delta schema and apply small compatibility
+    mappings to prevent "Cannot cast schema" failures when tables were bootstrapped
+    with older column sets.
+    """
+    if df is None or df.empty:
+        return df
+
+    fields = _delta_schema_fields(path)
+    if not fields:
+        return df
+
+    out = df.copy()
+
+    # Compatibility mappings for historical schema variants.
+    if "suggested_qty" in fields and "suggested_qty" not in out.columns and "total_qty" in out.columns:
+        out["suggested_qty"] = out["total_qty"]
+    if "total_qty" in fields and "total_qty" not in out.columns and "suggested_qty" in out.columns:
+        out["total_qty"] = out["suggested_qty"]
+
+    if "qty_received" in fields and "qty_received" not in out.columns and "received_qty" in out.columns:
+        out["qty_received"] = out["received_qty"]
+    if "received_qty" in fields and "received_qty" not in out.columns and "qty_received" in out.columns:
+        out["received_qty"] = out["qty_received"]
+
+    for col in fields:
+        if col not in out.columns:
+            out[col] = None
+
+    extra = [c for c in out.columns if c not in fields]
+    if extra:
+        out = out.drop(columns=extra)
+
+    return out[fields]
+
+
 def _write_delta(path: str, df: pd.DataFrame, mode: str) -> None:
     last = None
     for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
         try:
-            write_deltalake(path, df, mode=mode)
+            aligned = _align_df_to_delta_schema(path, df)
+            write_deltalake(path, aligned, mode=mode)
             return
         except Exception as e:
             last = e
@@ -160,10 +217,17 @@ def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
         df["status"] = df["status"].astype(str).str.strip().str.lower()
     if "delivery_date" in df.columns:
         df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date
+
+    # Support older schemas where qty was stored as suggested_qty.
+    if "total_qty" not in df.columns and "suggested_qty" in df.columns:
+        df["total_qty"] = df["suggested_qty"]
+    if "suggested_qty" not in df.columns and "total_qty" in df.columns:
+        df["suggested_qty"] = df["total_qty"]
+
     for col in ["cutoff_ts", "delivery_ts", "created_at", "updated_at"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
-    for col in ["total_qty"]:
+    for col in ["total_qty", "suggested_qty", "standard_batch_size"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
     return df
@@ -177,10 +241,17 @@ def _normalize_receipts_df(df: pd.DataFrame) -> pd.DataFrame:
         df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
     if "delivery_date" in df.columns:
         df["delivery_date"] = pd.to_datetime(df["delivery_date"], errors="coerce").dt.date
+
+    # Support older schemas where qty was stored as qty_received.
+    if "received_qty" not in df.columns and "qty_received" in df.columns:
+        df["received_qty"] = df["qty_received"]
+    if "qty_received" not in df.columns and "received_qty" in df.columns:
+        df["qty_received"] = df["received_qty"]
+
     for col in ["created_at"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
-    for col in ["received_qty"]:
+    for col in ["received_qty", "qty_received"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
     return df
@@ -364,11 +435,13 @@ def do_cutoff(now_ts: datetime) -> None:
     delivery_ts = delivery_dt(delivery)
 
     # Orders ledger: 1 row per (delivery_date, shelf_id)
-    orders_new = (
-        pending.groupby("shelf_id", as_index=False)["suggested_qty"]
-        .sum()
-        .rename(columns={"suggested_qty": "total_qty"})
-    )
+    agg = {"suggested_qty": "sum"}
+    if "standard_batch_size" in pending.columns:
+        agg["standard_batch_size"] = "max"
+    orders_new = pending.groupby("shelf_id", as_index=False).agg(agg)
+    orders_new = orders_new.rename(columns={"suggested_qty": "total_qty"})
+    # Back-compat: older Delta schemas use suggested_qty instead of total_qty.
+    orders_new["suggested_qty"] = orders_new["total_qty"]
     orders_new["order_id"] = [
         str(uuid.uuid5(uuid.NAMESPACE_URL, f"wh_supplier_order:{delivery.isoformat()}:{sid}"))
         for sid in orders_new["shelf_id"].astype(str).tolist()

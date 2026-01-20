@@ -5,6 +5,7 @@ import os
 import re
 import time
 import uuid
+import math
 from datetime import datetime, timedelta, timezone
 from itertools import chain
 from typing import Iterable, Optional, Tuple
@@ -247,6 +248,43 @@ def one_hot_like_training(df):
 def align_columns(X, training_cols: list):
     return X.reindex(columns=training_cols, fill_value=0)
 
+def to_float32_matrix(df):
+    import pandas as pd
+
+    if df is None:
+        return None
+    if df.empty:
+        return df.to_numpy(dtype="float32", copy=False)
+    # Be defensive: SQL/JDBC can sometimes yield object dtypes (e.g. decimals).
+    Xn = df.apply(lambda s: pd.to_numeric(s, errors="coerce"))
+    Xn = Xn.fillna(0)
+    return Xn.to_numpy(dtype="float32", copy=False)
+
+
+def deterministic_stochastic_round(expected: float, stable_key: str) -> int:
+    """
+    Convert a non-negative expected count into an integer count while preserving
+    the expectation, but deterministically (idempotent across retries).
+    """
+    if expected is None:
+        return 0
+    try:
+        x = float(expected)
+    except Exception:
+        return 0
+    if not math.isfinite(x) or x <= 0:
+        return 0
+
+    base = int(math.floor(x))
+    frac = x - base
+    if frac <= 0:
+        return base
+
+    # Deterministic pseudo-random in [0,1) derived from a stable UUID.
+    u = uuid.uuid5(uuid.NAMESPACE_URL, stable_key).int
+    r = (u % 1_000_000) / 1_000_000.0
+    return base + (1 if r < frac else 0)
+
 
 def iter_infer_frames(conn, feature_date, chunksize: int) -> Iterable:
     import pandas as pd
@@ -447,14 +485,18 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
             if training_cols is not None:
                 X = align_columns(X, training_cols)
 
-            dmat = xgb.DMatrix(X.values)
+            X_np = to_float32_matrix(X)
+            dmat = xgb.DMatrix(X_np)
             pred = booster.predict(dmat)
-            pred_batches = [max(0, int(round(p))) for p in pred]
 
             for i, row in df.iterrows():
                 shelf_id = str(row["shelf_id"]).strip()
                 batch_size = int(row.get("standard_batch_size", 1) or 1)
-                predicted_batches = int(pred_batches[i])
+                # Model predicts expected batches (float). Convert to integer batches
+                # deterministically; avoids the "everything rounds to 0" problem when
+                # predictions cluster below 0.5.
+                stable_key = f"{MODEL_NAME}:{model_version}:{today.isoformat()}:{shelf_id}"
+                predicted_batches = deterministic_stochastic_round(pred[i], stable_key)
                 suggested_qty = int(predicted_batches * batch_size)
 
                 prediction_log_rows.append(
@@ -472,7 +514,6 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
                     continue
 
                 # Deterministic UUID per (cutoff day, model version, shelf) to keep retries idempotent.
-                stable_key = f"{MODEL_NAME}:{model_version}:{today.isoformat()}:{shelf_id}"
                 supplier_plan_id = str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key))
 
                 plan_rows.append(

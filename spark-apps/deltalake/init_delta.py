@@ -153,25 +153,23 @@ schema_predictions = StructType([
 ])
 
 schema_wh_supplier_orders = StructType([
-    StructField("order_id",      StringType(), False),   # deterministico o uuid
-    StructField("delivery_date", DateType(),   False),   # prossima consegna (lun/mer/ven)
+    StructField("order_id",      StringType(),    False),
+    StructField("delivery_date", DateType(),      False),
+    StructField("shelf_id",      StringType(),    False),
+    StructField("total_qty",     IntegerType(),   False),
+    StructField("status",        StringType(),    False),   # issued / delivered / ...
     StructField("cutoff_ts",     TimestampType(), False),
-    StructField("shelf_id",      StringType(), False),
-    StructField("suggested_qty", IntegerType(), False),
-    StructField("standard_batch_size", IntegerType(), True),
-    StructField("status",        StringType(), False),   # issued / canceled / ...
+    StructField("delivery_ts",   TimestampType(), True),
     StructField("created_at",    TimestampType(), False),
+    StructField("updated_at",    TimestampType(), True),
 ])
 
-schema_wh_inbound_receipts = StructType([
-    StructField("receipt_id",    StringType(), False),
-    StructField("delivery_date", DateType(),   False),
-    StructField("received_ts",   TimestampType(), False),
-    StructField("shelf_id",      StringType(), False),
-    StructField("qty_received",  IntegerType(), False),
-    StructField("batch_code",    StringType(), False),
-    StructField("received_date", DateType(),   False),
-    StructField("expiry_date",   DateType(),   True),
+schema_wh_supplier_receipts = StructType([
+    StructField("receipt_id",    StringType(),    False),
+    StructField("delivery_date", DateType(),      False),
+    StructField("shelf_id",      StringType(),    False),
+    StructField("received_qty",  IntegerType(),   False),
+    StructField("created_at",    TimestampType(), False),
 ])
 
 schema_wh_supplier_plan = StructType([
@@ -220,7 +218,7 @@ create_empty_delta(path("curated", "predictions"),         schema_predictions)
 # OPS (supplier pipeline)
 create_empty_delta(path("ops", "wh_supplier_plan"),        schema_wh_supplier_plan)
 create_empty_delta(path("ops", "wh_supplier_orders"),      schema_wh_supplier_orders)
-create_empty_delta(path("ops", "wh_inbound_receipts"),     schema_wh_inbound_receipts)
+create_empty_delta(path("ops", "wh_supplier_receipts"),    schema_wh_supplier_receipts)
 create_empty_delta(path("ops", "alerts"), schema_alerts)
 create_empty_delta(path("ops", "shelf_restock_plan"), schema_shelf_restock_plan)
 
