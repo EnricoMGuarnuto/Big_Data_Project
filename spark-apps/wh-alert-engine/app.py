@@ -482,6 +482,35 @@ def foreach_batch(batch_df, batch_id: int):
         .withColumn("severity", F.lit("medium"))
     )
 
+    # Resolve previously-open supplier_request alerts when the condition is no longer true.
+    # We emit status change events keyed by (shelf_id, location, alert_event_type) so `alerts-sink`
+    # can update Postgres statuses and the dashboard "active alerts" count can drop naturally.
+    resolved_supplier = (
+        enriched.filter(F.col("wh_current_stock") >= F.col("reorder_point_qty"))
+        .select("shelf_id")
+        .dropDuplicates()
+    )
+    if resolved_supplier.rdd.isEmpty() is False:
+        status_events = (
+            resolved_supplier
+            .withColumn("event_type", F.lit("alert_status_change"))
+            .withColumn("alert_id", F.lit(None).cast("string"))
+            .withColumn("location", F.lit("warehouse"))
+            .withColumn("alert_event_type", F.lit("supplier_request"))
+            .withColumn("status", F.lit("resolved"))
+            .withColumn("timestamp", F.lit(sim_now))
+            .withColumn("value", F.to_json(F.struct(
+                "event_type", "alert_id", "shelf_id", "location",
+                "alert_event_type", "status", "timestamp"
+            )))
+            .select(F.lit(None).cast("string").alias("key"), "value")
+        )
+
+        status_events.write.format("kafka") \
+            .option("kafka.bootstrap.servers", KAFKA_BROKER) \
+            .option("topic", TOPIC_ALERTS) \
+            .save()
+
     # 2) Near-expiry alert in warehouse
     near_expiry = (
         enriched.filter(
@@ -568,6 +597,13 @@ def foreach_batch(batch_df, batch_id: int):
 
     plans_raw = (
         plans_base
+        .withColumn(
+            "standard_batch_size",
+            F.when(
+                F.col("standard_batch_size").isNotNull() & (F.col("standard_batch_size") > 0),
+                F.col("standard_batch_size"),
+            ).otherwise(F.lit(None).cast("int"))
+        )
         .withColumn("raw_suggested", F.greatest(F.lit(0), F.col("reorder_point_qty") - F.col("wh_current_stock")))
         .withColumn(
             "suggested_qty",

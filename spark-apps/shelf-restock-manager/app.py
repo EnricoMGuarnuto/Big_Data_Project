@@ -101,7 +101,7 @@ def foreach_batch(batch_df, batch_id: int):
         .withColumn("event_type", F.lit("wh_out"))
         .withColumn("event_id", F.expr("uuid()"))
         .withColumn("unit", F.lit("ea"))
-        .withColumn("timestamp", F.current_timestamp())
+        .withColumn("timestamp", F.lit(now_ts))
         .withColumn("fifo", F.lit(True))
     )
 
@@ -125,7 +125,7 @@ def foreach_batch(batch_df, batch_id: int):
         tgt = DeltaTable.forPath(spark, DL_RESTOCK_PATH)
         issued = (candidates.select("plan_id")
                   .withColumn("status", F.lit("issued"))
-                  .withColumn("updated_at", F.current_timestamp()))
+                  .withColumn("updated_at", F.lit(now_ts)))
         tgt.alias("t").merge(
             issued.alias("s"),
             "t.plan_id = s.plan_id"
@@ -143,7 +143,7 @@ def foreach_batch(batch_df, batch_id: int):
               .withColumn("alert_event_type", F.lit("refill_request"))
               .withColumn("location", F.lit("store"))
               .withColumn("status", F.lit("ack"))
-              .withColumn("timestamp", F.current_timestamp())
+              .withColumn("timestamp", F.lit(now_ts))
               .withColumn("value", F.to_json(F.struct(
                   "event_type", "alert_id", "shelf_id", "location",
                   "alert_event_type", "status", "timestamp"

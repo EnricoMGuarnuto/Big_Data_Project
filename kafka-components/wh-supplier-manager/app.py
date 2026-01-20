@@ -27,7 +27,8 @@ DL_RECEIPTS_PATH = os.getenv("DL_RECEIPTS_PATH", f"{DELTA_ROOT}/ops/wh_supplier_
 DL_WH_EVENTS_RAW = os.getenv("DL_WH_EVENTS_RAW", f"{DELTA_ROOT}/raw/wh_events")
 
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "10"))
-MIRROR_WH_EVENTS_DELTA = os.getenv("MIRROR_WH_EVENTS_DELTA", "1") in ("1", "true", "True")
+# Avoid double-writing: `wh-aggregator` already mirrors wh_events to Delta (/delta/raw/wh_events).
+MIRROR_WH_EVENTS_DELTA = os.getenv("MIRROR_WH_EVENTS_DELTA", "0") in ("1", "true", "True")
 KAFKA_WAIT_TIMEOUT_S = int(os.getenv("KAFKA_WAIT_TIMEOUT_S", "180"))
 KAFKA_WAIT_POLL_S = float(os.getenv("KAFKA_WAIT_POLL_S", "2.0"))
 
@@ -626,6 +627,19 @@ def main() -> None:
     )
 
     wait_for_kafka()
+
+    # One-time sanitation: older runs could have written standard_batch_size=0 into Delta.
+    # Convert non-positive sizes back to NULL so downstream systems can backfill correctly.
+    try:
+        plans0 = _read_delta(DL_SUPPLIER_PLAN_PATH)
+        if not plans0.empty and "standard_batch_size" in plans0.columns:
+            s0 = pd.to_numeric(plans0["standard_batch_size"], errors="coerce")
+            if (s0.fillna(1) <= 0).any():
+                plans_clean = _normalize_plan_df(plans0)
+                _write_delta(DL_SUPPLIER_PLAN_PATH, plans_clean, mode="overwrite")
+                print("[wh-supplier-manager] sanitized wh_supplier_plan standard_batch_size (0 -> NULL)")
+    except Exception as e:
+        print(f"[wh-supplier-manager] warn: failed to sanitize supplier plan batch sizes: {e}")
 
     last_cutoff_day: Optional[date] = None
     last_delivery_day: Optional[date] = None

@@ -321,7 +321,10 @@ def insert_prediction_logs(conn, rows: list) -> None:
         )
         VALUES (:mn, :fd, :sid, :pb, :sq, :mv, :ca)
         ON CONFLICT (model_name, feature_date, shelf_id, model_version)
-        DO NOTHING;
+        DO UPDATE SET
+          predicted_batches = EXCLUDED.predicted_batches,
+          suggested_qty     = EXCLUDED.suggested_qty,
+          created_at        = EXCLUDED.created_at;
         """
     )
     conn.execute(log_pred_sql, rows)
@@ -458,11 +461,15 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
         wh_now = _as_int(row.get("current_stock_warehouse"), 0)
         reorder_point = _as_int(row.get("wh_reorder_point_qty"), 0)
         wh_cap = _as_int(row.get("warehouse_capacity"), 0)
+        is_wh_alert = _as_int(row.get("is_warehouse_alert"), 0) == 1
 
         # NOTE: pending_supplier_qty can reflect already-queued supplier orders.
         # For demo/operational simplicity, base the fallback on current stock vs reorder point,
         # so warehouse alerts don't devolve into "always 0" suggestions.
-        gap = max(0, reorder_point - wh_now)
+        effective_reorder_point = reorder_point
+        if is_wh_alert and effective_reorder_point <= wh_now:
+            effective_reorder_point = wh_now + bs
+        gap = max(0, effective_reorder_point - wh_now)
         if gap <= 0:
             return 0
 
@@ -540,6 +547,8 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
                 predicted_batches = deterministic_stochastic_round(pred[i], stable_key)
                 if predicted_batches <= 0:
                     predicted_batches = _heuristic_batches(row, batch_size)
+                if predicted_batches <= 0 and _as_int(row.get("is_warehouse_alert"), 0) == 1:
+                    predicted_batches = 1
                 suggested_qty = int(predicted_batches * batch_size)
 
                 prediction_log_rows.append(

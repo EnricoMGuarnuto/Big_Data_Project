@@ -60,6 +60,9 @@ schema_evt = T.StructType([
     T.StructField("received_date", T.StringType()),
     T.StructField("expiry_date",   T.StringType()),
     T.StructField("reason",      T.StringType()),
+    T.StructField("batch_quantity_warehouse_after", T.IntegerType()),
+    T.StructField("batch_quantity_store_after",     T.IntegerType()),
+    T.StructField("shelf_warehouse_qty_after",      T.IntegerType()),
 ])
 
 # =========================
@@ -172,7 +175,9 @@ events = (
 raw_events = (
     events.select(
         "event_type", "event_id", "plan_id", "shelf_id", "batch_code",
-        "qty", "unit", F.col("timestamp").alias("timestamp")
+        "qty", "unit", F.col("timestamp").alias("timestamp"),
+        "fifo", "received_date", "expiry_date", "reason",
+        "batch_quantity_warehouse_after", "batch_quantity_store_after", "shelf_warehouse_qty_after",
     )
 )
 

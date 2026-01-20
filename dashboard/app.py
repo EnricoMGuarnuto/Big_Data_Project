@@ -563,6 +563,21 @@ def fetch_wh_events_raw(delta_path: Path) -> pd.DataFrame:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
     if "received_date" in df.columns:
         df["received_date"] = pd.to_datetime(df["received_date"], errors="coerce").dt.date
+
+    # De-duplicate events for display: multiple writers/replays can create duplicates.
+    if "event_id" in df.columns:
+        ids = df["event_id"].astype(str)
+        mask = ids.notna() & (ids != "") & (ids != "None") & (ids != "nan")
+        if mask.any():
+            df = df.loc[mask].drop_duplicates(subset=["event_id"], keep="last").copy()
+        else:
+            subset = [c for c in ["event_type", "shelf_id", "batch_code", "qty", "timestamp"] if c in df.columns]
+            if subset:
+                df = df.drop_duplicates(subset=subset, keep="last").copy()
+    else:
+        subset = [c for c in ["event_type", "shelf_id", "batch_code", "qty", "timestamp"] if c in df.columns]
+        if subset:
+            df = df.drop_duplicates(subset=subset, keep="last").copy()
     return df
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -1031,6 +1046,8 @@ def main():
                         df_plan["standard_batch_size"] = pd.NA
                     s = df_plan["standard_batch_size"]
                     s_num = pd.to_numeric(s, errors="coerce")
+                    # Treat 0/negative values as missing (older writers used 0 for nulls).
+                    s_num = s_num.where(s_num.isna() | (s_num > 0), pd.NA)
                     if s_num.isna().mean() >= 0.5:
                         try:
                             sizes = fetch_standard_batch_sizes_pg()

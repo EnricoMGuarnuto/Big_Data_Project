@@ -226,7 +226,7 @@ services:
         DELIVERY_HOUR: "8"
         DELIVERY_MINUTE: "0"
         POLL_SECONDS: "10"
-        MIRROR_WH_EVENTS_DELTA: "1"
+        MIRROR_WH_EVENTS_DELTA: "0"
         PYTHONPATH: /app
       volumes:
         - ./delta:/delta
