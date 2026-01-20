@@ -899,7 +899,7 @@ def main():
             if sel_sub != "(all)":
                 filt = filt[filt["item_subcategory"] == sel_sub]
             shelves += sorted(filt["shelf_id"].dropna().unique().tolist())
-            sel_shelf = st.selectbox("Shelf ID", shelves, index=0)
+            sel_shelf = st.selectbox("Shelf ID", shelves, index=0, key="shelf_id_selection_plan")
             limit = st.slider("Max rows", 100, 5000, 1500, step=100)
 
         with right:
@@ -1078,7 +1078,7 @@ def main():
             sel_model = st.selectbox("Model", model_names, index=0)
 
             all_shelves = ["(all)"] + sorted(preds["shelf_id"].dropna().unique().tolist())
-            sel_shelf = st.selectbox("Shelf ID", all_shelves, index=0)
+            sel_shelf = st.selectbox("Shelf ID", all_shelves, index=0, key="shelf_id_selection_ml")
 
             dmin = min(preds["feature_date"])
             dmax = max(preds["feature_date"])
