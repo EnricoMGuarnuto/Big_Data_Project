@@ -107,7 +107,7 @@ services:
       PG_USER: bdt_user
       PG_PASS: bdt_password
       CONNECT_INIT_ENABLE_SOURCES: "1"
-      CONNECT_INIT_ENABLE_SINKS: "1"
+      CONNECT_INIT_ENABLE_SINKS: "0"
       # Default OFF to avoid double-writing: `alerts-sink` already writes to Postgres (WRITE_TO_PG=1)
       CONNECT_INIT_ENABLE_ALERTS_SINK: "0"
     restart: 'no'

@@ -1,5 +1,6 @@
 import os
 import time
+from typing import Optional
 from pyspark.sql import SparkSession, functions as F, types as T
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
@@ -28,6 +29,7 @@ JDBC_PG_URL       = os.getenv("JDBC_PG_URL")
 JDBC_PG_USER      = os.getenv("JDBC_PG_USER")
 JDBC_PG_PASSWORD  = os.getenv("JDBC_PG_PASSWORD")
 BOOTSTRAP_FROM_PG = os.getenv("BOOTSTRAP_FROM_PG", "1") in ("1", "true", "True")
+WRITE_TO_PG       = os.getenv("WRITE_TO_PG", "1") in ("1", "true", "True")
 
 # Default table for bootstrap snapshot
 PG_BOOTSTRAP_TABLE = os.getenv("PG_BOOTSTRAP_TABLE", "ref.warehouse_inventory_snapshot")
@@ -64,6 +66,96 @@ schema_evt = T.StructType([
     T.StructField("batch_quantity_store_after",     T.IntegerType()),
     T.StructField("shelf_warehouse_qty_after",      T.IntegerType()),
 ])
+
+# =========================
+# Postgres sink (optional)
+# =========================
+def _jdbc_url_with_stringtype_unspecified(url: str) -> str:
+    if not url:
+        return url
+    if "stringtype=unspecified" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}stringtype=unspecified"
+
+def _pg_connection():
+    if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
+        return None
+    jdbc_url = _jdbc_url_with_stringtype_unspecified(JDBC_PG_URL)
+    jvm = spark._sc._gateway.jvm
+    try:
+        jvm.java.lang.Class.forName("org.postgresql.Driver")
+    except Exception:
+        pass
+    props = jvm.java.util.Properties()
+    props.setProperty("user", JDBC_PG_USER)
+    props.setProperty("password", JDBC_PG_PASSWORD)
+    props.setProperty("stringtype", "unspecified")
+    conn = jvm.java.sql.DriverManager.getConnection(jdbc_url, props)
+    try:
+        conn.setAutoCommit(True)
+    except Exception:
+        pass
+    return conn
+
+def _write_state_to_pg(rows) -> None:
+    if not rows:
+        return
+    conn = _pg_connection()
+    if conn is None:
+        return
+    jvm = spark._sc._gateway.jvm
+    stmt = None
+    try:
+        stmt = conn.prepareStatement(
+            "INSERT INTO state.wh_state (shelf_id, wh_current_stock, last_update_ts) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT (shelf_id) DO UPDATE SET "
+            "wh_current_stock = EXCLUDED.wh_current_stock, "
+            "last_update_ts = GREATEST(state.wh_state.last_update_ts, EXCLUDED.last_update_ts)"
+        )
+        for r in rows:
+            stmt.setString(1, r["shelf_id"])
+            if r["wh_current_stock"] is None:
+                stmt.setNull(2, jvm.java.sql.Types.INTEGER)
+            else:
+                stmt.setInt(2, int(r["wh_current_stock"]))
+            ts = r["last_update_ts"]
+            if ts is None:
+                stmt.setNull(3, jvm.java.sql.Types.TIMESTAMP)
+            else:
+                stmt.setTimestamp(3, jvm.java.sql.Timestamp(int(ts.timestamp() * 1000)))
+            stmt.addBatch()
+        stmt.executeBatch()
+    finally:
+        if stmt is not None:
+            stmt.close()
+        conn.close()
+
+def sync_state_to_pg_if_missing():
+    if not WRITE_TO_PG:
+        return
+    if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
+        return
+    if not DeltaTable.isDeltaTable(spark, STATE_PATH):
+        return
+    print("[pg-sync] syncing state.wh_state from Delta...", flush=True)
+    state_df = spark.read.format("delta").load(STATE_PATH).select(
+        "shelf_id", "wh_current_stock", "last_update_ts"
+    )
+    if state_df.rdd.isEmpty():
+        return
+    (state_df.write.format("jdbc")
+        .option("url", _jdbc_url_with_stringtype_unspecified(JDBC_PG_URL))
+        .option("user", JDBC_PG_USER)
+        .option("password", JDBC_PG_PASSWORD)
+        .option("driver", "org.postgresql.Driver")
+        .option("dbtable", "state.wh_state")
+        .option("truncate", "true")
+        .mode("overwrite")
+        .save()
+    )
+    print("[pg-sync] state.wh_state synced from Delta.", flush=True)
 
 # =========================
 # Bootstrap from Postgres (one-off)
@@ -152,6 +244,7 @@ def bootstrap_state_if_missing():
     print(f"[bootstrap] Initial wh_state created and published on {TOPIC_WH_STATE}.")
 
 bootstrap_state_if_missing()
+sync_state_to_pg_if_missing()
 
 # =========================
 # 1) Stream: Kafka -> Delta RAW (append-only)
@@ -257,6 +350,14 @@ def upsert_and_publish(batch_df, batch_id: int):
         .option("kafka.bootstrap.servers", KAFKA_BROKER) \
         .option("topic", TOPIC_WH_STATE) \
         .save()
+
+    if WRITE_TO_PG:
+        pg_rows = (
+            updated_keys.join(state_df, on="shelf_id", how="left")
+            .select("shelf_id", "wh_current_stock", "last_update_ts")
+            .collect()
+        )
+        _write_state_to_pg(pg_rows)
 
 agg_query = (
     events.writeStream
