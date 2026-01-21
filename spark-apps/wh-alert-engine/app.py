@@ -479,7 +479,6 @@ def foreach_batch(batch_df, batch_id: int):
         enriched.filter(F.col("wh_current_stock") < F.col("reorder_point_qty"))
         .withColumn("event_type", F.lit("supplier_request"))
         .withColumn("location", F.lit("warehouse"))
-        .withColumn("severity", F.lit("medium"))
     )
 
     # Resolve previously-open supplier_request alerts when the condition is no longer true.
@@ -520,13 +519,12 @@ def foreach_batch(batch_df, batch_id: int):
         )
         .withColumn("event_type", F.lit("near_expiry"))
         .withColumn("location", F.lit("warehouse"))
-        .withColumn("severity", F.lit("high"))
     )
 
     # Compose alerts rows (append-only)
     reorder_alerts = (
         reorder_needed.select(
-            "event_type","shelf_id","location","severity",
+            "event_type","shelf_id","location",
             F.col("wh_current_stock").alias("current_stock"),
             F.col("reorder_point_qty").alias("min_qty"),
             F.lit(None).cast("double").alias("threshold_pct"),
@@ -538,7 +536,7 @@ def foreach_batch(batch_df, batch_id: int):
 
     near_expiry_alerts = (
         near_expiry.select(
-            "event_type","shelf_id","location","severity",
+            "event_type","shelf_id","location",
             F.col("qty_on_batches").alias("current_stock"),
             F.lit(None).cast("int").alias("min_qty"),
             F.lit(None).cast("double").alias("threshold_pct"),
@@ -560,7 +558,6 @@ def foreach_batch(batch_df, batch_id: int):
             F.col("event_type").cast(t("event_type", T.StringType())).alias("event_type"),
             F.col("shelf_id").cast(t("shelf_id", T.StringType())).alias("shelf_id"),
             F.col("location").cast(t("location", T.StringType())).alias("location"),
-            F.col("severity").cast(t("severity", T.StringType())).alias("severity"),
             F.col("current_stock").cast(t("current_stock", T.IntegerType())).alias("current_stock"),
             F.col("min_qty").cast(t("min_qty", T.IntegerType())).alias("min_qty"),
             F.col("threshold_pct").cast(t("threshold_pct", T.DoubleType())).alias("threshold_pct"),
@@ -571,7 +568,7 @@ def foreach_batch(batch_df, batch_id: int):
 
         # Kafka append-only
         out = alerts_df.withColumn("value", F.to_json(F.struct(
-            "event_type","shelf_id","location","severity",
+            "event_type","shelf_id","location",
             "current_stock","min_qty","threshold_pct","stock_pct","suggested_qty","created_at"
         ))).select(F.lit(None).cast("string").alias("key"), "value")
 

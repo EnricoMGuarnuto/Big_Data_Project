@@ -285,7 +285,6 @@ def main() -> None:
                         "event_type",
                         "shelf_id",
                         "location",
-                        "severity",
                         "current_stock",
                         "max_stock",
                         "target_pct",

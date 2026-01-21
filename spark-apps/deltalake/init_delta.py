@@ -119,7 +119,6 @@ schema_alerts = StructType([
     StructField("event_type",   StringType(), False),
     StructField("shelf_id",     StringType(), True),
     StructField("location",     StringType(), True),
-    StructField("severity",     StringType(), True),
     StructField("current_stock", IntegerType(), True),
     StructField("max_stock",     IntegerType(), True),
     StructField("target_pct",    DoubleType(),  True),

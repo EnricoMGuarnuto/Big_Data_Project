@@ -148,7 +148,6 @@ schema_policy = T.StructType([
     T.StructField("item_subcategory", T.StringType()),
     T.StructField("threshold_pct", T.DoubleType()),
     T.StructField("min_qty", T.IntegerType()),
-    T.StructField("severity", T.StringType()),
     T.StructField("active", T.BooleanType()),
     T.StructField("notes", T.StringType()),
     T.StructField("updated_at", T.TimestampType()),
@@ -210,7 +209,7 @@ def bootstrap_policies_if_missing():
                 .option("user", JDBC_PG_USER)
                 .option("password", JDBC_PG_PASSWORD)
                 .option("dbtable", f"(SELECT policy_id, shelf_id, item_category, item_subcategory, "
-                                   f"threshold_pct, min_qty, severity, active, updated_at "
+                                   f"threshold_pct, min_qty, active, updated_at "
                                    f"FROM {POLICIES_PG_TABLE}) t")
                 .load()
             )
@@ -239,7 +238,7 @@ def bootstrap_policies_if_missing():
             F.to_json(
                 F.struct(
                     "policy_id", "shelf_id", "item_category", "item_subcategory",
-                    "threshold_pct", "min_qty", "severity", "active", "updated_at"
+                    "threshold_pct", "min_qty", "active", "updated_at"
                 )
             )
         )
@@ -282,7 +281,6 @@ def load_policies_latest():
             F.coalesce(F.col("value_json.shelf_id"), F.lit(None)).alias("shelf_id"),
             F.col("value_json.threshold_pct").alias("threshold_pct"),
             F.col("value_json.min_qty").alias("min_qty"),
-            F.col("value_json.severity").alias("severity"),
             F.col("value_json.active").alias("active"),
             "partition", "offset", "timestamp"
         )
@@ -394,8 +392,7 @@ def foreach_batch_alerts(batch_df, batch_id: int):
             F.col("s.shelf_id").alias("shelf_id"),
             F.col("s.current_stock").alias("current_stock"),
             F.coalesce(F.col("ps.threshold_pct"), F.col("pg.threshold_pct")).alias("threshold_pct"),
-            F.coalesce(F.col("ps.min_qty"), F.col("pg.min_qty")).alias("min_qty"),
-            F.coalesce(F.col("ps.severity"), F.col("pg.severity"), F.lit("medium")).alias("severity")
+            F.coalesce(F.col("ps.min_qty"), F.col("pg.min_qty")).alias("min_qty")
         )
     )
 
@@ -448,32 +445,31 @@ def foreach_batch_alerts(batch_df, batch_id: int):
             .filter(F.col("min_expiry").isNotNull() & (F.col("days_to_expiry") <= F.lit(NEAR_EXPIRY_DAYS)) & (F.col("days_to_expiry") >= 0))
             .withColumn("event_type", F.lit("near_expiry"))
             .withColumn("location", F.lit("store"))
-            .withColumn("severity", F.lit("high"))
             .withColumn("suggested_qty", F.lit(0))
         )
     except Exception as e:
         print(f"[near_expiry] warning: {e}")
-        near_expiry = spark.createDataFrame([], schema=refill_needed.select("shelf_id","event_type","location","severity","suggested_qty").schema)\
+        near_expiry = spark.createDataFrame([], schema=refill_needed.select("shelf_id","event_type","location","suggested_qty").schema)\
                           .withColumn("current_stock", F.lit(None).cast("int"))\
                           .withColumn("min_expiry", F.lit(None).cast("date"))\
                           .withColumn("days_to_expiry", F.lit(None).cast("int"))
 
     # Compose alerts (refill + near_expiry)
     alerts_cols = [
-        "event_type","shelf_id","location","severity",
+        "event_type","shelf_id","location",
         "current_stock","min_qty","threshold_pct","stock_pct","suggested_qty"
     ]
 
     refill_alerts = (
         refill_needed.select(
-            "event_type", "shelf_id", "location", "severity",
+            "event_type", "shelf_id", "location",
             "current_stock", "min_qty", "threshold_pct", "stock_pct", "suggested_qty"
         )
     )
 
     expiry_alerts = (
         near_expiry.select(
-            "event_type","shelf_id","location","severity",
+            "event_type","shelf_id","location",
             F.col("qty_on_batches").alias("current_stock"),
             F.lit(None).cast("int").alias("min_qty"),
             F.lit(None).cast("double").alias("threshold_pct"),
@@ -518,7 +514,6 @@ def foreach_batch_alerts(batch_df, batch_id: int):
             F.col("event_type").cast(t("event_type", T.StringType())).alias("event_type"),
             F.col("shelf_id").cast(t("shelf_id", T.StringType())).alias("shelf_id"),
             F.col("location").cast(t("location", T.StringType())).alias("location"),
-            F.col("severity").cast(t("severity", T.StringType())).alias("severity"),
             F.col("current_stock").cast(t("current_stock", T.IntegerType())).alias("current_stock"),
             F.col("min_qty").cast(t("min_qty", T.IntegerType())).alias("min_qty"),
             F.col("threshold_pct").cast(t("threshold_pct", T.DoubleType())).alias("threshold_pct"),

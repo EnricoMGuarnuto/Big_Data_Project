@@ -78,7 +78,7 @@ spark.sparkContext.setLogLevel("WARN")
 def _jdbc_url_with_stringtype_unspecified(url: str) -> str:
     """
     Ensures Postgres JDBC sends strings as 'unknown' so Postgres can implicitly cast
-    them to enum columns (e.g. severity_level, alert_status).
+    them to enum columns (e.g. alert_status).
     """
     if not url:
         return url
@@ -126,7 +126,6 @@ schema_alert = T.StructType([
     T.StructField("event_type", T.StringType()),
     T.StructField("shelf_id", T.StringType()),
     T.StructField("location", T.StringType()),           # 'store' | 'warehouse'
-    T.StructField("severity", T.StringType()),           # 'low'|'medium'|'high'|'critical'
     T.StructField("current_stock", T.IntegerType()),
     T.StructField("min_qty", T.IntegerType()),           # from shelf engine
     T.StructField("threshold_pct", T.DoubleType()),      # from shelf engine
@@ -253,7 +252,7 @@ def write_batch_to_sinks(parsed_df, batch_id: int):
     # ----------------------
     if not alerts_df.rdd.isEmpty():
         alert_cols = [
-            "event_type", "shelf_id", "location", "severity",
+            "event_type", "shelf_id", "location",
             "current_stock", "min_qty", "threshold_pct", "stock_pct",
             "suggested_qty", "created_at",
         ]
@@ -269,7 +268,6 @@ def write_batch_to_sinks(parsed_df, batch_id: int):
                     F.col("event_type"),
                     F.col("shelf_id"),
                     F.col("location"),
-                    F.col("severity").cast("string").alias("severity"),
                     F.col("current_stock"),
                     # columns not present in the incoming alert but present in table -> set as null/defaults
                     F.lit(None).cast("int").alias("max_stock"),

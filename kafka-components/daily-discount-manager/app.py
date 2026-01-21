@@ -142,7 +142,7 @@ def run_discount_job(sim_date_str, sim_ts_str):
         # Alert opzionale
         alert = {
             "event_type": "near_expiry_discount", "shelf_id": row['shelf_id'],
-            "location": "store", "severity": "high", "created_at": sim_ts_str
+            "location": "store", "created_at": sim_ts_str
         }
         try:
             kp.produce(TOPIC_ALERTS, value=json.dumps(alert))

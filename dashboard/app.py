@@ -292,7 +292,6 @@ def fetch_alerts() -> pd.DataFrame:
             event_type,
             shelf_id,
             location,
-            severity,
             current_stock,
             max_stock,
             target_pct,
@@ -884,7 +883,7 @@ def main():
                     shelf_list = sorted(sub["shelf_id"].dropna().unique().tolist())
                     st.markdown("**Shelf in alert:**")
                     st.write(shelf_list)
-                    cols = ["alert_id", "event_type", "shelf_id", "severity", "current_stock", "max_stock", "target_pct", "suggested_qty", "status", "created_at"]
+                    cols = ["alert_id", "event_type", "shelf_id", "current_stock", "max_stock", "target_pct", "suggested_qty", "status", "created_at"]
                     cols = [c for c in cols if c in sub.columns]
                     st.markdown("**Alert details (latest):**")
                     st.dataframe(sub[cols].head(200), use_container_width=True)

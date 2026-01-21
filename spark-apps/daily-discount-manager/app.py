@@ -201,7 +201,6 @@ alerts = (
     .distinct()
     .withColumn("event_type", F.lit("near_expiry_discount"))
     .withColumn("location",  F.lit("store"))
-    .withColumn("severity",  F.lit("high"))
     .withColumn("current_stock", F.lit(None).cast("int"))
     .withColumn("min_qty",       F.lit(None).cast("int"))
     .withColumn("threshold_pct", F.lit(None).cast("double"))
@@ -213,7 +212,7 @@ alerts = (
 alerts_out = (
     alerts
     .withColumn("value", F.to_json(F.struct(
-        "event_type", "shelf_id", "location", "severity",
+        "event_type", "shelf_id", "location",
         "current_stock", "min_qty", "threshold_pct",
         "stock_pct", "suggested_qty", "created_at"
     )))

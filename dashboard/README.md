@@ -16,7 +16,7 @@ and lets you drill into categories and shelves.
   - Required columns: `shelf_id`, `item_category`, `item_subcategory`
 - Postgres tables (read-only):
   - Alerts table (default `ops.alerts`): `alert_id`, `event_type`, `shelf_id`,
-    `location`, `severity`, `current_stock`, `max_stock`, `target_pct`,
+    `location`, `current_stock`, `max_stock`, `target_pct`,
     `suggested_qty`, `status`, `created_at`, `updated_at`
   - State tables: `shelf_state`, `wh_state`, `shelf_batch_state`,
     `wh_batch_state`

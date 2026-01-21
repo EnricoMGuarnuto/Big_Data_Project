@@ -66,11 +66,11 @@ SET
 -- fallback global
 INSERT INTO config.shelf_policies (
   shelf_id, item_category, item_subcategory,
-  threshold_pct, min_qty, severity, active, notes
+  threshold_pct, min_qty, active, notes
 )
 SELECT
   NULL, NULL, NULL,
-  30.00, 1, 'medium'::severity_level, TRUE,
+  30.00, 1, TRUE,
   'Global default shelf policy (auto-created)'
 WHERE NOT EXISTS (
   SELECT 1
@@ -97,7 +97,6 @@ INSERT INTO config.shelf_policies (
   item_subcategory,
   threshold_pct,
   min_qty,
-  severity,
   active,
   notes
 )
@@ -107,7 +106,6 @@ SELECT
   s.item_subcategory,
   30.00                        AS threshold_pct,   -- 30% default
   1                            AS min_qty,         -- minimo assoluto
-  'medium'::severity_level     AS severity,
   TRUE                         AS active,
   'Per-shelf policy auto-generated from latest store snapshot' AS notes
 FROM store_rows s

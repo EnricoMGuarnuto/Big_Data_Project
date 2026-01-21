@@ -20,10 +20,6 @@ CREATE SCHEMA IF NOT EXISTS analytics;
 -- -------------------------
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'severity_level') THEN
-    CREATE TYPE severity_level AS ENUM ('low','medium','high','critical');
-  END IF;
-
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'wh_event_type') THEN
     CREATE TYPE wh_event_type AS ENUM ('wh_in','wh_out');
   END IF;
@@ -53,7 +49,6 @@ CREATE TABLE IF NOT EXISTS config.shelf_policies (
   min_qty           INTEGER NULL,            -- absolute floor
   -- target_pct        NUMERIC(5,2) NULL,       -- target refill level (e.g. 80)
   -- hysteresis_pct    NUMERIC(5,2) NULL,       -- to avoid alert flapping
-  severity          severity_level NOT NULL DEFAULT 'medium',
   active            BOOLEAN NOT NULL DEFAULT TRUE,
   notes             TEXT NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -227,7 +222,6 @@ CREATE TABLE IF NOT EXISTS ops.alerts (
   event_type      TEXT NOT NULL,            -- e.g., 'refill_request','near_expiry', 'supplier_request'
   shelf_id        TEXT NULL,
   location        TEXT NULL,            -- 'store' | 'warehouse' 
-  severity        severity_level NOT NULL DEFAULT 'medium',
   -- payload (optional, for refill_request)
   current_stock   INTEGER NULL,
   max_stock       INTEGER NULL,

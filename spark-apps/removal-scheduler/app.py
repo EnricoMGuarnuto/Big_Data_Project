@@ -92,7 +92,7 @@ def run_once(sim_date_str: str, sim_ts_str: str) -> None:
         # Alert rimozione
         alert = {
             "event_type": "expired_removal", "shelf_id": row['shelf_id'], 
-            "location": "store", "severity": "high", "suggested_qty": int(row['removed_qty']),
+            "location": "store", "suggested_qty": int(row['removed_qty']),
             "created_at": sim_ts_str
         }
         kp.produce(TOPIC_ALERTS, value=json.dumps(alert))
