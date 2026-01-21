@@ -27,6 +27,12 @@ CONNECT_INIT_READY_POLL_S = float(os.getenv("CONNECT_INIT_READY_POLL_S", "2"))
 CONNECT_INIT_UPSERT_TIMEOUT_S = int(os.getenv("CONNECT_INIT_UPSERT_TIMEOUT_S", "60"))
 CONNECT_INIT_UPSERT_RETRIES = int(os.getenv("CONNECT_INIT_UPSERT_RETRIES", "8"))
 CONNECT_INIT_UPSERT_BACKOFF_S = float(os.getenv("CONNECT_INIT_UPSERT_BACKOFF_S", "1.5"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 
 def _pg_jdbc_url() -> str:
@@ -43,13 +49,13 @@ def wait_for_connect(timeout_s: int = CONNECT_INIT_TIMEOUT_S) -> None:
             attempt += 1
             with urllib.request.urlopen(url, timeout=5) as r:
                 if r.status == 200:
-                    print("[connect-init] Kafka Connect ready.")
+                    log_info("[connect-init] Kafka Connect ready.")
                     return
         except Exception:
             pass
         if attempt % 5 == 0:
             remaining = int(max(0, deadline - time.time()))
-            print(f"[connect-init] Waiting Kafka Connect… ({remaining}s left)")
+            log_info(f"[connect-init] Waiting Kafka Connect... ({remaining}s left)")
         time.sleep(CONNECT_INIT_READY_POLL_S)
     raise RuntimeError(f"Kafka Connect not reachable at {CONNECT_URL}")
 
@@ -68,7 +74,7 @@ def upsert_connector(name: str, config: dict) -> None:
         try:
             with urllib.request.urlopen(req, timeout=CONNECT_INIT_UPSERT_TIMEOUT_S) as r:
                 body = r.read().decode()
-                print(f"[connect-init] Upserted {name}: {r.status} {body}")
+                log_info(f"[connect-init] Upserted {name}: {r.status} {body}")
                 return
         except urllib.error.HTTPError as e:
             # Non-retryable: caller should fix config/plugin issues.
@@ -308,7 +314,7 @@ def main() -> None:
         for s in sinks:
             upsert_connector(s["name"], s["config"])
 
-    print("[connect-init] Done.")
+    log_info("[connect-init] Done.")
 
 
 if __name__ == "__main__":

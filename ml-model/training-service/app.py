@@ -16,6 +16,12 @@ MODEL_NAME = os.getenv("MODEL_NAME", "xgb_batches_to_order")
 ARTIFACT_DIR = os.getenv("ARTIFACT_DIR", "/models")
 RETRAIN_DAYS = int(os.getenv("RETRAIN_DAYS", "0"))  # 0 = always retrain
 MIN_TRAIN_ROWS = int(os.getenv("MIN_TRAIN_ROWS", "10"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 PG_DSN = os.getenv(
     "PG_DSN",
@@ -50,7 +56,7 @@ def wait_for_db(engine, retries=20, delay_seconds=3):
         except OperationalError:
             if attempt == retries:
                 raise
-            print(f"[training] waiting for postgres ({attempt}/{retries})...")
+            log_info(f"[training] Waiting for Postgres ({attempt}/{retries})...")
             time.sleep(delay_seconds)
 
 def should_retrain(engine, simulated_now):
@@ -80,9 +86,9 @@ def should_retrain(engine, simulated_now):
 def train_once(engine):
     df = pd.read_sql(FEATURE_SQL, engine)
     if df.empty:
-        print("[training] v_ml_train is empty, skipping training")
+        log_info("[training] v_ml_train is empty, skipping training")
         return
-    print(f"[training] loaded training set rows={len(df)} cols={len(df.columns)}")
+    log_info(f"[training] Loaded training set rows={len(df)} cols={len(df.columns)}")
 
     y = df["batches_to_order"].astype(int)
     drop_cols = ["batches_to_order", "feature_date", "shelf_id"]
@@ -96,7 +102,7 @@ def train_once(engine):
     feature_cols_path = os.path.join(ARTIFACT_DIR, f"{MODEL_NAME}_feature_columns.json")
     with open(feature_cols_path, "w") as f:
         json.dump(list(X.columns), f)
-    print(f"[training] saved feature columns to {feature_cols_path} (n={len(X.columns)})")
+    log_info(f"[training] Saved feature columns to {feature_cols_path} (n={len(X.columns)})")
 
     if len(X) < MIN_TRAIN_ROWS:
         print(f"[training] warning: small dataset rows={len(X)} < MIN_TRAIN_ROWS={MIN_TRAIN_ROWS} (training anyway)")
@@ -105,7 +111,7 @@ def train_once(engine):
     n_samples = int(len(X))
     n_splits = min(5, n_samples - 1)
     if n_splits < 2:
-        print(f"[training] not enough rows for CV (rows={n_samples}); skipping training")
+        log_info(f"[training] Not enough rows for CV (rows={n_samples}); skipping training")
         return
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
@@ -118,7 +124,7 @@ def train_once(engine):
     y_np = y.values.astype("float32", copy=False)
 
     for fold, (tr, va) in enumerate(tscv.split(X_np), start=1):
-        print(f"[training] fold {fold}/{n_splits} train={len(tr)} val={len(va)}")
+        log_info(f"[training] Fold {fold}/{n_splits} train={len(tr)} val={len(va)}")
         dtr = xgb.DMatrix(X_np[tr], label=y_np[tr])
         dva = xgb.DMatrix(X_np[va], label=y_np[va])
 
@@ -145,7 +151,7 @@ def train_once(engine):
 
         pred = model.predict(dva)
         mae = float(mean_absolute_error(y_np[va], pred))
-        print(f"[training] fold {fold}/{n_splits} mae={mae:.5f} best_iter={getattr(model, 'best_iteration', None)}")
+        log_info(f"[training] Fold {fold}/{n_splits} mae={mae:.5f} best_iter={getattr(model, 'best_iteration', None)}")
 
         if mae < best_mae:
             best_mae = mae
@@ -157,7 +163,7 @@ def train_once(engine):
             }
 
     if best_model is None:
-        print("[training] no model trained (no CV folds produced); skipping")
+        log_info("[training] No model trained (no CV folds produced); skipping")
         return
 
     # 4) Save model artifact versioned by simulated time
@@ -194,15 +200,15 @@ def train_once(engine):
             "ap": artifact_path
         })
 
-    print(f"[training] saved {artifact_path} metrics={best_metrics}")
+    log_info(f"[training] Saved {artifact_path} metrics={best_metrics}")
 
 def main():
-    print(f"[training] starting MODEL_NAME={MODEL_NAME} ARTIFACT_DIR={ARTIFACT_DIR} RETRAIN_DAYS={RETRAIN_DAYS}")
+    log_info(f"[training] Starting MODEL_NAME={MODEL_NAME} ARTIFACT_DIR={ARTIFACT_DIR} RETRAIN_DAYS={RETRAIN_DAYS}")
     engine = create_engine(PG_DSN, pool_pre_ping=True)
     wait_for_db(engine)
     simulated_now = ensure_utc(get_simulated_now())
     if not should_retrain(engine, simulated_now):
-        print(f"[training] skip: model {MODEL_NAME} trained within last {RETRAIN_DAYS}d (sim_now={simulated_now.isoformat()})")
+        log_info(f"[training] Skip: model {MODEL_NAME} trained within last {RETRAIN_DAYS}d (sim_now={simulated_now.isoformat()})")
         return
     train_once(engine)
 

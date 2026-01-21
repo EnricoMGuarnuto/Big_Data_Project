@@ -299,6 +299,27 @@ services:
             memory: 128M
       restart: unless-stopped
 
+  shelf-daily-features:
+      build:
+        context: ./spark-apps/shelf-daily-features
+        context: ./kafka-components/shelf-daily-features
+      container_name: shelf-daily-features
+      environment:
+        PGHOST: postgres
+        PGPASSWORD: bdt_password
+        PYTHONPATH: /app
+      volumes:
+        - ./delta:/delta
+        - ./simulated_time:/app/simulated_time:ro
+      depends_on:
+        - kafka
+        - spark-init-delta
+        - wh-alert-engine
+        - postgres
+        - redis
+        - sim-clock
+      restart: "no"
+
 #Spark Applications
   spark-init-delta:
     build:
@@ -685,26 +706,26 @@ services:
   #     - redis
   #   restart: 'no'
 
-  shelf-daily-features:
-    build:
-      context: ./spark-apps/shelf-daily-features
-    container_name: shelf-daily-features
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: smart_shelf
-      PGUSER: bdt_user
-      PGPASSWORD: bdt_password
-      PYTHONPATH: /app
-    volumes:
-      - ./delta:/delta
-      - ./simulated_time:/app/simulated_time:ro
-    depends_on:
-      - kafka
-      - spark-init-delta
-      - wh-alert-engine
-      - redis
-    restart: "no"
+  # shelf-daily-features:
+  #   build:
+  #     context: ./spark-apps/shelf-daily-features
+  #   container_name: shelf-daily-features
+  #   environment:
+  #     PGHOST: postgres
+  #     PGPORT: "5432"
+  #     PGDATABASE: smart_shelf
+  #     PGUSER: bdt_user
+  #     PGPASSWORD: bdt_password
+  #     PYTHONPATH: /app
+  #   volumes:
+  #     - ./delta:/delta
+  #     - ./simulated_time:/app/simulated_time:ro
+  #   depends_on:
+  #     - kafka
+  #     - spark-init-delta
+  #     - wh-alert-engine
+  #     - redis
+  #   restart: "no"
 
 
 # ml model

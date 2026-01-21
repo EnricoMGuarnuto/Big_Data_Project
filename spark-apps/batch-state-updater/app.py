@@ -17,6 +17,12 @@ JDBC_PG_URL = os.getenv("JDBC_PG_URL")
 JDBC_PG_USER = os.getenv("JDBC_PG_USER")
 JDBC_PG_PASSWORD = os.getenv("JDBC_PG_PASSWORD")
 BOOTSTRAP_FROM_PG = os.getenv("BOOTSTRAP_FROM_PG", "0") in ("1", "true", "True")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 DELTA_ROOT = os.getenv("DELTA_ROOT", "/delta")
 BATCH_STATE_PATH = f"{DELTA_ROOT}/cleansed/shelf_batch_state"
@@ -114,11 +120,11 @@ schema_bootstrap = T.StructType([
 def bootstrap_if_needed():
     if DeltaTable.isDeltaTable(spark, BATCH_STATE_PATH):
         if spark.read.format("delta").load(BATCH_STATE_PATH).limit(1).count() > 0:
-            print("[bootstrap] Existing delta table found, skipping.")
+            log_info("[bootstrap] Existing delta table found, skipping.")
             return
 
     if not BOOTSTRAP_FROM_PG:
-        print("[bootstrap] Skipping bootstrap from Postgres.")
+        log_info("[bootstrap] Skipping bootstrap from Postgres.")
         return
 
     if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
@@ -165,7 +171,7 @@ def bootstrap_if_needed():
             time.sleep(0.5 * attempt)
     else:
         raise last
-    print("[bootstrap] Bootstrapped shelf_batch_state.")
+    log_info("[bootstrap] Bootstrapped shelf_batch_state.")
 
     kafka_payload = (
         df_with_ts

@@ -16,6 +16,12 @@ JDBC_PG_URL = os.getenv("JDBC_PG_URL")
 JDBC_PG_USER = os.getenv("JDBC_PG_USER")
 JDBC_PG_PASSWORD = os.getenv("JDBC_PG_PASSWORD")
 BOOTSTRAP_FROM_PG = os.getenv("BOOTSTRAP_FROM_PG", "0") in ("1", "true", "True")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 DELTA_ROOT            = os.getenv("DELTA_ROOT", "/delta")
 RAW_PATH              = f"{DELTA_ROOT}/raw/shelf_events"
@@ -129,13 +135,13 @@ def bootstrap_state_if_missing():
     if DeltaTable.isDeltaTable(spark, STATE_PATH):
         existing = spark.read.format("delta").load(STATE_PATH)
         if existing.limit(1).count() > 0:
-            print(f"[bootstrap] Delta state already present: {STATE_PATH} -> skip bootstrap.")
+            log_info(f"[bootstrap] Delta state already present: {STATE_PATH} -> skip bootstrap.")
             return
         else:
-            print(f"[bootstrap] Delta state exists but is empty: {STATE_PATH} -> running bootstrap.")
+            log_info(f"[bootstrap] Delta state exists but is empty: {STATE_PATH} -> running bootstrap.")
 
     if not BOOTSTRAP_FROM_PG:
-        print("[bootstrap] BOOTSTRAP_FROM_PG=0 -> skip bootstrap (no initial state created).")
+        log_info("[bootstrap] BOOTSTRAP_FROM_PG=0 -> skip bootstrap (no initial state created).")
         return
 
     if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
@@ -203,7 +209,7 @@ def bootstrap_state_if_missing():
         .option("topic", TOPIC_SHELF_STATE) \
         .save()
 
-    print(f"[bootstrap] Initial state created from Postgres and published on {TOPIC_SHELF_STATE}.")
+    log_info(f"[bootstrap] Initial state created from Postgres and published on {TOPIC_SHELF_STATE}.")
 
 ensure_delta_table(RAW_PATH, schema_shelf_events)
 ensure_delta_table(STATE_PATH, schema_shelf_state)

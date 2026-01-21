@@ -12,6 +12,12 @@ DEFAULT_RF = int(os.getenv("DEFAULT_RF", "1"))
 INIT_RETRIES = int(os.getenv("KAFKA_INIT_RETRIES", "30"))
 INIT_SLEEP_SEC = float(os.getenv("KAFKA_INIT_SLEEP_SEC", "3"))
 CONNECT_TIMEOUT_MS = int(os.getenv("KAFKA_INIT_CONNECT_TIMEOUT_MS", "10000"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 # Base retention for append-only (7 days)
 APPEND_RETENTION_MS = int(os.getenv("APPEND_RETENTION_MS", str(7 * 24 * 60 * 60 * 1000)))
@@ -74,12 +80,12 @@ def build_admin() -> KafkaAdminClient:
             )
         except (NoBrokersAvailable, Exception) as e:
             last = e
-            print(
-                f"[init] Broker non disponibile ({attempt}/{INIT_RETRIES}). "
-                f"Riprovo tra {INIT_SLEEP_SEC}s... ({e})"
+            log_info(
+                f"[init] Broker not available ({attempt}/{INIT_RETRIES}). "
+                f"Retrying in {INIT_SLEEP_SEC}s... ({e})"
             )
             time.sleep(INIT_SLEEP_SEC)
-    raise RuntimeError(f"Kafka non raggiungibile: {last}")
+    raise RuntimeError(f"Kafka not reachable: {last}")
 
 def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]],
                   partitions: int, rf: int, base_cfg: Dict[str, str]) -> None:
@@ -100,7 +106,7 @@ def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]]
             try:
                 res = ConfigResource(ConfigResourceType.TOPIC, name, configs=cfg)
                 admin.alter_configs([res])
-                print(f"[init] Updated config for existing topic: {name}")
+                log_info(f"[init] Updated config for existing topic: {name}")
             except Exception as e:
                 print(f"[init] Warning: unable to update config for {name}: {e}")
 
@@ -111,9 +117,9 @@ def ensure_topics(admin: KafkaAdminClient, topics_cfg: Dict[str, Dict[str, str]]
                 getattr(t, "name", None) or getattr(t, "topic", None) or str(t)
                 for t in to_create
             ]
-            print(f"[init] Created {len(to_create)} topics: {created_names}")
+            log_info(f"[init] Created {len(to_create)} topics: {created_names}")
         except TopicAlreadyExistsError:
-            print("[init] Some topics already existed (race condition), ok.")
+            log_info("[init] Some topics already existed (race condition).")
         except Exception as e:
             print(f"[init] Error while creating topics: {e}")
 
@@ -121,14 +127,14 @@ def main():
     admin = None
     try:
         admin = build_admin()
-        print(f"[init] Connected to {BROKER}")
+        log_info(f"[init] Connected to {BROKER}")
 
         # Append-only
         ensure_topics(admin, APPEND_ONLY, DEFAULT_PARTITIONS, DEFAULT_RF, BASE_APPEND_CFG)
         # Compacted
         ensure_topics(admin, COMPACTED, DEFAULT_PARTITIONS, DEFAULT_RF, BASE_COMPACTED_CFG)
 
-        print("[init] Done.")
+        log_info("[init] Done.")
     finally:
         if admin is not None:
             try:

@@ -9,6 +9,12 @@ from pyspark.sql.types import (
 # ========= Config =========
 DELTA_ROOT = os.getenv("DELTA_ROOT", "/delta")
 WAREHOUSE  = os.getenv("SPARK_WAREHOUSE_DIR", "/tmp/spark-warehouse")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 # ========= Spark (Delta-enabled) =========
 spark = (
@@ -224,6 +230,6 @@ create_empty_delta(path("ops", "shelf_restock_plan"), schema_shelf_restock_plan)
 os.makedirs(path("models", "warehouse_optimizer"), exist_ok=True)
 os.makedirs(path("checkpoints"), exist_ok=True)
 
-print(f"[delta-bootstrap] Initialized under: {DELTA_ROOT}")
+log_info(f"[delta-bootstrap] Initialized under: {DELTA_ROOT}")
 spark.stop()
-print("[delta-bootstrap] Done.")
+log_info("[delta-bootstrap] Done.")

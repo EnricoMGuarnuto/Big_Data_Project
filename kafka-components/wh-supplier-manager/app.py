@@ -31,6 +31,12 @@ POLL_SECONDS = float(os.getenv("POLL_SECONDS", "10"))
 MIRROR_WH_EVENTS_DELTA = os.getenv("MIRROR_WH_EVENTS_DELTA", "0") in ("1", "true", "True")
 KAFKA_WAIT_TIMEOUT_S = int(os.getenv("KAFKA_WAIT_TIMEOUT_S", "180"))
 KAFKA_WAIT_POLL_S = float(os.getenv("KAFKA_WAIT_POLL_S", "2.0"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 # schedule (UTC, simulated time)
 CUTOFF_DOWS = os.getenv("CUTOFF_DOWS", "6,1,3")  # Sun, Tue, Thu
@@ -324,12 +330,12 @@ def wait_for_kafka() -> None:
         attempt += 1
         try:
             with socket.create_connection((host, port), timeout=2.0):
-                print(f"[wh-supplier-manager] Kafka ready at {host}:{port}")
+                log_info(f"[wh-supplier-manager] Kafka ready at {host}:{port}")
                 return
         except Exception as e:
             if attempt % 5 == 0:
                 remaining = int(max(0, deadline - time.time()))
-                print(f"[wh-supplier-manager] Waiting Kafka at {host}:{port}… ({remaining}s left) last_err={e}")
+                log_info(f"[wh-supplier-manager] Waiting Kafka at {host}:{port}... ({remaining}s left) last_err={e}")
             time.sleep(KAFKA_WAIT_POLL_S)
     raise RuntimeError(f"Kafka not reachable at {host}:{port} after {KAFKA_WAIT_TIMEOUT_S}s")
 
@@ -450,7 +456,7 @@ def _emit_and_mirror_wh_events(events: pd.DataFrame) -> None:
 
 
 def do_cutoff(now_ts: datetime) -> None:
-    print(f"[wh-supplier-manager] cutoff tick at {now_ts.isoformat()}")
+    log_info(f"[wh-supplier-manager] Cutoff tick at {now_ts.isoformat()}")
 
     plans = _normalize_plan_df(_read_delta(DL_SUPPLIER_PLAN_PATH))
     if plans.empty:
@@ -501,11 +507,11 @@ def do_cutoff(now_ts: datetime) -> None:
     _write_delta(DL_SUPPLIER_PLAN_PATH, plans_final, mode="overwrite")
 
     publish_plan_updates(updates)
-    print(f"[wh-supplier-manager] cutoff done: orders={len(orders_new)} plans_issued={len(updates)} delivery={delivery.isoformat()}")
+    log_info(f"[wh-supplier-manager] Cutoff done: orders={len(orders_new)} plans_issued={len(updates)} delivery={delivery.isoformat()}")
 
 
 def do_delivery(now_ts: datetime) -> None:
-    print(f"[wh-supplier-manager] delivery tick at {now_ts.isoformat()}")
+    log_info(f"[wh-supplier-manager] Delivery tick at {now_ts.isoformat()}")
 
     today = now_ts.date()
     orders = _normalize_orders_df(_read_delta(DL_ORDERS_PATH))
@@ -615,11 +621,11 @@ def do_delivery(now_ts: datetime) -> None:
             _write_delta(DL_SUPPLIER_PLAN_PATH, plans_final, mode="overwrite")
             publish_plan_updates(updates)
 
-    print(f"[wh-supplier-manager] delivery done: wh_in={len(events)} receipts={len(receipts_new)} shelves={len(due)}")
+    log_info(f"[wh-supplier-manager] Delivery done: wh_in={len(events)} receipts={len(receipts_new)} shelves={len(due)}")
 
 
 def main() -> None:
-    print(
+    log_info(
         "[wh-supplier-manager] starting with "
         f"cutoff_dows={_CUTOFF_DOWS} cutoff={CUTOFF_HOUR:02d}:{CUTOFF_MINUTE:02d} "
         f"delivery_dows={_DELIVERY_DOWS} delivery={DELIVERY_HOUR:02d}:{DELIVERY_MINUTE:02d} "
@@ -637,7 +643,7 @@ def main() -> None:
             if (s0.fillna(1) <= 0).any():
                 plans_clean = _normalize_plan_df(plans0)
                 _write_delta(DL_SUPPLIER_PLAN_PATH, plans_clean, mode="overwrite")
-                print("[wh-supplier-manager] sanitized wh_supplier_plan standard_batch_size (0 -> NULL)")
+                log_info("[wh-supplier-manager] Sanitized wh_supplier_plan standard_batch_size (0 -> NULL)")
     except Exception as e:
         print(f"[wh-supplier-manager] warn: failed to sanitize supplier plan batch sizes: {e}")
 

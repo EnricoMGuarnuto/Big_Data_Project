@@ -30,6 +30,12 @@ JDBC_PG_USER      = os.getenv("JDBC_PG_USER")
 JDBC_PG_PASSWORD  = os.getenv("JDBC_PG_PASSWORD")
 BOOTSTRAP_FROM_PG = os.getenv("BOOTSTRAP_FROM_PG", "1") in ("1", "true", "True")
 WRITE_TO_PG       = os.getenv("WRITE_TO_PG", "1") in ("1", "true", "True")
+LOG_LEVEL         = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 # Default table for bootstrap snapshot
 PG_BOOTSTRAP_TABLE = os.getenv("PG_BOOTSTRAP_TABLE", "ref.warehouse_inventory_snapshot")
@@ -139,7 +145,7 @@ def sync_state_to_pg_if_missing():
         return
     if not DeltaTable.isDeltaTable(spark, STATE_PATH):
         return
-    print("[pg-sync] syncing state.wh_state from Delta...", flush=True)
+    log_info("[pg-sync] Syncing state.wh_state from Delta...")
     state_df = spark.read.format("delta").load(STATE_PATH).select(
         "shelf_id", "wh_current_stock", "last_update_ts"
     )
@@ -155,7 +161,7 @@ def sync_state_to_pg_if_missing():
         .mode("overwrite")
         .save()
     )
-    print("[pg-sync] state.wh_state synced from Delta.", flush=True)
+    log_info("[pg-sync] state.wh_state synced from Delta.")
 
 # =========================
 # Bootstrap from Postgres (one-off)
@@ -165,15 +171,15 @@ def bootstrap_state_if_missing():
     if DeltaTable.isDeltaTable(spark, STATE_PATH):
         existing = spark.read.format("delta").load(STATE_PATH)
         if existing.limit(1).count() > 0:
-            print(f"[bootstrap] wh_state already present at {STATE_PATH} -> skip bootstrap.")
+            log_info(f"[bootstrap] wh_state already present at {STATE_PATH} -> skip bootstrap.")
             return
 
     if not BOOTSTRAP_FROM_PG:
-        print("[bootstrap] BOOTSTRAP_FROM_PG=0 -> skip bootstrap.")
+        log_info("[bootstrap] BOOTSTRAP_FROM_PG=0 -> skip bootstrap.")
         return
 
     if not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
-        print("[bootstrap] JDBC params missing -> skip bootstrap.")
+        log_info("[bootstrap] JDBC params missing -> skip bootstrap.")
         return
 
     last_err = None
@@ -241,7 +247,7 @@ def bootstrap_state_if_missing():
         .option("topic", TOPIC_WH_STATE) \
         .save()
 
-    print(f"[bootstrap] Initial wh_state created and published on {TOPIC_WH_STATE}.")
+    log_info(f"[bootstrap] Initial wh_state created and published on {TOPIC_WH_STATE}.")
 
 bootstrap_state_if_missing()
 sync_state_to_pg_if_missing()

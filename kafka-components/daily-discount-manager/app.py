@@ -28,6 +28,12 @@ POLL_SECONDS          = float(os.getenv("POLL_SECONDS", "10.0"))
 
 KAFKA_WAIT_TIMEOUT_S  = int(os.getenv("KAFKA_WAIT_TIMEOUT_S", "180"))
 KAFKA_WAIT_POLL_S     = float(os.getenv("KAFKA_WAIT_POLL_S", "2.0"))
+LOG_LEVEL             = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 
 def _parse_first_broker(brokers: str) -> tuple[str, int]:
@@ -48,12 +54,12 @@ def wait_for_kafka() -> None:
         attempt += 1
         try:
             with socket.create_connection((host, port), timeout=2.0):
-                print(f"[daily_discount_manager] Kafka ready at {host}:{port}")
+                log_info(f"[daily_discount_manager] Kafka ready at {host}:{port}")
                 return
         except Exception as e:
             if attempt % 5 == 0:
                 remaining = int(max(0, deadline - time.time()))
-                print(f"[daily_discount_manager] Waiting Kafka at {host}:{port}… ({remaining}s left) last_err={e}")
+                log_info(f"[daily_discount_manager] Waiting Kafka at {host}:{port}... ({remaining}s left) last_err={e}")
             time.sleep(KAFKA_WAIT_POLL_S)
     raise RuntimeError(f"Kafka not reachable at {host}:{port} after {KAFKA_WAIT_TIMEOUT_S}s")
 
@@ -62,14 +68,14 @@ def _producer() -> Producer:
     return Producer({"bootstrap.servers": KAFKA_BROKER})
 
 def run_discount_job(sim_date_str, sim_ts_str):
-    print(f"[daily_discount_manager] Esecuzione calcolo sconti per {sim_date_str}...")
+    log_info(f"[daily_discount_manager] Starting discount calc for {sim_date_str}...")
     
     # 1) Lettura stato lotti
     try:
         dt_batch = DeltaTable(DL_SHELF_BATCH_PATH)
         df_batches = dt_batch.to_pandas()
     except Exception as e:
-        print(f"Errore lettura batch: {e}")
+        print(f"[daily_discount_manager] Batch read failed: {e}")
         return
 
     today = pd.to_datetime(sim_date_str).date()
@@ -82,7 +88,7 @@ def run_discount_job(sim_date_str, sim_ts_str):
     
     expiring = df_batches[mask][['shelf_id', 'expiry_date']].drop_duplicates()
     if expiring.empty:
-        print("Nessun prodotto in scadenza oggi/domani.")
+        log_info("[daily_discount_manager] No products expiring today/tomorrow.")
         return
 
     # 3) Generazione candidati (shelf_id, discount_date)
@@ -153,7 +159,7 @@ def run_discount_job(sim_date_str, sim_ts_str):
         kp.flush(30)
     except Exception as e:
         print(f"[daily_discount_manager] Kafka flush failed: {e}")
-    print(f"Aggiornati sconti per {len(result_df)} scaffali.")
+    log_info(f"[daily_discount_manager] Updated discounts for {len(result_df)} shelves.")
 
 if __name__ == "__main__":
     wait_for_kafka()
@@ -167,6 +173,6 @@ if __name__ == "__main__":
                 run_discount_job(sim_day, sim_ts)
                 last_day = sim_day
             except Exception as e:
-                print(f"Errore nel Job Sconti: {e}")
+                print(f"[daily_discount_manager] Error while running discount job: {e}")
         
         time.sleep(POLL_SECONDS)

@@ -80,6 +80,12 @@ TOPIC_WH_SUPPLIER_PLAN = os.getenv("TOPIC_WH_SUPPLIER_PLAN", "wh_supplier_plan")
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_LAST_RUN_KEY = os.getenv("REDIS_LAST_RUN_KEY", f"ml:{MODEL_NAME}:supplier_plan:last_run_day")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 
 # -----------------------------
@@ -347,7 +353,7 @@ def publish_kafka_plans(plans: list) -> None:
             value = json.dumps(plan, default=str).encode("utf-8")
             producer.send(TOPIC_WH_SUPPLIER_PLAN, key=key, value=value)
         producer.flush(timeout=30)
-        print(f"[inference] published {len(plans)} plans to kafka topic={TOPIC_WH_SUPPLIER_PLAN}")
+        log_info(f"[inference] Published {len(plans)} plans to kafka topic={TOPIC_WH_SUPPLIER_PLAN}")
     finally:
         try:
             producer.close(timeout=5)
@@ -418,7 +424,7 @@ def upsert_delta_plans_by_shelf_id(plans_df):
     for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
         try:
             write_deltalake(DELTA_WHSUPPLIER_PLAN_PATH, merged, mode="overwrite")
-            print(f"[delta] upserted {len(plans_df)} shelves into {DELTA_WHSUPPLIER_PLAN_PATH}")
+            log_info(f"[delta] Upserted {len(plans_df)} shelves into {DELTA_WHSUPPLIER_PLAN_PATH}")
             return
         except Exception as e:
             last = e
@@ -493,7 +499,7 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
         if first is None or first.empty:
             feature_date = get_latest_feature_date(conn, today)
             if feature_date:
-                print(f"[inference] no features for {today}, using latest {feature_date}")
+                log_info(f"[inference] No features for {today}, using latest {feature_date}")
                 frames_iter = iter_infer_frames(conn, feature_date, chunksize=INFER_CHUNK_ROWS)
                 first = next(iter(frames_iter), None)
 
@@ -502,12 +508,12 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
                     first = next(iter(frames_iter), None)
 
         if first is None or first.empty:
-            print(f"[inference] no shelves to infer on {today}")
+            log_info(f"[inference] No shelves to infer on {today}")
             return True  # nothing to do today; treat as completed
 
         model_version, artifact_path = get_latest_model(conn)
         if not model_version or not artifact_path:
-            print("[inference] no model available yet (db empty or artifact missing).")
+            log_info("[inference] No model available yet (db empty or artifact missing).")
             return False
 
         trained_at = parse_model_version_ts(model_version) or sim_now
@@ -593,7 +599,7 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
         delta_df["updated_at"] = pd.to_datetime(delta_df["updated_at"], utc=True, errors="coerce")
     upsert_delta_plans_by_shelf_id(delta_df)
 
-    print(
+    log_info(
         f"[inference] cutoff run done: sim_day={today} feature_date={feature_date} "
         f"plans={len(plan_rows)} (pending), predictions_logged={len(prediction_log_rows)}"
     )
@@ -608,7 +614,7 @@ def main():
     training_cols = load_training_feature_columns()
     last_heartbeat = 0.0
 
-    print(
+    log_info(
         "[inference] starting with "
         f"CUTOFF_DOWS={_CUTOFF_DOWS} CUTOFF_HOUR={CUTOFF_HOUR} CUTOFF_MINUTE={CUTOFF_MINUTE} "
         f"PREDICT_LEAD_MINUTES={PREDICT_LEAD_MINUTES} SLEEP_SECONDS={SLEEP_SECONDS} "
@@ -622,7 +628,7 @@ def main():
         if not should_generate_plans(sim_now):
             if HEARTBEAT_SECONDS > 0 and time.time() - last_heartbeat >= HEARTBEAT_SECONDS:
                 run_at = cutoff_dt(sim_now) - timedelta(minutes=max(0, PREDICT_LEAD_MINUTES))
-                print(f"[inference] waiting for >= {run_at.isoformat()} (sim_now={sim_now.isoformat()})")
+                log_info(f"[inference] Waiting for >= {run_at.isoformat()} (sim_now={sim_now.isoformat()})")
                 last_heartbeat = time.time()
             continue
 

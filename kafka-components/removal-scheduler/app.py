@@ -27,6 +27,12 @@ REMOVE_MODE      = os.getenv("REMOVE_MODE", "next_day").lower()
 POLL_SECONDS     = float(os.getenv("POLL_SECONDS", "1.0"))
 KAFKA_WAIT_TIMEOUT_S  = int(os.getenv("KAFKA_WAIT_TIMEOUT_S", "180"))
 KAFKA_WAIT_POLL_S     = float(os.getenv("KAFKA_WAIT_POLL_S", "2.0"))
+LOG_LEVEL             = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 def _parse_first_broker(brokers: str) -> tuple[str, int]:
     first = (brokers or "").split(",")[0].strip()
@@ -46,12 +52,12 @@ def wait_for_kafka() -> None:
         attempt += 1
         try:
             with socket.create_connection((host, port), timeout=2.0):
-                print(f"[removal_scheduler] Kafka ready at {host}:{port}")
+                log_info(f"[removal_scheduler] Kafka ready at {host}:{port}")
                 return
         except Exception as e:
             if attempt % 5 == 0:
                 remaining = int(max(0, deadline - time.time()))
-                print(f"[removal_scheduler] Waiting Kafka at {host}:{port}… ({remaining}s left) last_err={e}")
+                log_info(f"[removal_scheduler] Waiting Kafka at {host}:{port}... ({remaining}s left) last_err={e}")
             time.sleep(KAFKA_WAIT_POLL_S)
     raise RuntimeError(f"Kafka not reachable at {host}:{port} after {KAFKA_WAIT_TIMEOUT_S}s")
 
@@ -63,7 +69,7 @@ def delta_ready() -> bool:
     return os.path.exists(DL_SHELF_STATE) and os.path.exists(DL_SHELF_BATCH)
 
 def run_once(sim_date_str: str, sim_ts_str: str) -> None:
-    print(f"[removal_scheduler] Controllo scadenze per la data simulata: {sim_date_str}")
+    log_info(f"[removal_scheduler] Checking expirations for simulated date: {sim_date_str}")
     
     # 1) Caricamento tabelle con Delta-rs (Zero Spark!)
     dt_state = DeltaTable(DL_SHELF_STATE)
@@ -83,7 +89,7 @@ def run_once(sim_date_str: str, sim_ts_str: str) -> None:
     expired_batches = df_batch[expired_mask].copy()
 
     if expired_batches.empty:
-        print(f"[removal_scheduler] Nessun prodotto scaduto trovato per {sim_date_str}.")
+        log_info(f"[removal_scheduler] No expired products found for {sim_date_str}.")
         return
 
     # 3) Calcolo quantità da rimuovere
@@ -143,7 +149,7 @@ def run_once(sim_date_str: str, sim_ts_str: str) -> None:
         kp.flush(30)
     except Exception as e:
         print(f"[removal_scheduler] Kafka flush failed: {e}")
-    print(f"[removal_scheduler] Rimossi {len(expired_batches)} lotti scaduti.")
+    log_info(f"[removal_scheduler] Removed {len(expired_batches)} expired batches.")
 
 def main():
     wait_for_kafka()
@@ -161,7 +167,7 @@ def main():
                 run_once(sim_day, sim_ts)
                 last_processed_day = sim_day
             except Exception as e:
-                print(f"Errore: {e}")
+                print(f"[removal_scheduler] Error: {e}")
 
         time.sleep(POLL_SECONDS)
 

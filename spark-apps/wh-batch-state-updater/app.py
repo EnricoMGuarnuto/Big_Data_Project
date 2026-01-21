@@ -21,6 +21,12 @@ STARTING_OFFSETS=os.getenv("STARTING_OFFSETS","earliest")
 
 JDBC_PG_URL=os.getenv("JDBC_PG_URL"); JDBC_PG_USER=os.getenv("JDBC_PG_USER"); JDBC_PG_PASSWORD=os.getenv("JDBC_PG_PASSWORD")
 BOOTSTRAP_FROM_PG=os.getenv("BOOTSTRAP_FROM_PG","1") in ("1","true","True")
+LOG_LEVEL=os.getenv("LOG_LEVEL","INFO").upper()
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL in ("INFO", "DEBUG"):
+        print(msg)
 
 DELTA_WRITE_MAX_RETRIES = int(os.getenv("DELTA_WRITE_MAX_RETRIES", "8"))
 DELTA_WRITE_RETRY_BASE_S = float(os.getenv("DELTA_WRITE_RETRY_BASE_S", "1.0"))
@@ -57,7 +63,7 @@ def _with_delta_retries(op_name: str, fn, *, ok_if_table_filled: Optional[str] =
         except Exception as e:
             last = e
             if ok_if_table_filled and _is_delta_conflict(e) and _delta_has_rows(ok_if_table_filled):
-                print(f"[delta-retry] {op_name}: conflict but table already populated -> continue.")
+                log_info(f"[delta-retry] {op_name}: conflict but table already populated -> continue.")
                 return None
             if not _is_delta_conflict(e) or attempt == DELTA_WRITE_MAX_RETRIES:
                 raise
@@ -81,11 +87,12 @@ schema_evt = T.StructType([
 
 def bootstrap_from_pg():
     if not BOOTSTRAP_FROM_PG or not (JDBC_PG_URL and JDBC_PG_USER and JDBC_PG_PASSWORD):
-        print("[bootstrap] skip"); return
+        log_info("[bootstrap] skip")
+        return
 
     # If tables already exist and are non-empty, avoid overwriting (prevents concurrent bootstrap clashes).
     if _delta_has_rows(DL_WH_BATCH) and _delta_has_rows(DL_SHELF_BATCH):
-        print("[bootstrap] delta tables already present -> skip")
+        log_info("[bootstrap] delta tables already present -> skip")
         return
 
     # WH
