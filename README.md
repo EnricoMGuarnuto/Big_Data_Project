@@ -518,3 +518,8 @@ The `delta/` directory (tables + `_checkpoints/`) can grow quickly during stream
   - Confirm the Delta paths exist under `delta/` and match the env vars used by `dashboard/app.py` (see the Dashboard section above).
 - **Reset to a clean state (destructive)**
   - `docker compose down -v` removes named volumes (`kafka-data`, `redis-data`, `postgres-data`) and starts the stack from scratch on next `up`.
+  - Delta state is bind-mounted from `./delta` (tables + `_checkpoints/`) and is **not** removed by `down -v`. To fully reset streaming state (and avoid “leaks” of old alerts/state), remove these folders:
+    - `delta/_checkpoints/`, `delta/raw/`, `delta/cleansed/`, `delta/ops/`, `delta/staging/`
+  - If you only want to clear what the dashboard shows (it reads from Postgres `ops.alerts`), you can truncate without wiping volumes:
+    - `docker exec -it postgres psql -U bdt_user -d smart_shelf -c "TRUNCATE ops.alerts;"`
+    - (optional) `docker exec -it postgres psql -U bdt_user -d smart_shelf -c "TRUNCATE ops.wh_supplier_plan;"`

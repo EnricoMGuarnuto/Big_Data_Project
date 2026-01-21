@@ -588,7 +588,8 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
       * Warehouse:
           - maximum_stock is a multiple of standard_batch_size
           - capacity must fit at least 2 full batches
-          - current_stock = SMALL number of FULL batches (e.g. 1–3) → fewer batches
+          - current_stock = SMALL number of FULL batches (e.g. 1–3), but never below the
+            default reorder point used by the streaming alert engine (~5% of maximum_stock)
     """
     data = []
 
@@ -669,23 +670,26 @@ def generate_inventory_df(product_catalog, product_hierarchy, inventory_type, st
         #       * Non-perishables → percentage of maximum_stock
         # -------------------------------------------------
         if inventory_type == 'warehouse':
-            if is_perishable:
-                # Perishable items are not stored in the warehouse
+            # Compute how many full batches the warehouse could hold
+            max_full_batches_possible = maximum_stock // standard_batch_size
+
+            if max_full_batches_possible == 0:
                 current_stock = 0
             else:
-                # Compute how many full batches the warehouse could hold
-                max_full_batches_possible = maximum_stock // standard_batch_size
+                # Limit the number of batches actually present in the warehouse
+                max_full_batches_in_warehouse = 3  # <-- tune this to 2, 3, 5, ... as you prefer
+                n_full_batches = np.random.randint(
+                    1, min(max_full_batches_in_warehouse, max_full_batches_possible) + 1
+                )
+                # Warehouse keeps only FULL batches (no partially consumed batches here)
+                current_stock = n_full_batches * standard_batch_size
 
-                if max_full_batches_possible == 0:
-                    current_stock = 0
-                else:
-                    # Limit the number of batches actually present in the warehouse
-                    max_full_batches_in_warehouse = 3  # <-- tune this to 2, 3, 5, ... as you prefer
-                    n_full_batches = np.random.randint(
-                        1, min(max_full_batches_in_warehouse, max_full_batches_possible) + 1
-                    )
-                    # Warehouse keeps only FULL batches (no partially consumed batches here)
-                    current_stock = n_full_batches * standard_batch_size
+                # Avoid initial WH "reorder" alerts on bootstrap by ensuring we are not below the
+                # default reorder point (≈5% of maximum_stock, floored; at least 1).
+                reorder_point_qty = max(1, int(maximum_stock * 0.05))
+                min_full_batches_needed = int(math.ceil(reorder_point_qty / standard_batch_size))
+                current_stock = max(current_stock, min_full_batches_needed * standard_batch_size)
+                current_stock = min(current_stock, maximum_stock)
 
         else:  # STORE
             if is_perishable:
