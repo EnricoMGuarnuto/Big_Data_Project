@@ -305,6 +305,8 @@ def fetch_alerts() -> pd.DataFrame:
     """)
     with eng.connect() as c:
         df = pd.read_sql(q, c)
+    if "alert_id" in df.columns:
+        df["alert_id"] = df["alert_id"].astype(str)
     if "shelf_id" in df.columns:
         df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
     if "status" in df.columns:
@@ -373,7 +375,7 @@ def fetch_standard_batch_sizes_pg() -> pd.DataFrame:
 def fetch_store_foot_traffic(target_date: date) -> Tuple[Optional[date], Optional[int]]:
     eng = get_pg_engine()
     q = text("""
-        SELECT feature_date, COALESCE(SUM(people_count), 0) AS people_count
+        SELECT feature_date, COALESCE(MAX(people_count), 0) AS people_count
         FROM analytics.shelf_daily_features
         WHERE feature_date = :day
         GROUP BY feature_date
@@ -382,23 +384,7 @@ def fetch_store_foot_traffic(target_date: date) -> Tuple[Optional[date], Optiona
         df = pd.read_sql(q, c, params={"day": target_date})
     if not df.empty:
         return pd.to_datetime(df.loc[0, "feature_date"], errors="coerce").date(), int(df.loc[0, "people_count"])
-
-    q_latest = text("""
-        SELECT MAX(feature_date) AS feature_date
-        FROM analytics.shelf_daily_features
-        WHERE feature_date <= :day
-    """)
-    with eng.connect() as c:
-        df_latest = pd.read_sql(q_latest, c, params={"day": target_date})
-    if df_latest.empty or pd.isna(df_latest.loc[0, "feature_date"]):
-        return None, None
-
-    latest_date = pd.to_datetime(df_latest.loc[0, "feature_date"], errors="coerce").date()
-    with eng.connect() as c:
-        df_latest_sum = pd.read_sql(q, c, params={"day": latest_date})
-    if df_latest_sum.empty:
-        return latest_date, 0
-    return latest_date, int(df_latest_sum.loc[0, "people_count"])
+    return None, None
 
 def compute_live_foot_traffic(now_ts: pd.Timestamp) -> Optional[int]:
     df = fetch_foot_traffic_raw(DELTA_FOOT_TRAFFIC_PATH)

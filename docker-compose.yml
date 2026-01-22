@@ -301,7 +301,6 @@ services:
 
   shelf-daily-features:
       build:
-        context: ./spark-apps/shelf-daily-features
         context: ./kafka-components/shelf-daily-features
       container_name: shelf-daily-features
       environment:
