@@ -37,22 +37,38 @@ streamlit run dashboard/app.py
 
 ## Configuration (env vars)
 Dashboard paths:
-- `DASH_LAYOUT_YAML` (default `dashboard/store_layout.yaml`)
-- `INVENTORY_CSV_PATH` (default `data/db_csv/store_inventory_final.csv`)
-- `DELTA_SHELF_EVENTS_PATH` (default `delta/raw/shelf_events`)
+- `DASH_LAYOUT_YAML` / `LAYOUT_YAML` (default `dashboard/store_layout.yaml`)
+- `INVENTORY_CSV_PATH` / `INVENTORY_CSV` (default `data/db_csv/store_inventory_final.csv`)
+- `DELTA_SUPPLIER_PLAN_PATH` (default `delta/ops/wh_supplier_plan`)
+- `DELTA_SUPPLIER_ORDERS_PATH` (default `delta/ops/wh_supplier_orders`)
+- `DELTA_SHELF_STATE_PATH` (default `delta/cleansed/shelf_state`)
+- `DELTA_WH_STATE_PATH` (default `delta/cleansed/wh_state`)
+- `DELTA_SHELF_BATCH_STATE_PATH` (default `delta/cleansed/shelf_batch_state`)
+- `DELTA_WH_BATCH_STATE_PATH` (default `delta/cleansed/wh_batch_state`)
+- `DELTA_WH_EVENTS_RAW_PATH` / `DL_WH_EVENTS_RAW_PATH` (default `delta/raw/wh_events`)
+- `DELTA_FOOT_TRAFFIC_PATH` / `DL_FOOT_TRAFFIC_PATH` (default `delta/raw/foot_traffic`)
 
 Postgres:
-- `POSTGRES_HOST` (default `postgresql`)
+- `POSTGRES_HOST` (default `postgres`)
 - `POSTGRES_PORT` (default `5432`)
-- `POSTGRES_DB` (default `postgres`)
-- `POSTGRES_USER` (default `postgres`)
-- `POSTGRES_PASSWORD` (default `postgres`)
+- `POSTGRES_DB` (default `smart_shelf`)
+- `POSTGRES_USER` (default `bdt_user`)
+- `POSTGRES_PASSWORD` (default `bdt_password`)
 - `ALERTS_TABLE` (default `ops.alerts`)
+- `SUPPLIER_PLAN_TABLE` (default `ops.wh_supplier_plan`)
 
-Refresh and event tuning:
-- `DASH_AUTOREFRESH_MS` (default `1500`)
-- `WEIGHT_EVENT_LOOKBACK_SEC` (default `8`)
-- `WEIGHT_EVENT_TYPE` (default `weight_change`)
+Refresh / load tuning:
+- `DASH_AUTOREFRESH_ENABLED` (default: enabled only if refresh interval > 0)
+- `DASH_AUTOREFRESH_MS` / `DASH_REFRESH_MS` (default `0` = disabled; enable from sidebar if needed)
+- `DASH_LIVE_FOOT_TRAFFIC` / `DASH_COMPUTE_LIVE_FOOT_TRAFFIC` (default `1` = compute live count from Delta)
+- `DASH_ALERTS_LIMIT` (default `1000`)
+- `DASH_ML_PREDICTIONS_LIMIT` (default `3000`)
+- `DASH_TTL_ALERTS_S` (default `30`)
+- `DASH_TTL_SUPPLIER_PLAN_S` (default `30`)
+- `DASH_TTL_FOOT_TRAFFIC_S` (default `30`)
+- `DASH_TTL_DELTA_STATE_S` (default `20`)
+- `DASH_TTL_DELTA_OPS_S` (default `30`)
+- `DASH_TTL_ML_S` (default `60`)
 
 ## Notes on layout
 `store_layout.yaml` must use `coord_type: normalized` with bounds in `[0..1]`.

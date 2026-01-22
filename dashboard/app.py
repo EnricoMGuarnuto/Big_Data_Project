@@ -29,6 +29,14 @@ try:
 except Exception:
     DeltaTable = None
 
+# Optional Arrow helpers (used to make Delta reads cheaper)
+try:
+    import pyarrow as pa
+    import pyarrow.dataset as ds
+except Exception:
+    pa = None
+    ds = None
+
 try:
     from streamlit_plotly_events import plotly_events
 except Exception:
@@ -113,6 +121,31 @@ def _env_path(*keys: str, default: Path) -> Path:
             return Path(v)
     return default
 
+def _env_int(*keys: str, default: int) -> int:
+    for k in keys:
+        v = os.getenv(k)
+        if v is None:
+            continue
+        try:
+            return int(str(v).strip())
+        except Exception:
+            continue
+    return int(default)
+
+def _env_bool(*keys: str, default: bool) -> bool:
+    truthy = {"1", "true", "t", "yes", "y", "on"}
+    falsy = {"0", "false", "f", "no", "n", "off"}
+    for k in keys:
+        v = os.getenv(k)
+        if v is None:
+            continue
+        s = str(v).strip().lower()
+        if s in truthy:
+            return True
+        if s in falsy:
+            return False
+    return bool(default)
+
 # supports both the new names and the ones from the previous compose
 LAYOUT_YAML_PATH = _env_path("DASH_LAYOUT_YAML", "LAYOUT_YAML", "LAYOUT_YAML_PATH", default=DEFAULT_LAYOUT_YAML)
 INVENTORY_CSV_PATH = _env_path("INVENTORY_CSV_PATH", "INVENTORY_CSV", default=DEFAULT_INVENTORY_CSV)
@@ -129,7 +162,19 @@ DELTA_FOOT_TRAFFIC_PATH = _env_path("DL_FOOT_TRAFFIC_PATH", "DELTA_FOOT_TRAFFIC_
 ALERTS_TABLE_NAME = os.getenv("ALERTS_TABLE", "ops.alerts").strip()
 SUPPLIER_PLAN_TABLE_NAME = os.getenv("SUPPLIER_PLAN_TABLE", "ops.wh_supplier_plan").strip()
 
-AUTOREFRESH_MS = int(os.getenv("DASH_AUTOREFRESH_MS", os.getenv("DASH_REFRESH_MS", "1500")))
+AUTOREFRESH_MS = _env_int("DASH_AUTOREFRESH_MS", "DASH_REFRESH_MS", default=0)
+AUTOREFRESH_ENABLED_DEFAULT = _env_bool("DASH_AUTOREFRESH_ENABLED", default=(AUTOREFRESH_MS > 0))
+
+# Defaults to reduce load: override via env vars if you want more “live” behavior.
+DEFAULT_ALERTS_LIMIT = _env_int("DASH_ALERTS_LIMIT", default=1000)
+DEFAULT_ML_PREDICTIONS_LIMIT = _env_int("DASH_ML_PREDICTIONS_LIMIT", default=3000)
+
+TTL_ALERTS_S = _env_int("DASH_TTL_ALERTS_S", default=30)
+TTL_SUPPLIER_PLAN_S = _env_int("DASH_TTL_SUPPLIER_PLAN_S", default=30)
+TTL_FOOT_TRAFFIC_S = _env_int("DASH_TTL_FOOT_TRAFFIC_S", default=30)
+TTL_DELTA_STATE_S = _env_int("DASH_TTL_DELTA_STATE_S", default=20)
+TTL_DELTA_OPS_S = _env_int("DASH_TTL_DELTA_OPS_S", default=30)
+TTL_ML_S = _env_int("DASH_TTL_ML_S", default=60)
 
 # -----------------------------
 # DATA STRUCTURES
@@ -283,8 +328,8 @@ def get_pg_engine():
     must_have(create_engine is not None, "Manca SQLAlchemy. Installa sqlalchemy + psycopg2-binary.")
     return create_engine(postgres_url_from_env(), pool_pre_ping=True)
 
-@st.cache_data(ttl=2, show_spinner=False)
-def fetch_alerts() -> pd.DataFrame:
+@st.cache_data(ttl=TTL_ALERTS_S, show_spinner=False)
+def fetch_alerts(limit: int = DEFAULT_ALERTS_LIMIT) -> pd.DataFrame:
     eng = get_pg_engine()
     q = text(f"""
         SELECT
@@ -301,10 +346,10 @@ def fetch_alerts() -> pd.DataFrame:
             updated_at
         FROM {ALERTS_TABLE_NAME}
         ORDER BY created_at DESC
-        LIMIT 5000
+        LIMIT :limit
     """)
     with eng.connect() as c:
-        df = pd.read_sql(q, c)
+        df = pd.read_sql(q, c, params={"limit": int(limit)})
     if "alert_id" in df.columns:
         df["alert_id"] = df["alert_id"].astype(str)
     if "shelf_id" in df.columns:
@@ -313,7 +358,7 @@ def fetch_alerts() -> pd.DataFrame:
         df["status"] = df["status"].astype(str).str.strip().str.lower()
     return df
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=TTL_SUPPLIER_PLAN_S, show_spinner=False)
 def fetch_supplier_plan_pg(limit: int = 2000) -> pd.DataFrame:
     eng = get_pg_engine()
     q = text(f"""
@@ -327,10 +372,10 @@ def fetch_supplier_plan_pg(limit: int = 2000) -> pd.DataFrame:
             updated_at
         FROM {SUPPLIER_PLAN_TABLE_NAME}
         ORDER BY updated_at DESC
-        LIMIT {int(limit)}
+        LIMIT :limit
     """)
     with eng.connect() as c:
-        df = pd.read_sql(q, c)
+        df = pd.read_sql(q, c, params={"limit": int(limit)})
     if "shelf_id" in df.columns:
         df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
     if "status" in df.columns:
@@ -371,7 +416,7 @@ def fetch_standard_batch_sizes_pg() -> pd.DataFrame:
         log.warning("Cannot fetch standard_batch_size mapping from Postgres: %s", last_err)
     return pd.DataFrame(columns=["shelf_id", "standard_batch_size"])
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=TTL_FOOT_TRAFFIC_S, show_spinner=False)
 def fetch_store_foot_traffic(target_date: date) -> Tuple[Optional[date], Optional[int]]:
     eng = get_pg_engine()
     q = text("""
@@ -387,22 +432,77 @@ def fetch_store_foot_traffic(target_date: date) -> Tuple[Optional[date], Optiona
     return None, None
 
 def compute_live_foot_traffic(now_ts: pd.Timestamp) -> Optional[int]:
-    df = fetch_foot_traffic_raw(DELTA_FOOT_TRAFFIC_PATH)
-    if df.empty or "entry_time" not in df.columns:
-        return None
-    df = df[df["entry_time"].notna()].copy()
-    if df.empty:
-        return None
-    cutoff = now_ts - pd.Timedelta(days=1)
-    df = df[df["entry_time"] >= cutoff]
-    if df.empty:
-        return 0
-    if "exit_time" in df.columns:
-        exit_ts = df["exit_time"]
-        active = df[(df["entry_time"] <= now_ts) & (exit_ts.isna() | (exit_ts > now_ts))]
-    else:
-        active = df[df["entry_time"] <= now_ts]
-    return int(len(active))
+    # Optimized path: scan only needed columns and (when possible) push down a 1-day cutoff.
+    try:
+        if DeltaTable is None or ds is None or pa is None:
+            raise RuntimeError("Delta/Arrow not available")
+        delta_path = DELTA_FOOT_TRAFFIC_PATH
+        if not delta_path.exists() or not _is_delta_table(delta_path):
+            return None
+
+        dt = DeltaTable(str(delta_path))
+        dataset = dt.to_pyarrow_dataset()
+        names = set(dataset.schema.names)
+        if "entry_time" not in names:
+            return None
+
+        cutoff = now_ts - pd.Timedelta(days=1)
+        filter_expr = None
+        try:
+            entry_field = dataset.schema.field("entry_time")
+            if pa.types.is_timestamp(entry_field.type) or pa.types.is_date(entry_field.type):
+                cutoff_dt = cutoff.to_pydatetime()
+                now_dt = now_ts.to_pydatetime()
+                filter_expr = (ds.field("entry_time") >= cutoff_dt) & (ds.field("entry_time") <= now_dt)
+        except Exception:
+            filter_expr = None
+
+        cols = [c for c in ["entry_time", "exit_time"] if c in names]
+        scanner = dataset.scanner(columns=cols, filter=filter_expr, batch_size=65536)
+
+        active = 0
+        for batch in scanner.to_batches():
+            pdf = batch.to_pandas()
+            if pdf.empty or "entry_time" not in pdf.columns:
+                continue
+            pdf = pdf[pdf["entry_time"].notna()].copy()
+            if pdf.empty:
+                continue
+
+            pdf["entry_time"] = pd.to_datetime(pdf["entry_time"], errors="coerce", utc=True)
+            pdf = pdf[pdf["entry_time"].notna()]
+            if pdf.empty:
+                continue
+
+            pdf = pdf[pdf["entry_time"] >= cutoff]
+            if pdf.empty:
+                continue
+
+            if "exit_time" in pdf.columns:
+                pdf["exit_time"] = pd.to_datetime(pdf["exit_time"], errors="coerce", utc=True)
+                exit_ts = pdf["exit_time"]
+                active += int(((pdf["entry_time"] <= now_ts) & (exit_ts.isna() | (exit_ts > now_ts))).sum())
+            else:
+                active += int((pdf["entry_time"] <= now_ts).sum())
+        return int(active)
+    except Exception:
+        # Fallback path (older behavior).
+        df = fetch_foot_traffic_raw(DELTA_FOOT_TRAFFIC_PATH)
+        if df.empty or "entry_time" not in df.columns:
+            return None
+        df = df[df["entry_time"].notna()].copy()
+        if df.empty:
+            return None
+        cutoff = now_ts - pd.Timedelta(days=1)
+        df = df[df["entry_time"] >= cutoff]
+        if df.empty:
+            return 0
+        if "exit_time" in df.columns:
+            exit_ts = df["exit_time"]
+            active = df[(df["entry_time"] <= now_ts) & (exit_ts.isna() | (exit_ts > now_ts))]
+        else:
+            active = df[df["entry_time"] <= now_ts]
+        return int(len(active))
 
 def active_alerts(alerts_df: pd.DataFrame) -> pd.DataFrame:
     if alerts_df.empty or "status" not in alerts_df.columns:
@@ -419,7 +519,7 @@ def fetch_pg_table(table_name: str, limit: int = 2000) -> pd.DataFrame:
     raise RuntimeError("fetch_pg_table is deprecated; use Delta paths in fetch_state_delta.")
 
 # ML registry + predictions
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=TTL_ML_S, show_spinner=False)
 def fetch_ml_model_registry() -> pd.DataFrame:
     eng = get_pg_engine()
     q = text("""
@@ -431,17 +531,17 @@ def fetch_ml_model_registry() -> pd.DataFrame:
     with eng.connect() as c:
         return pd.read_sql(q, c)
 
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_ml_predictions(limit: int = 8000) -> pd.DataFrame:
+@st.cache_data(ttl=TTL_ML_S, show_spinner=False)
+def fetch_ml_predictions(limit: int = DEFAULT_ML_PREDICTIONS_LIMIT) -> pd.DataFrame:
     eng = get_pg_engine()
-    q = text(f"""
+    q = text("""
         SELECT model_name, feature_date, shelf_id, predicted_batches, suggested_qty, model_version, created_at
         FROM analytics.ml_predictions_log
         ORDER BY feature_date DESC, created_at DESC
-        LIMIT {int(limit)}
+        LIMIT :limit
     """)
     with eng.connect() as c:
-        df = pd.read_sql(q, c)
+        df = pd.read_sql(q, c, params={"limit": int(limit)})
     if not df.empty:
         df["shelf_id"] = df["shelf_id"].astype(str).str.strip()
         df["model_name"] = df["model_name"].astype(str).str.strip()
@@ -480,7 +580,43 @@ def _is_delta_table(delta_path: Path) -> bool:
             return True
     return False
 
-@st.cache_data(ttl=10, show_spinner=False)
+def _delta_to_pandas(
+    delta_path: Path,
+    *,
+    columns: Optional[List[str]] = None,
+    filter_expr=None,
+    max_rows: Optional[int] = None,
+) -> pd.DataFrame:
+    if DeltaTable is None or ds is None or pa is None:
+        raise RuntimeError("Delta/Arrow not available")
+    if not delta_path.exists() or not _is_delta_table(delta_path):
+        return pd.DataFrame()
+
+    dt = DeltaTable(str(delta_path))
+    dataset = dt.to_pyarrow_dataset()
+    use_columns = None
+    if columns:
+        available = set(dataset.schema.names)
+        use_columns = [c for c in columns if c in available]
+        if not use_columns:
+            use_columns = None
+
+    scanner = dataset.scanner(columns=use_columns, filter=filter_expr, batch_size=65536)
+    batches = []
+    rows = 0
+    for batch in scanner.to_batches():
+        batches.append(batch)
+        rows += int(batch.num_rows)
+        if max_rows is not None and rows >= int(max_rows):
+            break
+    if not batches:
+        return pd.DataFrame()
+    table = pa.Table.from_batches(batches)
+    if max_rows is not None:
+        table = table.slice(0, int(max_rows))
+    return table.to_pandas()
+
+@st.cache_data(ttl=TTL_DELTA_OPS_S, show_spinner=False)
 def fetch_supplier_orders(delta_path: Path) -> pd.DataFrame:
     if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
         return pd.DataFrame()
@@ -501,7 +637,7 @@ def fetch_supplier_orders(delta_path: Path) -> pd.DataFrame:
         df["status"] = df["status"].astype(str).str.strip().str.lower()
     return df
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=TTL_DELTA_OPS_S, show_spinner=False)
 def fetch_supplier_plan_delta(delta_path: Path) -> pd.DataFrame:
     if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
         return pd.DataFrame()
@@ -526,17 +662,40 @@ def fetch_supplier_plan_delta(delta_path: Path) -> pd.DataFrame:
         df["plan_date"] = pd.to_datetime(df["plan_date"], errors="coerce").dt.date
     return df
 
-@st.cache_data(ttl=10, show_spinner=False)
-def fetch_wh_events_raw(delta_path: Path) -> pd.DataFrame:
+@st.cache_data(ttl=TTL_DELTA_OPS_S, show_spinner=False)
+def fetch_wh_events_raw(delta_path: Path, event_type: Optional[str] = None) -> pd.DataFrame:
     if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
         return pd.DataFrame()
     try:
-        dt = DeltaTable(str(delta_path))
+        if ds is not None and pa is not None:
+            filter_expr = None
+            try:
+                if event_type is not None:
+                    filter_expr = ds.field("event_type") == str(event_type).strip().lower()
+            except Exception:
+                filter_expr = None
+
+            df = _delta_to_pandas(
+                delta_path,
+                columns=[
+                    "event_id",
+                    "event_type",
+                    "shelf_id",
+                    "batch_code",
+                    "qty",
+                    "unit",
+                    "timestamp",
+                    "received_date",
+                    "reason",
+                ],
+                filter_expr=filter_expr,
+            )
+        else:
+            dt = DeltaTable(str(delta_path))
+            df = dt.to_pandas()
     except Exception as e:
         log.warning("Delta table not available at %s: %s", delta_path, e)
         return pd.DataFrame()
-
-    df = dt.to_pandas()
     if df.empty:
         return df
 
@@ -565,7 +724,7 @@ def fetch_wh_events_raw(delta_path: Path) -> pd.DataFrame:
             df = df.drop_duplicates(subset=subset, keep="last").copy()
     return df
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=TTL_FOOT_TRAFFIC_S, show_spinner=False)
 def fetch_foot_traffic_raw(delta_path: Path) -> pd.DataFrame:
     if DeltaTable is None or not delta_path.exists() or not _is_delta_table(delta_path):
         return pd.DataFrame()
@@ -585,7 +744,7 @@ def fetch_foot_traffic_raw(delta_path: Path) -> pd.DataFrame:
         df["exit_time"] = pd.to_datetime(df["exit_time"], errors="coerce", utc=True)
     return df
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=TTL_DELTA_STATE_S, show_spinner=False)
 def fetch_state_delta(table_name: str, limit: int = 2000) -> pd.DataFrame:
     allow = {
         "shelf_state": DELTA_SHELF_STATE_PATH,
@@ -765,8 +924,53 @@ def main():
     must_have(yaml is not None, "Installa 'pyyaml' nei requirements.")
     must_have(plotly_events is not None, "Installa 'streamlit-plotly-events' nei requirements.")
 
-    if st_autorefresh is not None:
-        st_autorefresh(interval=AUTOREFRESH_MS, key="autorefresh")
+    with st.sidebar:
+        st.header("Performance")
+
+        if st_autorefresh is None:
+            st.caption("Auto-refresh disabled (streamlit-autorefresh not installed).")
+            enable_autorefresh = False
+        else:
+            enable_autorefresh = st.checkbox("Auto-refresh", value=AUTOREFRESH_ENABLED_DEFAULT)
+
+        interval_s_default = max(1, int(AUTOREFRESH_MS / 1000)) if AUTOREFRESH_MS > 0 else 10
+        interval_s = st.number_input(
+            "Refresh interval (seconds)",
+            min_value=1,
+            max_value=300,
+            value=int(interval_s_default),
+            step=1,
+            disabled=not enable_autorefresh,
+        )
+
+        alerts_limit = st.number_input(
+            "Alerts max rows",
+            min_value=100,
+            max_value=5000,
+            value=int(DEFAULT_ALERTS_LIMIT),
+            step=100,
+        )
+
+        ml_preds_limit = st.number_input(
+            "ML predictions max rows",
+            min_value=200,
+            max_value=20000,
+            value=int(DEFAULT_ML_PREDICTIONS_LIMIT),
+            step=200,
+        )
+
+        compute_live_ft = st.checkbox(
+            "Compute live foot traffic (Delta)",
+            value=_env_bool("DASH_LIVE_FOOT_TRAFFIC", "DASH_COMPUTE_LIVE_FOOT_TRAFFIC", default=True),
+        )
+
+        if st.button("Refresh now"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
+
+    if enable_autorefresh and st_autorefresh is not None:
+        st_autorefresh(interval=int(interval_s) * 1000, key="autorefresh")
 
     map_img_path, zones, _ = load_layout(LAYOUT_YAML_PATH)
     inv = load_inventory(INVENTORY_CSV_PATH)
@@ -775,13 +979,14 @@ def main():
     st.title("Supermarket Live Dashboard")
     render_simulated_time()
 
-    tabs = st.tabs(["Map Live", "States", "Supplier Plan", "ML Model", "Alerts (raw)", "Debug"])
+    pages = ["Map Live", "States", "Supplier Plan", "ML Model", "Alerts (raw)", "Debug"]
+    page = st.radio("View", pages, horizontal=True)
 
-    # TAB 0: MAP LIVE
-    with tabs[0]:
+    # PAGE: MAP LIVE
+    if page == "Map Live":
         col_left, col_right = st.columns([1.15, 0.85], gap="large")
 
-        alerts_df = fetch_alerts()
+        alerts_df = fetch_alerts(limit=int(alerts_limit))
         act_alerts = active_alerts(alerts_df)
         store_alerts, wh_alerts = split_alerts_by_location(act_alerts)
 
@@ -814,10 +1019,8 @@ def main():
             st.markdown("**Current foot traffic**")
             try:
                 sim_day = now_utc_ts().date()
-                live_count = compute_live_foot_traffic(now_utc_ts())
-                if live_count is not None:
-                    st.metric("People count (live)", int(live_count))
-                else:
+                live_count = compute_live_foot_traffic(now_utc_ts()) if compute_live_ft else None
+                if live_count is None:
                     ft_date, ft_count = fetch_store_foot_traffic(sim_day)
                     if ft_date is None:
                         st.info("Foot traffic data not available.")
@@ -825,6 +1028,8 @@ def main():
                         st.metric("People count (latest)", int(ft_count))
                         if ft_date != sim_day:
                             st.caption(f"Latest available date: {ft_date}")
+                else:
+                    st.metric("People count (live)", int(live_count))
             except Exception as e:
                 st.warning(f"Foot traffic error: {e}")
 
@@ -876,8 +1081,8 @@ def main():
             else:
                 st.caption("Click a map section to see alerts in that area.")
 
-    # TAB 1: STATES
-    with tabs[1]:
+    # PAGE: STATES
+    elif page == "States":
         st.subheader("States (Delta)")
         left, right = st.columns([0.35, 0.65], gap="large")
 
@@ -933,8 +1138,8 @@ def main():
 
                 st.dataframe(show, use_container_width=True)
 
-    # TAB 2: SUPPLIER PLAN
-    with tabs[2]:
+    # PAGE: SUPPLIER PLAN
+    elif page == "Supplier Plan":
         st.subheader("WH Supplier Plan")
 
         orders_df = fetch_supplier_orders(DELTA_SUPPLIER_ORDERS_PATH)
@@ -950,11 +1155,11 @@ def main():
                 st.caption(f"Last supplier order ({last_source}): {last_value}")
 
         st.markdown("**Warehouse restock status**")
-        events_df = fetch_wh_events_raw(DELTA_WH_EVENTS_RAW_PATH)
+        events_df = fetch_wh_events_raw(DELTA_WH_EVENTS_RAW_PATH, event_type="wh_in")
         if events_df.empty or "event_type" not in events_df.columns:
             st.info("No restock events found (wh_events delta not available).")
         else:
-            restocks = events_df[events_df["event_type"] == "wh_in"].copy()
+            restocks = events_df.copy()
             if restocks.empty:
                 st.info("No restock events found.")
             else:
@@ -991,11 +1196,11 @@ def main():
                             "qty", "unit", "received_date", "timestamp", "batch_code", "reason"
                         ] if c in day_df.columns
                     ]
-                    st.markdown("**Restocked products (last restock day):**")
-                    if show_cols:
-                        st.dataframe(day_df[show_cols].sort_values(show_cols[0]).head(3000), use_container_width=True)
-                    else:
-                        st.info("Restock event columns not available.")
+                st.markdown("**Restocked products (last restock day):**")
+                if show_cols:
+                    st.dataframe(day_df[show_cols].sort_values(show_cols[0]).head(3000), use_container_width=True)
+                else:
+                    st.info("Restock event columns not available.")
 
         left, right = st.columns([0.35, 0.65], gap="large")
         with left:
@@ -1047,12 +1252,12 @@ def main():
                 st.caption(f"Data source: {data_source}")
                 st.dataframe(df_plan, use_container_width=True)
 
-    # TAB 3: ML MODEL
-    with tabs[3]:
+    # PAGE: ML MODEL
+    elif page == "ML Model":
         st.subheader("ML Model")
 
         reg = fetch_ml_model_registry()
-        preds = fetch_ml_predictions(limit=12000)
+        preds = fetch_ml_predictions(limit=int(ml_preds_limit))
 
         if reg.empty:
             st.warning("No model registered in analytics.ml_models.")
@@ -1111,17 +1316,17 @@ def main():
             st.markdown("**Predictions (filtered):**")
             st.dataframe(show.head(3000), use_container_width=True)
 
-    # TAB 4: ALERTS RAW
-    with tabs[4]:
+    # PAGE: ALERTS RAW
+    elif page == "Alerts (raw)":
         st.subheader("Alerts (Postgres table)")
-        df = fetch_alerts()
+        df = fetch_alerts(limit=int(alerts_limit))
         if df.empty:
             st.info("No alerts found.")
         else:
             st.dataframe(df, use_container_width=True)
 
-    # TAB 5: DEBUG
-    with tabs[5]:
+    # PAGE: DEBUG
+    elif page == "Debug":
         st.subheader("Debug / Config")
         st.write("PROJECT_ROOT:", str(PROJECT_ROOT))
         st.write("LAYOUT_YAML_PATH:", str(LAYOUT_YAML_PATH))
@@ -1130,7 +1335,11 @@ def main():
         st.write("DELTA_SUPPLIER_ORDERS_PATH:", str(DELTA_SUPPLIER_ORDERS_PATH))
         st.write("ALERTS_TABLE_NAME:", ALERTS_TABLE_NAME)
         st.write("SUPPLIER_PLAN_TABLE_NAME:", SUPPLIER_PLAN_TABLE_NAME)
-        st.write("AUTOREFRESH_MS:", AUTOREFRESH_MS)
+        st.write("AUTOREFRESH_MS (env default):", AUTOREFRESH_MS)
+        st.write("TTL_ALERTS_S:", TTL_ALERTS_S)
+        st.write("TTL_DELTA_STATE_S:", TTL_DELTA_STATE_S)
+        st.write("TTL_DELTA_OPS_S:", TTL_DELTA_OPS_S)
+        st.write("TTL_ML_S:", TTL_ML_S)
         st.write("SIM_TIME_OK:", SIM_TIME_OK)
         if SIM_TIME_OK:
             st.write("SIM_NOW_UTC:", now_utc_ts().isoformat())

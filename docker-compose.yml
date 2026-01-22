@@ -799,7 +799,11 @@ services:
       POSTGRES_USER: "bdt_user"
       POSTGRES_PASSWORD: "bdt_password"
       ALERTS_TABLE: "ops.alerts"
-      DASH_REFRESH_MS: "1000"
+      # Reduce default load: auto-refresh can still be enabled in the UI/sidebar.
+      DASH_REFRESH_MS: "0"
+      DASH_AUTOREFRESH_ENABLED: "0"
+      DASH_ALERTS_LIMIT: "1000"
+      DASH_ML_PREDICTIONS_LIMIT: "3000"
       BLINK_SECONDS: "1.2"
       PYTHONPATH: /app
     depends_on:
