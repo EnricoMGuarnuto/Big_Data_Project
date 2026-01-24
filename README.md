@@ -8,8 +8,120 @@ End-to-end (simulated) system to **monitor stock and batches** for a supermarket
 
 ---
 
+## Repository Structure
+
+```text
+.
+├── docker-compose.yml                 # Full stack (Kafka/Redis/Postgres/Kafka Connect/Spark apps/ML dashboard)
+├── conf/                              # Spark config (spark-defaults.conf)
+├── data/                              # Synthetic datasets + generators + CSVs for Postgres bootstrap
+│   ├── create_db.py
+│   ├── create_simulation_data.py
+│   ├── create_discounts.py
+│   ├── store_inventory_final.parquet
+│   ├── warehouse_inventory_final.parquet
+│   ├── store_batches.parquet
+│   ├── warehouse_batches.parquet
+│   ├── all_discounts.parquet
+│   ├── sim_out/                       # Generated simulation outputs                 
+├── delta/                             # Local Delta Lake (raw/cleansed/ops/analytics + checkpoint)
+├── dashboard/                         # Streamlit dashboard (map, alerts, state, ML)
+│   ├── app.py
+│   ├── store_layout.yaml
+│   └── assets/
+├── images/                            # Logo + diagrams + dashboard screenshots
+├── kafka-components/                  # Kafka components (topics, connect, producers)
+│   ├── kafka-init/                    # Create topics (append-only + compacted)
+│   ├── kafka-connect/                 # Kafka Connect + JDBC connector init
+│   ├── kafka-producer-foot_traffic/   # Foot traffic producer (session + realistic)
+│   ├── kafka-producer-shelf/          # Producer shelf events (pickup/putback/weight_change)
+│   ├── kafka-producer-pos/            # POS transactions producer (from foot traffic + shelf events)
+│   ├── shelf-daily-features/          # Kafka-based service for daily ML features
+│   ├── daily-discount-manager/        # Kafka-based near-expiry discounts
+│   ├── removal-scheduler/             # Kafka-based expired batch removal
+│   └── wh-supplier-manager/           # Kafka-based supplier orders/receipts + wh_in
+├── ml-model/                          # ML services (training + inference)
+│   ├── training-service/              # Train XGBoost, register in Postgres, write artifacts to /models
+│   └── inference-service/             # Cutoff-time inference (Sun/Tue/Thu), write pending wh_supplier_plan, log predictions
+├── models/                            # Model artifacts + feature columns (mounted to /models)
+├── postgresql/                        # DDL + init SQL (ref/config/state/ops/analytics + views)
+│   ├── 01_make_db.sql
+│   ├── 02_load_ref_from_csv.sql
+│   ├── 03_load_config.sql
+│   └── 05_views.sql
+├── simulated_time/                    # Shared simulated clock (Redis)
+├── spark-apps/                        # Spark Structured Streaming jobs
+│   ├── deltalake/                     # Bootstrap empty Delta tables
+│   ├── foot-traffic-raw-sink/         # Kafka foot_traffic -> Delta raw
+│   ├── shelf-aggregator/              # shelf_events -> raw + shelf_state (Delta + Kafka compacted)
+│   ├── batch-state-updater/           # pos_transactions -> shelf_batch_state (Delta + Kafka compacted)
+│   ├── shelf-alert-engine/            # shelf_state -> alerts + shelf_restock_plan
+│   ├── shelf-restock-manager/         # shelf_restock_plan -> wh_events (FIFO picking)
+│   ├── shelf-refill-bridge/           # wh_events (wh_out) -> shelf_events (delay)
+│   ├── wh-aggregator/                 # wh_events -> wh_state
+│   ├── wh-batch-state-updater/        # wh_events -> wh_batch_state (+ mirror store batches)
+│   ├── wh-alert-engine/               # wh_state -> alerts + wh_supplier_plan
+│   └── alerts-sink/                   # alerts -> Delta (+ optional Postgres)
+```
+
+---
+
+
+## How to Run (Quickstart)
+
+### Prerequisites
+
+- Docker + Docker Compose
+- Internet connection during build (some images download dependencies/JARs)
+- Python 3.x (Required for pre-launch data generation)
+- Minimum resources (full stack, all services):
+  - **CPU**: 8 vCPU
+  - **RAM**: 16 GB
+  Below that (e.g., 4 vCPU / 8 GB) the stack may still boot, but Spark jobs will contend heavily with Kafka/Postgres and you should expect frequent backpressure, long startup times, or OOMs during backfill.
+
+### Minimal steps to start the full stack
+
+```bash
+git clone <https://github.com/EnricoMGuarnuto/Big_Data_Project.git>
+cd Big_Data_Project
+```
+
+Once the repository is cloned, it is required to run the two main files that create the simulation data:
+```bash
+python create_db.py
+python create_simulation_data.py
+```
+
+Start the Stack:
+```bash
+docker compose up -d --build
+```
+
+Verify services are up:
+
+```bash
+docker compose ps
+```
+
+Main services exposed:
+
+- Postgres: `localhost:5432`
+- Kafka Connect: `localhost:8083`
+- Dashboard (optional): `http://localhost:8501`
+
+Stop the stack:
+
+```bash
+docker compose down
+```
+
+For prerequisites, optional services, and troubleshooting see [How to Run](#how-to-run).
+
+---
+
 ## Table of Contents
 
+- [How to Run (Quickstart)](#how-to-run-quickstart)
 - [Project Overview](#project-overview)
 - [Architecture](#architecture)
   - [Data Pipeline](#data-pipeline)
@@ -44,6 +156,7 @@ The idea is to simulate a "Smart Shelf" system where:
 - **ML services** (training/inference) generate replenishment forecasts and publish them to Postgres/Delta.
 
 Note on workload: the system is computationally intensive primarily because it relies on end-to-end simulation of data that, in a production setting, would be obtained from retailer APIs (live operational streams) or from pre-existing, non-simulated datasets captured from real stores. Since such sources were not available for this project, we generated synthetic event and inventory/batch data to drive and validate the full pipeline under realistic operating assumptions.
+To ensure the simulation reflects realistic retail dynamics, the synthetic product catalog and structures were modeled after real-world operational data provided by a Conad supermarket (Scandiano, Italy), which gave us access to its inventory. This allows the pipeline to operate on a representative variety of product categories and turnover rates.
 
 ---
 
@@ -141,57 +254,6 @@ Note on workload: the system is computationally intensive primarily because it r
 
 ---
 
-## Repository Structure
-
-```text
-.
-├── docker-compose.yml                 # Full stack (Kafka/Redis/Postgres/Kafka Connect/Spark apps/ML dashboard)
-├── conf/                              # Spark config (spark-defaults.conf)
-├── data/                              # Synthetic datasets + generator + CSVs for Postgres bootstrap
-│   ├── create_db.py
-│   └── db_csv/                        # CSVs imported by Postgres during init
-├── delta/                             # Local Delta Lake (raw/cleansed/ops/analytics + checkpoint)
-├── dashboard/                         # Streamlit dashboard (map, alerts, state, ML)
-│   ├── app.py
-│   ├── store_layout.yaml
-│   └── assets/
-├── images/                            # Logo + diagrams + dashboard screenshots
-├── kafka-components/                  # Kafka components (topics, connect, producers)
-│   ├── kafka-init/                    # Create topics (append-only + compacted)
-│   ├── kafka-connect/                 # Kafka Connect + JDBC connector init
-│   ├── kafka-producer-foot_traffic/   # Foot traffic producer (session + realistic)
-│   ├── kafka-producer-shelf/          # Producer shelf events (pickup/putback/weight_change)
-│   └── kafka-producer-pos/            # POS transactions producer (from foot traffic + shelf events)
-├── ml-model/                          # ML services (training + inference)
-│   ├── training-service/              # Train XGBoost, register in Postgres, write artifacts to /models
-│   └── inference-service/             # Cutoff-time inference (Sun/Tue/Thu), write pending wh_supplier_plan, log predictions
-├── models/                            # Model artifacts + feature columns (mounted to /models)
-├── postgresql/                        # DDL + init SQL (ref/config/state/ops/analytics + views)
-│   ├── 01_make_db.sql
-│   ├── 02_load_ref_from_csv.sql
-│   ├── 03_load_config.sql
-│   └── 05_views.sql
-├── simulated_time/                    # Shared simulated clock (Redis)
-├── spark-apps/                        # Spark Structured Streaming jobs
-│   ├── deltalake/                     # Bootstrap empty Delta tables
-│   ├── foot-traffic-raw-sink/         # Kafka foot_traffic -> Delta raw
-│   ├── shelf-aggregator/              # shelf_events -> raw + shelf_state (Delta + Kafka compacted)
-│   ├── batch-state-updater/           # pos_transactions -> shelf_batch_state (Delta + Kafka compacted)
-│   ├── shelf-alert-engine/            # shelf_state -> alerts + shelf_restock_plan
-│   ├── shelf-restock-manager/         # shelf_restock_plan -> wh_events (FIFO picking)
-│   ├── shelf-refill-bridge/           # wh_events (wh_out) -> shelf_events (delay)
-│   ├── wh-aggregator/                 # wh_events -> wh_state
-│   ├── wh-batch-state-updater/        # wh_events -> wh_batch_state (+ mirror store batches)
-│   ├── wh-alert-engine/               # wh_state -> alerts + wh_supplier_plan
-│   ├── wh-supplier-manager/           # Supplier orders/receipts + wh_in events
-│   ├── daily-discount-manager/        # near-expiry -> daily_discounts
-│   ├── removal-scheduler/             # Expired batch removal + optional alerts
-│   ├── shelf-daily-features/          # Daily features for ML
-│   └── alerts-sink/                   # alerts -> Delta (+ optional Postgres)
-```
-
----
-
 ## Data & Topics
 
 ### Dataset (bootstrap)
@@ -242,62 +304,6 @@ Configuration (main env vars):
 - `STEP_SECONDS` (default `1`)
 - `SIM_DAYS` (default `365`, from `SIM_START` defined in `simulated_time/config.py`)
 
-Start:
-
-```bash
-docker compose up -d redis sim-clock
-```
-
----
-
-## How to Run
-
-### Prerequisites
-
-- Docker + Docker Compose
-- Internet connection during build (some images download dependencies/JARs)
-
-### Start
-
-```bash
-docker compose up -d --build
-```
-
-Main services exposed:
-
-- Postgres: `localhost:5432`
-- Kafka Connect: `localhost:8083`
-
-Postgres credentials (defaults from `docker-compose.yml`):
-
-- DB: `smart_shelf`
-- User: `bdt_user`
-- Password: `bdt_password`
-
-To check status:
-
-```bash
-docker compose ps
-docker compose logs -f kafka-init connect-init spark-init-delta
-```
-
-### Dashboard & ML (optional)
-
-- Streamlit dashboard: `http://localhost:8501` (service `dashboard`).
-- ML pipeline: `shelf-daily-features` → `training-service` → `inference-service`.
-
-Examples (after starting the base infrastructure):
-
-```bash
-docker compose up -d dashboard
-docker compose up -d sim-clock shelf-daily-features training-service inference-service
-```
-
-### Stop
-
-```bash
-docker compose down
-```
 
 ---
 
@@ -464,23 +470,6 @@ Note:
 
 This project runs multiple stateful services (Kafka, Postgres, Redis, Spark streaming jobs, optional Kafka Connect, ML services, and a Streamlit UI). Running the full stack is CPU- and RAM-intensive, and the first run can be particularly heavy when Spark jobs start from `STARTING_OFFSETS=earliest` (they may backfill large portions of the topics).
 
-### Run a minimal subset
-
-Prefer starting only what you need for the task you are validating:
-
-```bash
-# Base infrastructure (fastest minimal core)
-docker compose up -d zookeeper kafka redis postgres
-
-# One-shot initializers (run when you need to (re)create topics / Delta layout)
-docker compose up -d kafka-init spark-init-delta
-
-# Optional: Kafka Connect + connector registration
-docker compose up -d kafka-connect
-docker compose run --rm connect-init
-```
-
-Then add only the producers / Spark apps you want to observe (e.g., shelf events + aggregation, or alerts, or supplier planning).
 
 ### Tuning knobs (simulation and Spark)
 
