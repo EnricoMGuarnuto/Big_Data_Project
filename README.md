@@ -122,65 +122,89 @@ For prerequisites, optional services, and troubleshooting see [How to Run](#how-
 
 ## Table of Contents
 
-- [Smart Shelf — Big Data Project](#smart-shelf--big-data-project)
-  - [Repository Structure](#repository-structure)
-  - [How to Run (Quickstart)](#how-to-run-quickstart)
-    - [Prerequisites](#prerequisites)
-    - [Minimal steps to start the full stack](#minimal-steps-to-start-the-full-stack)
-  - [Table of Contents](#table-of-contents)
-  - [Project Overview](#project-overview)
-  - [Architecture](#architecture)
-    - [Data Pipeline](#data-pipeline)
-    - [Data Flow](#data-flow)
-  - [Tech Stack](#tech-stack)
-    - [Technologies and Justification](#technologies-and-justification)
-      - [Core Technologies](#core-technologies)
-      - [Real-Time Streaming \& Ingestion](#real-time-streaming--ingestion)
-      - [Stream Processing \& Lakehouse Storage](#stream-processing--lakehouse-storage)
-      - [Databases \& Data Access](#databases--data-access)
-      - [Visualization](#visualization)
-      - [Machine Learning](#machine-learning)
-      - [Supporting Libraries](#supporting-libraries)
-  - [Data \& Topics](#data--topics)
-    - [Dataset (bootstrap)](#dataset-bootstrap)
-    - [Kafka topics](#kafka-topics)
-    - [Delta Lake layout (main paths)](#delta-lake-layout-main-paths)
-  - [Simulated Time](#simulated-time)
-  - [Spark Apps](#spark-apps)
-  - [Kafka Connect](#kafka-connect)
-  - [PostgreSQL Schemas](#postgresql-schemas)
-  - [Streamlit Dashboard](#streamlit-dashboard)
-    - [Data sources](#data-sources)
-    - [Run](#run)
-    - [Results (dashboard)](#results-dashboard)
-  - [ML / Demand Forecasting](#ml--demand-forecasting)
-    - [Feature set](#feature-set)
-    - [Main outputs](#main-outputs)
-    - [Run](#run-1)
-  - [Performance](#performance)
-    - [Resource footprint](#resource-footprint)
-    - [Tuning knobs (simulation and Spark)](#tuning-knobs-simulation-and-spark)
-    - [Disk usage (Delta + checkpoints)](#disk-usage-delta--checkpoints)
-  - [Troubleshooting](#troubleshooting)
+- [Repository Structure](#repository-structure)
+- [How to Run (Quickstart)](#how-to-run-quickstart)
+- [Prerequisites](#prerequisites)
+- [Minimal steps to start the full stack](#minimal-steps-to-start-the-full-stack)
+- [Project Overview](#project-overview)
+- [How it works (high level)](#how-it-works-high-level)
+- [Aim and ambition](#aim-and-ambition)
+- [Architecture](#architecture)
+- [Data Pipeline](#data-pipeline)
+- [Data Flow](#data-flow)
+- [Tech Stack](#tech-stack)
+- [Technologies and Justification](#technologies-and-justification)
+- [Core Technologies](#core-technologies)
+- [Real-Time Streaming & Ingestion](#real-time-streaming--ingestion)
+- [Stream Processing & Lakehouse Storage](#stream-processing--lakehouse-storage)
+- [Databases & Data Access](#databases--data-access)
+- [Visualization](#visualization)
+- [Machine Learning](#machine-learning)
+- [Supporting Libraries](#supporting-libraries)
+- [Data & Topics](#data--topics)
+- [Dataset (bootstrap)](#dataset-bootstrap)
+- [Kafka topics](#kafka-topics)
+- [Delta Lake layout (main paths)](#delta-lake-layout-main-paths)
+- [Simulated Time](#simulated-time)
+- [Kafka (Producers & Consumers)](#kafka-producers--consumers)
+- [Producers (simulation + scheduling)](#producers-simulation--scheduling)
+- [Consumers and “manager” services](#consumers-and-manager-services)
+- [Spark Apps](#spark-apps)
+- [Spark jobs (by role)](#spark-jobs-by-role)
+- [Kafka Connect](#kafka-connect)
+- [PostgreSQL Schemas](#postgresql-schemas)
+- [Streamlit Dashboard](#streamlit-dashboard)
+- [Data sources](#data-sources)
+- [Run](#run)
+- [Results (dashboard)](#results-dashboard)
+- [Store Live + Alerts](#store-live--alerts)
+- [Supplier Plan (Plan Created)](#supplier-plan-plan-created)
+- [Supplier Plan (Restock Delivered)](#supplier-plan-restock-delivered)
+- [ML Model (Training Ready)](#ml-model-training-ready)
+- [ML Model (Predicted Quantity)](#ml-model-predicted-quantity)
+- [Alerts Table (Raw Live)](#alerts-table-raw-live)
+- [ML / Demand Forecasting](#ml--demand-forecasting)
+- [Feature set](#feature-set)
+- [Main outputs](#main-outputs)
+- [Run (ML)](#run-1)
+- [Performance](#performance)
+- [Resource footprint](#resource-footprint)
+- [Tuning knobs (simulation and Spark)](#tuning-knobs-simulation-and-spark)
+- [Disk usage (Delta + checkpoints)](#disk-usage-delta--checkpoints)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Project Overview
 
-The idea is to simulate a "Smart Shelf" system where:
+This project simulates a **Smart Shelf retail system** end to end: from raw store activity, to operational decisions, to a live dashboard and a forecasting model.
 
-- **Sensors / events** (simulated) produce data streams: customer entries/exits, pickup/putback/weight change on shelves, POS transactions, warehouse movements.
-- **Kafka** is the streaming bus, with **append-only** topics (events) and **compacted** topics (state/metadata).
-- **Spark Structured Streaming** builds and maintains **state** (e.g. `shelf_state`, `wh_state`, batch states), generates **alerts** and **restock plans**.
-- **Delta Lake (filesystem)** is the data lake (raw/cleansed/ops/analytics).
-- **PostgreSQL** stores reference snapshots, config/policy, and materializations useful for queries/serving.
-- **Kafka Connect (JDBC)** synchronizes Postgres ↔ Kafka for metadata and state tables.
-- **Simulated time** (Redis) provides a shared clock for deterministic demos.
-- **Streamlit dashboard** displays the store map, alerts, states, supplier plans, and ML outputs.
-- **ML services** (training/inference) generate replenishment forecasts and publish them to Postgres/Delta.
+In plain terms, the goal is to answer:
 
-Note on workload: the system is computationally intensive primarily because it relies on end-to-end simulation of data that, in a production setting, would be obtained from retailer APIs (live operational streams) or from pre-existing, non-simulated datasets captured from real stores. Since such sources were not available for this project, we generated synthetic event and inventory/batch data to drive and validate the full pipeline under realistic operating assumptions.
-To ensure the simulation reflects realistic retail dynamics, the synthetic product catalog and structures were modeled after real-world operational data provided by a Conad supermarket (Scandiano, Italy), which gave us access to its inventory. This allows the pipeline to operate on a representative variety of product categories and turnover rates.
+- What is happening in the store *right now*?
+- What needs attention soon (alerts)?
+- What should we restock, and when?
+- Can we forecast demand early enough to plan supplier deliveries?
+
+### How it works (high level)
+
+1. **Simulate store activity.**
+   We generate realistic streams of events such as customer traffic, shelf interactions (pickup/putback/weight change), POS sales, and warehouse movements.
+2. **Build the current state.**
+   Streaming jobs continuously turn those raw events into the latest “truth” (current shelf levels, warehouse levels, and batch/expiry state).
+3. **Trigger operational decisions.**
+   On top of the state, the system produces alerts and replenishment plans (store restock and supplier plans).
+4. **Forecast ahead of cutoff times.**
+   An ML pipeline runs on daily features and predicts how many batches should be ordered before supplier cutoffs.
+5. **Make everything visible.**
+   A dashboard surfaces the live map, alerts, states, plans, and ML outputs so the system can be inspected during a run.
+
+### Aim and ambition
+
+- **Aim:** show a complete, working blueprint of a modern retail data pipeline that supports real-time monitoring and decision-making.
+- **Ambition:** go beyond “just streaming” by combining simulation, stateful processing, operational planning, and ML-driven forecasting in one coherent system.
+
+Note on workload and data realism: this project is computationally heavy because it simulates the full pipeline. In a production scenario, much of this data would come from real retailer APIs or existing datasets. Since those were not available, we generated synthetic event and inventory/batch data to drive and validate the system under realistic assumptions. The synthetic catalog and structures were modeled after real operational data provided by a Conad supermarket (Scandiano (RE), Italy), giving the simulation a representative mix of product categories and turnover patterns.
 
 ---
 
@@ -333,22 +357,58 @@ Configuration (main env vars):
 
 ---
 
+## Kafka (Producers & Consumers)
+
+Kafka is the central event bus. Different components publish events, while others consume them to build state, trigger actions, or persist results.
+
+### Producers (simulation + scheduling)
+
+- `kafka-components/kafka-init/`: creates the topics used by the pipeline (append-only events and compacted state/metadata).
+- `kafka-components/kafka-producer-foot_traffic/`: simulates customer entries/exits and publishes `foot_traffic` events.
+- `kafka-components/kafka-producer-shelf/`: simulates shelf sensor activity (pickup/putback/weight change) and publishes `shelf_events`.
+- `kafka-components/kafka-producer-pos/`: simulates carts/checkouts and publishes `pos_transactions` (it also listens to shelf/foot traffic to keep the simulation coherent).
+
+### Consumers and “manager” services
+
+- Spark jobs in `spark-apps/` are the main Kafka consumers. They turn raw events into state, alerts, and plans.
+- `kafka-components/wh-supplier-manager/`: consumes supplier plans around cutoff times, issues supplier orders/receipts, and publishes the resulting `wh_events`.
+- `kafka-components/daily-discount-manager/`: publishes daily discount updates (and mirrors them to Delta).
+- `kafka-components/removal-scheduler/`: publishes removal events for expirations/cleanup scenarios.
+- `kafka-components/shelf-daily-features/`: runs a daily batch that reads operational tables and writes `analytics.shelf_daily_features` for ML.
+
+Kafka Connect is described separately below because it is an integration layer between Kafka and Postgres rather than a simulation or processing component.
+
+---
+
 ## Spark Apps
 
-Spark jobs live in `spark-apps/` and run as dedicated containers (base `apache/spark:3.5.1-python3`).
+Spark jobs live in `spark-apps/` and run as dedicated containers (base image `apache/spark:3.5.1-python3`).
 
-Main components (see the README in each folder):
+In this project, Spark is the “state engine.” It continuously consumes Kafka events and maintains the latest operational state, then derives alerts and plans on top of that state.
 
-- `spark-apps/deltalake/`: initialize empty Delta tables (raw/cleansed/ops/analytics).
+### Spark jobs (by role)
+
+Initialization:
+- `spark-apps/deltalake/`: initializes empty Delta tables for raw/cleansed/ops/analytics layers.
+
+Raw sinks:
 - `spark-apps/foot-traffic-raw-sink/`: Kafka `foot_traffic` → Delta raw.
-- `spark-apps/shelf-aggregator/`: Kafka `shelf_events` (+ `shelf_profiles`) → Delta raw + Delta `shelf_state` + compacted `shelf_state` topic.
-- `spark-apps/batch-state-updater/`: Kafka `pos_transactions` → Delta raw + Delta `shelf_batch_state` + compacted topic.
-- `spark-apps/wh-aggregator/`: `wh_events` → Delta `wh_state` + compacted topic.
-- `spark-apps/wh-batch-state-updater/`: `wh_events` → Delta `wh_batch_state` (+ mirror store batches) + compacted topics.
-- `spark-apps/shelf-alert-engine/`: `shelf_state` (+ policy + batch mirror) → `alerts` + `shelf_restock_plan` (Kafka + Delta).
-- `spark-apps/wh-alert-engine/`: `wh_state` (+ policy + batch mirror) → `alerts` + `wh_supplier_plan` (Kafka + Delta).
+
+State builders:
+- `spark-apps/shelf-aggregator/`: Kafka `shelf_events` (+ `shelf_profiles`) → Delta raw + Delta `shelf_state` + compacted `shelf_state`.
+- `spark-apps/batch-state-updater/`: Kafka `pos_transactions` → Delta raw + Delta `shelf_batch_state` + compacted `shelf_batch_state`.
+- `spark-apps/wh-aggregator/`: Kafka `wh_events` → Delta `wh_state` + compacted `wh_state`.
+- `spark-apps/wh-batch-state-updater/`: Kafka `wh_events` → Delta `wh_batch_state` (+ mirror store batches) + compacted topics.
+
+Alerting and planning:
+- `spark-apps/shelf-alert-engine/`: `shelf_state` (+ policies + batch mirror) → `alerts` + `shelf_restock_plan` (Kafka + Delta).
+- `spark-apps/wh-alert-engine/`: `wh_state` (+ policies + batch mirror) → `alerts` + `wh_supplier_plan` (Kafka + Delta).
+
+Operational feedback loops:
 - `spark-apps/shelf-restock-manager/`: `shelf_restock_plan` → `wh_events` (FIFO picking).
-- `spark-apps/shelf-refill-bridge/`: `wh_events` (wh_out) → `shelf_events` (putback/weight_change) with delay.
+- `spark-apps/shelf-refill-bridge/`: `wh_events` (`wh_out`) → `shelf_events` (putback/weight_change) with a delay to simulate travel time.
+
+Serving and persistence:
 - `spark-apps/alerts-sink/`: `alerts` → Delta (+ optional Postgres).
 
 Note: for Structured Streaming consumers you can set `MAX_OFFSETS_PER_TRIGGER` to avoid huge micro-batches on the first run with `STARTING_OFFSETS=earliest`.
@@ -421,9 +481,7 @@ The dashboard consolidates real-time-ish operations (alerts, states, supplier pl
 #### Store Live + Alerts
 
 Short clip of the live store view where alerts appear and clear over time.
-
-GitHub does not reliably render `.mov` inline, so the GIF is embedded below. The original file is `images/Opening.mov`.
-
+ 
 ![Store live view with alerts](images/Opening.gif)
 
 #### Supplier Plan (Plan Created)
@@ -467,7 +525,7 @@ The ML pipeline consists of:
 3. **Training** – `ml-model/training-service` service (XGBoost + time-series CV), writes model artifacts to `models/` and registers metadata in `analytics.ml_models`.
 4. **Inference** – `ml-model/inference-service` service that loads the latest model, generates pending supplier plans around cutoff times (Sun/Tue/Thu 12:00 UTC), and logs predictions in `analytics.ml_predictions_log` (Delta mirror + optional Kafka publish).
 
-### Feature set 
+### Feature set
 
 - master data: category/subcategory.
 - calendar: `day_of_week`, `is_weekend`, `refill_day`.
