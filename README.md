@@ -422,7 +422,9 @@ The dashboard consolidates real-time-ish operations (alerts, states, supplier pl
 
 Short clip of the live store view where alerts appear and clear over time.
 
-<video controls src="images/Opening.mov" title="Store live view with alerts" width="900"></video>
+GitHub does not reliably render `.mov` inline, so the GIF is embedded below. The original file is `images/Opening.mov`.
+
+![Store live view with alerts](images/Opening.gif)
 
 #### Supplier Plan (Plan Created)
 
