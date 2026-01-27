@@ -14,7 +14,7 @@ End-to-end (simulated) system to **monitor stock and batches** for a supermarket
 .
 ├── docker-compose.yml                 # Full stack (Kafka/Redis/Postgres/Kafka Connect/Spark apps/ML dashboard)
 ├── conf/                              # Spark config (spark-defaults.conf)
-├── data/                              # Synthetic datasets + generators + CSVs for Postgres bootstrap
+├── data/                              # Synthetic datasets + generators + CSVs for Postgres bootstrap 
 │   ├── create_db.py
 │   ├── create_simulation_data.py
 │   ├── create_discounts.py
@@ -31,37 +31,38 @@ End-to-end (simulated) system to **monitor stock and batches** for a supermarket
 │   └── assets/
 ├── images/                            # Logo + diagrams + dashboard screenshots
 ├── kafka-components/                  # Kafka components (topics, connect, producers)
-│   ├── kafka-init/                    # Create topics (append-only + compacted)
-│   ├── kafka-connect/                 # Kafka Connect + JDBC connector init
-│   ├── kafka-producer-foot_traffic/   # Foot traffic producer (session + realistic)
-│   ├── kafka-producer-shelf/          # Producer shelf events (pickup/putback/weight_change)
-│   ├── kafka-producer-pos/            # POS transactions producer (from foot traffic + shelf events)
-│   ├── shelf-daily-features/          # Kafka-based service for daily ML features
-│   ├── daily-discount-manager/        # Kafka-based near-expiry discounts
-│   ├── removal-scheduler/             # Kafka-based expired batch removal
-│   └── wh-supplier-manager/           # Kafka-based supplier orders/receipts + wh_in
+│   ├── kafka-init/                    
+│   ├── kafka-connect/                 
+│   ├── kafka-producer-foot_traffic/   
+│   ├── kafka-producer-shelf/          
+│   ├── kafka-producer-pos/            
+│   ├── shelf-daily-features/          
+│   ├── daily-discount-manager/        
+│   ├── removal-scheduler/             
+│   └── wh-supplier-manager/           
 ├── ml-model/                          # ML services (training + inference)
-│   ├── training-service/              # Train XGBoost, register in Postgres, write artifacts to /models
-│   └── inference-service/             # Cutoff-time inference (Sun/Tue/Thu), write pending wh_supplier_plan, log predictions
+│   ├── training-service/             
+│   └── inference-service/             
 ├── models/                            # Model artifacts + feature columns (mounted to /models)
 ├── postgresql/                        # DDL + init SQL (ref/config/state/ops/analytics + views)
 │   ├── 01_make_db.sql
 │   ├── 02_load_ref_from_csv.sql
 │   ├── 03_load_config.sql
+│   ├── 04_load_features_panel.sql
 │   └── 05_views.sql
 ├── simulated_time/                    # Shared simulated clock (Redis)
 ├── spark-apps/                        # Spark Structured Streaming jobs
-│   ├── deltalake/                     # Bootstrap empty Delta tables
-│   ├── foot-traffic-raw-sink/         # Kafka foot_traffic -> Delta raw
-│   ├── shelf-aggregator/              # shelf_events -> raw + shelf_state (Delta + Kafka compacted)
-│   ├── batch-state-updater/           # pos_transactions -> shelf_batch_state (Delta + Kafka compacted)
-│   ├── shelf-alert-engine/            # shelf_state -> alerts + shelf_restock_plan
-│   ├── shelf-restock-manager/         # shelf_restock_plan -> wh_events (FIFO picking)
-│   ├── shelf-refill-bridge/           # wh_events (wh_out) -> shelf_events (delay)
-│   ├── wh-aggregator/                 # wh_events -> wh_state
-│   ├── wh-batch-state-updater/        # wh_events -> wh_batch_state (+ mirror store batches)
-│   ├── wh-alert-engine/               # wh_state -> alerts + wh_supplier_plan
-│   └── alerts-sink/                   # alerts -> Delta (+ optional Postgres)
+│   ├── deltalake/                     
+│   ├── foot-traffic-raw-sink/         
+│   ├── shelf-aggregator/              
+│   ├── batch-state-updater/           
+│   ├── shelf-alert-engine/            
+│   ├── shelf-restock-manager/         
+│   ├── shelf-refill-bridge/           
+│   ├── wh-aggregator/                 
+│   ├── wh-batch-state-updater/        
+│   ├── wh-alert-engine/               
+│   └── alerts-sink/                   
 ```
 
 ---
@@ -121,23 +122,46 @@ For prerequisites, optional services, and troubleshooting see [How to Run](#how-
 
 ## Table of Contents
 
-- [How to Run (Quickstart)](#how-to-run-quickstart)
-- [Project Overview](#project-overview)
-- [Architecture](#architecture)
-  - [Data Pipeline](#data-pipeline)
-  - [Data Flow](#data-flow)
-- [Tech Stack](#tech-stack)
-- [Repository Structure](#repository-structure)
-- [Data & Topics](#data--topics)
-- [Simulated Time](#simulated-time)
-- [How to Run](#how-to-run)
-- [Spark Apps](#spark-apps)
-- [Kafka Connect](#kafka-connect)
-- [PostgreSQL Schemas](#postgresql-schemas)
-- [Streamlit Dashboard](#streamlit-dashboard)
-- [ML / Demand Forecasting](#ml--demand-forecasting)
-- [Performance](#performance)
-- [Troubleshooting](#troubleshooting)
+- [Smart Shelf — Big Data Project](#smart-shelf--big-data-project)
+  - [Repository Structure](#repository-structure)
+  - [How to Run (Quickstart)](#how-to-run-quickstart)
+    - [Prerequisites](#prerequisites)
+    - [Minimal steps to start the full stack](#minimal-steps-to-start-the-full-stack)
+  - [Table of Contents](#table-of-contents)
+  - [Project Overview](#project-overview)
+  - [Architecture](#architecture)
+    - [Data Pipeline](#data-pipeline)
+    - [Data Flow](#data-flow)
+  - [Tech Stack](#tech-stack)
+    - [Technologies and Justification](#technologies-and-justification)
+      - [Core Technologies](#core-technologies)
+      - [Real-Time Streaming \& Ingestion](#real-time-streaming--ingestion)
+      - [Stream Processing \& Lakehouse Storage](#stream-processing--lakehouse-storage)
+      - [Databases \& Data Access](#databases--data-access)
+      - [Visualization](#visualization)
+      - [Machine Learning](#machine-learning)
+      - [Supporting Libraries](#supporting-libraries)
+  - [Data \& Topics](#data--topics)
+    - [Dataset (bootstrap)](#dataset-bootstrap)
+    - [Kafka topics](#kafka-topics)
+    - [Delta Lake layout (main paths)](#delta-lake-layout-main-paths)
+  - [Simulated Time](#simulated-time)
+  - [Spark Apps](#spark-apps)
+  - [Kafka Connect](#kafka-connect)
+  - [PostgreSQL Schemas](#postgresql-schemas)
+  - [Streamlit Dashboard](#streamlit-dashboard)
+    - [Data sources](#data-sources)
+    - [Run](#run)
+    - [Results (dashboard)](#results-dashboard)
+  - [ML / Demand Forecasting](#ml--demand-forecasting)
+    - [Feature set](#feature-set)
+    - [Main outputs](#main-outputs)
+    - [Run](#run-1)
+  - [Performance](#performance)
+    - [Resource footprint](#resource-footprint)
+    - [Tuning knobs (simulation and Spark)](#tuning-knobs-simulation-and-spark)
+    - [Disk usage (Delta + checkpoints)](#disk-usage-delta--checkpoints)
+  - [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -190,67 +214,69 @@ To ensure the simulation reflects realistic retail dynamics, the synthetic produ
 #### Core Technologies
 
 - **Python — Main programming language**
-  -> Chosen for its flexibility and rich data ecosystem; used across the project for data generation, Kafka producers, Spark job logic, ML services, and the Streamlit dashboard.
+  Used everywhere: data generation, producers/consumers, Spark job logic, ML services, and the Streamlit dashboard. It keeps the project consistent and fast to iterate on.
 - **Docker / Docker Compose — Containerization and orchestration**
-  -> Chosen to ensure reproducible environments, isolate dependencies (Kafka, Postgres, Spark, etc.), and start/stop the entire stack with a single `docker compose` command.
+  This project depends on many services (Kafka, Postgres, Spark, Redis, etc.). Compose makes the environment reproducible and lets you start/stop the full stack with one command.
 
 #### Real-Time Streaming & Ingestion
 
 - **Apache Kafka — Distributed event streaming platform**
-  -> Chosen as the central event bus to decouple producers and consumers, support high-throughput ingestion, and model both append-only event streams and compacted state/metadata topics.
+  Kafka is the central “event bus.” Producers write events once, and multiple consumers can process them independently. We also use compacted topics to represent the latest state/metadata.
 - **Apache ZooKeeper — Kafka coordination (single-broker setup)**
-  -> Chosen because the Kafka distribution used in this project relies on ZooKeeper for broker metadata/coordination in a lightweight, single-node setup.
+  The Kafka image used here still relies on ZooKeeper for broker coordination, so we run it as part of the stack.
 - **Kafka Connect + JDBC Connector — Data integration layer**
-  -> Chosen to move data between PostgreSQL and Kafka without writing custom ingestion services: sourcing configuration/reference tables into Kafka and sinking compacted state tables back to Postgres for serving/querying.
+  This is the “bridge” between Postgres and Kafka. It sources reference/config tables into Kafka and sinks compacted state back into Postgres without custom ingestion code.
 - **Redis Streams — In-memory buffer before Kafka**
-  -> Chosen to absorb bursts and provide a simple backpressure layer for the simulated producers, reducing coupling to Kafka availability and smoothing event publication.
+  Redis Streams acts as a small buffer in front of Kafka. It absorbs bursts from the simulated producers and reduces tight coupling to Kafka availability.
 - **kafka-python — Kafka client for Python**
-  -> Chosen as a lightweight, widely-used client library to publish/consume Kafka messages from Python components (producers and some utility jobs) with minimal overhead.
+  Used by the simulated producers and some utility jobs to publish/consume Kafka messages from Python.
+- **confluent-kafka — Kafka client for high-throughput services**
+  Used by services like the supplier/discount managers where a faster native client is helpful.
 - **redis-py — Redis client for Python**
-  -> Chosen to interact with Redis Streams from Python components (simulated clock + producers) in a simple, reliable way.
+  Used to read/write Redis Streams and simulated-time keys from Python components.
 
 #### Stream Processing & Lakehouse Storage
 
 - **Apache Spark (Structured Streaming) — Stateful stream processing**
-  -> Chosen for scalable micro-batch streaming, stateful aggregations, windowing, and fault-tolerance via checkpoints; used to build shelf/warehouse states, generate alerts, and compute replenishment/supplier plans.
+  Spark is the main stream processor. It builds shelf/warehouse state, generates alerts, and computes restock/supplier plans using stateful streaming + checkpoints.
 - **Delta Lake (`delta-spark` + `deltalake`) — ACID tables on files**
-  -> Chosen to persist raw/cleansed/ops/analytics layers with ACID guarantees, schema evolution support, and reliable streaming sinks/checkpoints on a local filesystem (`./delta`).
+  Delta Lake gives us reliable tables on top of local files (`./delta`). We use it for raw/cleansed/ops/analytics layers plus streaming sinks and checkpoints.
 - **Apache Arrow / Parquet (`pyarrow`) — Columnar storage and I/O**
-  -> Chosen for fast, efficient Parquet read/write for bootstrap datasets and interoperability across Spark, Delta, and Python analytics.
+  Parquet is the main file format for bootstrap data, and `pyarrow` keeps Parquet/Arrow I/O fast and compatible across Spark, Delta, and Python.
 
 #### Databases & Data Access
 
 - **PostgreSQL 16 — Relational database**
-  -> Chosen for reliability and strong SQL support; used for reference snapshots, configuration/policies, materialized state mirrors, ops tables, and analytics that are easy to query/serve.
+  Postgres is the serving database. It stores reference snapshots, configuration/policies, state mirrors, ops tables, and analytics that are easy to query.
 - **psycopg2 + SQLAlchemy — Postgres connectivity**
-  -> Chosen to provide robust database access from Python services and the dashboard (connections, queries, inserts/updates) with mature tooling and good integration.
+  These are the main Python DB tools: `psycopg2` for direct access and SQLAlchemy for safer, cleaner query/connection handling.
 
 #### Visualization
 
 - **Streamlit — Interactive dashboard**
-  -> Chosen to quickly build a data-driven UI to inspect pipeline outputs (states/alerts/analytics) without the overhead of a separate frontend stack.
+  Streamlit lets us build a useful dashboard quickly, without a separate frontend stack.
 - **Plotly — Interactive charts**
-  -> Chosen for rich, interactive plots embedded in Streamlit to explore metrics and trends.
+  Plotly provides interactive charts inside Streamlit for exploring trends and state.
 
 #### Machine Learning
 
 - **scikit-learn — Baseline ML + preprocessing**
-  -> Chosen for standardized preprocessing utilities and simple, dependable baseline models used in the demand-forecasting component.
+  Used for preprocessing utilities and simple, dependable baseline ML pieces.
 - **XGBoost — Gradient-boosted trees**
-  -> Chosen for strong performance on tabular data and efficient training/inference for demand forecasting.
+  The main forecasting model. It performs very well on tabular features like the ones in this project.
 - **joblib — Model persistence**
-  -> Chosen to serialize trained models and reload them reliably in inference/retraining workflows.
+  Used to save/load trained models reliably across training and inference.
 - **pandas + NumPy — Data wrangling**
-  -> Chosen for feature engineering, dataset manipulation, and “glue” logic throughout generators, services, and analytics tasks.
+  Used throughout for feature engineering, dataset manipulation, and general “glue” code.
 
 #### Supporting Libraries
 
 - **PyYAML — Configuration parsing**
-  -> Chosen to keep simple, readable configuration files for the dashboard and utilities without hardcoding parameters.
+  Used to keep configuration readable instead of hardcoding parameters.
 - **Pillow — Image handling**
-  -> Chosen for lightweight image loading/manipulation in the Streamlit dashboard (assets, logos, and plots exports if needed).
+  Used in the dashboard for lightweight image loading/manipulation.
 - **streamlit-autorefresh / streamlit-plotly-events — Dashboard UX helpers**
-  -> Chosen to improve interactivity (auto-refresh, click/selection events) when exploring real-time-ish outputs.
+  Small helpers that improve dashboard interactivity (auto-refresh, click/selection events).
 
 ---
 
@@ -321,12 +347,8 @@ Main components (see the README in each folder):
 - `spark-apps/wh-batch-state-updater/`: `wh_events` → Delta `wh_batch_state` (+ mirror store batches) + compacted topics.
 - `spark-apps/shelf-alert-engine/`: `shelf_state` (+ policy + batch mirror) → `alerts` + `shelf_restock_plan` (Kafka + Delta).
 - `spark-apps/wh-alert-engine/`: `wh_state` (+ policy + batch mirror) → `alerts` + `wh_supplier_plan` (Kafka + Delta).
-- `spark-apps/wh-supplier-manager/`: `wh_supplier_plan` → orders/receipts + `wh_events` (wh_in).
 - `spark-apps/shelf-restock-manager/`: `shelf_restock_plan` → `wh_events` (FIFO picking).
 - `spark-apps/shelf-refill-bridge/`: `wh_events` (wh_out) → `shelf_events` (putback/weight_change) with delay.
-- `spark-apps/daily-discount-manager/`: find batches near expiry and publish `daily_discounts`.
-- `spark-apps/removal-scheduler/`: remove expired batches from the shelf and update state.
-- `spark-apps/shelf-daily-features/`: compute daily features for the ML model.
 - `spark-apps/alerts-sink/`: `alerts` → Delta (+ optional Postgres).
 
 Note: for Structured Streaming consumers you can set `MAX_OFFSETS_PER_TRIGGER` to avoid huge micro-batches on the first run with `STARTING_OFFSETS=earliest`.
@@ -383,36 +405,54 @@ Streamlit dashboard in `dashboard/app.py` that shows:
 - Delta: `delta/cleansed/shelf_state`, `delta/cleansed/wh_state`, `delta/cleansed/shelf_batch_state`, `delta/cleansed/wh_batch_state`, `delta/ops/wh_supplier_plan`, `delta/ops/wh_supplier_orders`
 - Postgres (read-only): `ops.alerts`, `ops.wh_supplier_plan` (fallback), `analytics.ml_models`, `analytics.ml_predictions_log`
 
-### Config (env vars)
-
-- Layout & inventory: `DASH_LAYOUT_YAML`/`LAYOUT_YAML`/`LAYOUT_YAML_PATH`, `INVENTORY_CSV_PATH`/`INVENTORY_CSV`
-- Delta paths: `DELTA_SUPPLIER_PLAN_PATH`, `DELTA_SUPPLIER_ORDERS_PATH`, `DL_SHELF_STATE_PATH`/`DELTA_SHELF_STATE_PATH`, `DL_WH_STATE_PATH`/`DELTA_WH_STATE_PATH`, `DL_SHELF_BATCH_PATH`/`DELTA_SHELF_BATCH_STATE_PATH`, `DL_WH_BATCH_PATH`/`DELTA_WH_BATCH_STATE_PATH`
-- Postgres: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`/`POSTGRES_DATABASE`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `ALERTS_TABLE`, `SUPPLIER_PLAN_TABLE`
-- Refresh: `DASH_AUTOREFRESH_MS`/`DASH_REFRESH_MS`
 
 ### Run
 
-- Docker: `docker compose up -d dashboard` (port `8501`)
-- Local: `pip install -r dashboard/requirements.txt` + `streamlit run dashboard/app.py`
+```bash
+docker compose up -d dashboard
+```
+
+port: `8501`
 
 ### Results (dashboard)
 
 The dashboard consolidates real-time-ish operations (alerts, states, supplier plans) with ML outputs to show how the pipeline behaves end-to-end during a simulated run.
 
-Screenshots (placeholders):
+#### Store Live + Alerts
 
-![Dashboard - Map Live](images/dashboard_map_live.png)
+Short clip of the live store view where alerts appear and clear over time.
 
-![Dashboard - Supplier Plan](images/dashboard_supplier_plan.png)
+<video controls src="images/Opening.mov" title="Store live view with alerts" width="900"></video>
 
-![Dashboard - ML](images/dashboard_ml.png)
+#### Supplier Plan (Plan Created)
 
-![Dashboard - Alerts](images/dashboard_alerts.png)
+This shows the moment a supplier plan is generated and marked as planned/pending around the cutoff.
 
-Video (placeholder):
-- `videos/dashboard_demo.mp4`
+![Supplier Plan - Planned](images/SupplierPlan_planned.png)
 
-> Replace these files with real screenshots and videos (or update the links).
+#### Supplier Plan (Restock Delivered)
+
+This shows the plan after delivery/restock has been executed and the state is updated.
+
+![Supplier Plan - Restock Delivered](images/SupplierlPlan_restocked.png)
+
+#### ML Model (Training Ready)
+
+Model registry view showing that training completed and a model is available for inference.
+
+![ML Model - Ready](images/MLModel_ready.png)
+
+#### ML Model (Predicted Quantity)
+
+Prediction explorer showing the suggested order quantity produced by the model.
+
+![ML Model - Predicted Quantity](images/MLModel_predicted_quantity.png)
+
+#### Alerts Table (Raw Live)
+
+Raw alerts table with the latest alerts as they stream through the pipeline.
+
+![Alerts - Raw Live](images/AlerstRaw_live.png)
 
 ---
 
@@ -420,12 +460,12 @@ Video (placeholder):
 
 The ML pipeline consists of:
 
-1. **Daily feature engineering** – job `spark-apps/shelf-daily-features` that populates `analytics.shelf_daily_features`.
+1. **Daily feature engineering** – service `kafka-components/shelf-daily-features` that populates `analytics.shelf_daily_features`, the table of data used for training the model (made of one year of synthetic data and uppend-only daily data)
 2. **ML views** – `analytics.v_ml_features` and `analytics.v_ml_train` (defined in `postgresql/05_views.sql`).
 3. **Training** – `ml-model/training-service` service (XGBoost + time-series CV), writes model artifacts to `models/` and registers metadata in `analytics.ml_models`.
 4. **Inference** – `ml-model/inference-service` service that loads the latest model, generates pending supplier plans around cutoff times (Sun/Tue/Thu 12:00 UTC), and logs predictions in `analytics.ml_predictions_log` (Delta mirror + optional Kafka publish).
 
-### Feature set (high level)
+### Feature set 
 
 - master data: category/subcategory.
 - calendar: `day_of_week`, `is_weekend`, `refill_day`.
@@ -447,10 +487,6 @@ The ML pipeline consists of:
 
 The `models/` directory is mounted to `/models` in Docker Compose for both training and inference.
 
-### Config (env vars)
-
-- Training: `PG_DSN`, `MODEL_NAME`, `ARTIFACT_DIR`, `FEATURE_SQL`
-- Inference: `PG_DSN`, `MODEL_NAME`, `CUTOFF_DOWS`, `CUTOFF_HOUR`, `CUTOFF_MINUTE`, `PREDICT_LEAD_MINUTES`, `DELTA_ENABLED`, `DELTA_WHSUPPLIER_PLAN_PATH`, `FEATURE_COLUMNS_PATH`, `ALLOW_DISK_MODEL`, `HEARTBEAT_SECONDS`, `KAFKA_ENABLED`
 
 ### Run
 
