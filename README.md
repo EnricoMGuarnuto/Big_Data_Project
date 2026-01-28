@@ -6,7 +6,82 @@ End-to-end (simulated) system to **monitor stock and batches** for a supermarket
 
 > This repository is meant to be run primarily via `docker compose`.
 
+**Authors of the project**:
+- Camilla Bonomo
+- Chiara Belli
+- Enrico Maria Guarnuto 
+
 ---
+
+
+## Table of Contents
+
+- [Smart Shelf — Big Data Project](#smart-shelf--big-data-project)
+  - [Table of Contents](#table-of-contents)
+  - [Repository Structure](#repository-structure)
+  - [How to Run (Quickstart)](#how-to-run-quickstart)
+    - [Prerequisites](#prerequisites)
+    - [Minimal steps to start the full stack](#minimal-steps-to-start-the-full-stack)
+  - [Project Overview](#project-overview)
+    - [How it works (high level)](#how-it-works-high-level)
+    - [Aim and ambition](#aim-and-ambition)
+  - [Architecture](#architecture)
+    - [Data Pipeline](#data-pipeline)
+    - [Data Flow](#data-flow)
+  - [Tech Stack](#tech-stack)
+    - [Technologies and Justification](#technologies-and-justification)
+      - [Core Technologies](#core-technologies)
+      - [Real-Time Streaming \& Ingestion](#real-time-streaming--ingestion)
+      - [Stream Processing \& Lakehouse Storage](#stream-processing--lakehouse-storage)
+      - [Databases \& Data Access](#databases--data-access)
+      - [Visualization](#visualization)
+      - [Machine Learning](#machine-learning)
+      - [Supporting Libraries](#supporting-libraries)
+  - [Data \& Topics](#data--topics)
+    - [Dataset (bootstrap)](#dataset-bootstrap)
+    - [Data exploration](#data-exploration)
+    - [Kafka topics](#kafka-topics)
+    - [Delta Lake layout (main paths)](#delta-lake-layout-main-paths)
+  - [Simulated Time](#simulated-time)
+  - [Kafka (Producers \& Consumers)](#kafka-producers--consumers)
+    - [Producers (simulation + scheduling)](#producers-simulation--scheduling)
+    - [Consumers and “manager” services](#consumers-and-manager-services)
+  - [Spark Apps](#spark-apps)
+    - [Spark jobs (by role)](#spark-jobs-by-role)
+  - [Kafka Connect](#kafka-connect)
+  - [PostgreSQL Schemas](#postgresql-schemas)
+  - [Streamlit Dashboard](#streamlit-dashboard)
+    - [Data sources](#data-sources)
+    - [Run](#run)
+    - [Results (dashboard)](#results-dashboard)
+      - [Store Live + Alerts](#store-live--alerts)
+      - [Supplier Plan (Plan Created)](#supplier-plan-plan-created)
+      - [Supplier Plan (Restock Delivered)](#supplier-plan-restock-delivered)
+      - [ML Model (Training Ready)](#ml-model-training-ready)
+      - [ML Model (Predicted Quantity)](#ml-model-predicted-quantity)
+      - [Alerts Table (Raw Live)](#alerts-table-raw-live)
+  - [ML / Demand Forecasting](#ml--demand-forecasting)
+    - [Feature set](#feature-set)
+    - [Main outputs](#main-outputs)
+    - [Run](#run-1)
+  - [Performance](#performance)
+    - [Resource footprint](#resource-footprint)
+    - [Tuning knobs (simulation and Spark)](#tuning-knobs-simulation-and-spark)
+    - [Disk usage (Delta + checkpoints)](#disk-usage-delta--checkpoints)
+  - [Lessons learned](#lessons-learned)
+    - [Main challenges](#main-challenges)
+    - [What worked well](#what-worked-well)
+    - [What did not work](#what-did-not-work)
+  - [Limitations and future work](#limitations-and-future-work)
+    - [Limitations](#limitations)
+    - [What would break first (and why)](#what-would-break-first-and-why)
+    - [Future work](#future-work)
+  - [References and acknowledgments](#references-and-acknowledgments)
+    - [References](#references)
+    - [Acknowledgments](#acknowledgments)
+
+---
+
 
 ## Repository Structure
 
@@ -132,71 +207,6 @@ docker compose down
 ```
 
 For prerequisites, optional services, and troubleshooting see [How to Run](#how-to-run).
-
----
-
-## Table of Contents
-
-- [Smart Shelf — Big Data Project](#smart-shelf--big-data-project)
-  - [Repository Structure](#repository-structure)
-  - [How to Run (Quickstart)](#how-to-run-quickstart)
-    - [Prerequisites](#prerequisites)
-    - [Minimal steps to start the full stack](#minimal-steps-to-start-the-full-stack)
-  - [Table of Contents](#table-of-contents)
-  - [Project Overview](#project-overview)
-    - [How it works (high level)](#how-it-works-high-level)
-    - [Aim and ambition](#aim-and-ambition)
-  - [Architecture](#architecture)
-    - [Data Pipeline](#data-pipeline)
-    - [Data Flow](#data-flow)
-  - [Tech Stack](#tech-stack)
-    - [Technologies and Justification](#technologies-and-justification)
-      - [Core Technologies](#core-technologies)
-      - [Real-Time Streaming \& Ingestion](#real-time-streaming--ingestion)
-      - [Stream Processing \& Lakehouse Storage](#stream-processing--lakehouse-storage)
-      - [Databases \& Data Access](#databases--data-access)
-      - [Visualization](#visualization)
-      - [Machine Learning](#machine-learning)
-      - [Supporting Libraries](#supporting-libraries)
-  - [Data \& Topics](#data--topics)
-    - [Dataset (bootstrap)](#dataset-bootstrap)
-    - [Data exploration](#data-exploration)
-    - [Kafka topics](#kafka-topics)
-    - [Delta Lake layout (main paths)](#delta-lake-layout-main-paths)
-  - [Simulated Time](#simulated-time)
-  - [Kafka (Producers \& Consumers)](#kafka-producers--consumers)
-    - [Producers (simulation + scheduling)](#producers-simulation--scheduling)
-    - [Consumers and “manager” services](#consumers-and-manager-services)
-  - [Spark Apps](#spark-apps)
-    - [Spark jobs (by role)](#spark-jobs-by-role)
-  - [Kafka Connect](#kafka-connect)
-  - [PostgreSQL Schemas](#postgresql-schemas)
-  - [Streamlit Dashboard](#streamlit-dashboard)
-    - [Data sources](#data-sources)
-    - [Run](#run)
-    - [Results (dashboard)](#results-dashboard)
-      - [Store Live + Alerts](#store-live--alerts)
-      - [Supplier Plan (Plan Created)](#supplier-plan-plan-created)
-      - [Supplier Plan (Restock Delivered)](#supplier-plan-restock-delivered)
-      - [ML Model (Training Ready)](#ml-model-training-ready)
-      - [ML Model (Predicted Quantity)](#ml-model-predicted-quantity)
-      - [Alerts Table (Raw Live)](#alerts-table-raw-live)
-  - [ML / Demand Forecasting](#ml--demand-forecasting)
-    - [Feature set](#feature-set)
-    - [Main outputs](#main-outputs)
-    - [Run](#run-1)
-  - [Performance](#performance)
-    - [Resource footprint](#resource-footprint)
-    - [Tuning knobs (simulation and Spark)](#tuning-knobs-simulation-and-spark)
-    - [Disk usage (Delta + checkpoints)](#disk-usage-delta--checkpoints)
-  - [Lessons learned](#lessons-learned)
-    - [Main challenges](#main-challenges)
-    - [What worked well](#what-worked-well)
-    - [What did not work](#what-did-not-work)
-  - [Limitations and future work](#limitations-and-future-work)
-    - [Limitations](#limitations)
-    - [What would break first (and why)](#what-would-break-first-and-why)
-    - [Future work](#future-work)
 
 ---
 
@@ -666,3 +676,18 @@ Stateful processing was particularly sensitive to key drift and inconsistent che
 - Always compare XGBoost against a simple baseline (like a moving average) to prove the model actually adds value.
 - Efficient recovery of the program from checkpoints if it is shut down during processing.
 - Optimise the usage of CPU and RAM.
+
+---
+
+## References and acknowledgments
+
+### References
+
+- Drive Research. Grocery store statistics: Where, when, and how much people grocery shop. https://www.driveresearch.com/market-research-company-blog/grocery-store-statistics-where-when-how-much-people-grocery-shop/
+- Huang, A., Zhang, Z., Yang, L., & Ou, J. (2024). Design of Intelligent Warehouse Management System. 2024 4th International Conference on Electronic Information Engineering and Computer (EIECT), 534–538. https://doi.org/10.1109/EIECT64462.2024.10866043
+
+### Acknowledgments
+
+- Conad supermarket (Scandiano (RE), Italy) for providing real-world category/inventory structure used to model the synthetic data.
+- External contributors/maintainers of the open-source libraries used in the stack.
+
