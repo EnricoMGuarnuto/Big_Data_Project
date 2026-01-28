@@ -2,10 +2,6 @@ spark-checkpoints/.DS_Store
 spark-checkpoints
 delta
 data/sim_out
-data/all_discounts.parquet
-data/store_batches.parquet
-data/store_inventory_final.parquet
-data/warehouse_inventory_final.parquet
-data/warehouse_batches.parquet
 data/db_csv
+data/*.parquet
 .DS_Store
