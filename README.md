@@ -98,6 +98,20 @@ Start the Stack:
 docker compose up -d --build
 ```
 
+Alternative (limited CPU/RAM): start without the Kafka producers (simulators), then enable them once the stack is stable.
+
+1.) Run the stack **without** the Kafka producers (simulators):
+```bash
+docker compose up -d --build $(docker compose config --services | grep -v '^kafka-producer')
+```
+
+Wait ~5–8 minutes and then:
+
+2.) Enable the Kafka producers (simulators):
+```bash
+docker compose up -d --build $(docker compose config --services | grep '^kafka-producer')
+```
+
 Verify services are up:
 
 ```bash
@@ -216,7 +230,7 @@ Note on workload and data realism: this project is computationally heavy because
 
 ### Data Flow
 
-![Data Flow](images/data_flow.png)
+![Data Flow](images/dataflow.png)
 
 ---
 
