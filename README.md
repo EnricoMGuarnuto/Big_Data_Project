@@ -90,6 +90,7 @@ cd Big_Data_Project
 Once the repository is cloned, it is required to run the two main files that create the simulation data:
 ```bash
 python create_db.py
+python create_discounts.py
 python create_simulation_data.py
 ```
 
@@ -100,14 +101,14 @@ docker compose up -d --build
 
 Alternative (limited CPU/RAM): start without the Kafka producers (simulators), then enable them once the stack is stable.
 
-1.) Run the stack **without** the Kafka producers (simulators):
+- 1. Run the stack **without** the Kafka producers (simulators):
 ```bash
 docker compose up -d --build $(docker compose config --services | grep -v '^kafka-producer')
 ```
 
-Wait ~5–8 minutes and then:
+- 2. Wait ~5–8 minutes and then:
 
-2.) Enable the Kafka producers (simulators):
+Enable the Kafka producers (simulators):
 ```bash
 docker compose up -d --build $(docker compose config --services | grep '^kafka-producer')
 ```
@@ -136,56 +137,66 @@ For prerequisites, optional services, and troubleshooting see [How to Run](#how-
 
 ## Table of Contents
 
-- [Repository Structure](#repository-structure)
-- [How to Run (Quickstart)](#how-to-run-quickstart)
-- [Prerequisites](#prerequisites)
-- [Minimal steps to start the full stack](#minimal-steps-to-start-the-full-stack)
-- [Project Overview](#project-overview)
-- [How it works (high level)](#how-it-works-high-level)
-- [Aim and ambition](#aim-and-ambition)
-- [Architecture](#architecture)
-- [Data Pipeline](#data-pipeline)
-- [Data Flow](#data-flow)
-- [Tech Stack](#tech-stack)
-- [Technologies and Justification](#technologies-and-justification)
-- [Core Technologies](#core-technologies)
-- [Real-Time Streaming & Ingestion](#real-time-streaming--ingestion)
-- [Stream Processing & Lakehouse Storage](#stream-processing--lakehouse-storage)
-- [Databases & Data Access](#databases--data-access)
-- [Visualization](#visualization)
-- [Machine Learning](#machine-learning)
-- [Supporting Libraries](#supporting-libraries)
-- [Data & Topics](#data--topics)
-- [Dataset (bootstrap)](#dataset-bootstrap)
-- [Kafka topics](#kafka-topics)
-- [Delta Lake layout (main paths)](#delta-lake-layout-main-paths)
-- [Simulated Time](#simulated-time)
-- [Kafka (Producers & Consumers)](#kafka-producers--consumers)
-- [Producers (simulation + scheduling)](#producers-simulation--scheduling)
-- [Consumers and “manager” services](#consumers-and-manager-services)
-- [Spark Apps](#spark-apps)
-- [Spark jobs (by role)](#spark-jobs-by-role)
-- [Kafka Connect](#kafka-connect)
-- [PostgreSQL Schemas](#postgresql-schemas)
-- [Streamlit Dashboard](#streamlit-dashboard)
-- [Data sources](#data-sources)
-- [Run](#run)
-- [Results (dashboard)](#results-dashboard)
-- [Store Live + Alerts](#store-live--alerts)
-- [Supplier Plan (Plan Created)](#supplier-plan-plan-created)
-- [Supplier Plan (Restock Delivered)](#supplier-plan-restock-delivered)
-- [ML Model (Training Ready)](#ml-model-training-ready)
-- [ML Model (Predicted Quantity)](#ml-model-predicted-quantity)
-- [Alerts Table (Raw Live)](#alerts-table-raw-live)
-- [ML / Demand Forecasting](#ml--demand-forecasting)
-- [Feature set](#feature-set)
-- [Main outputs](#main-outputs)
-- [Run (ML)](#run-1)
-- [Performance](#performance)
-- [Resource footprint](#resource-footprint)
-- [Tuning knobs (simulation and Spark)](#tuning-knobs-simulation-and-spark)
-- [Disk usage (Delta + checkpoints)](#disk-usage-delta--checkpoints)
-- [Troubleshooting](#troubleshooting)
+- [Smart Shelf — Big Data Project](#smart-shelf--big-data-project)
+  - [Repository Structure](#repository-structure)
+  - [How to Run (Quickstart)](#how-to-run-quickstart)
+    - [Prerequisites](#prerequisites)
+    - [Minimal steps to start the full stack](#minimal-steps-to-start-the-full-stack)
+  - [Table of Contents](#table-of-contents)
+  - [Project Overview](#project-overview)
+    - [How it works (high level)](#how-it-works-high-level)
+    - [Aim and ambition](#aim-and-ambition)
+  - [Architecture](#architecture)
+    - [Data Pipeline](#data-pipeline)
+    - [Data Flow](#data-flow)
+  - [Tech Stack](#tech-stack)
+    - [Technologies and Justification](#technologies-and-justification)
+      - [Core Technologies](#core-technologies)
+      - [Real-Time Streaming \& Ingestion](#real-time-streaming--ingestion)
+      - [Stream Processing \& Lakehouse Storage](#stream-processing--lakehouse-storage)
+      - [Databases \& Data Access](#databases--data-access)
+      - [Visualization](#visualization)
+      - [Machine Learning](#machine-learning)
+      - [Supporting Libraries](#supporting-libraries)
+  - [Data \& Topics](#data--topics)
+    - [Dataset (bootstrap)](#dataset-bootstrap)
+    - [Data exploration](#data-exploration)
+    - [Kafka topics](#kafka-topics)
+    - [Delta Lake layout (main paths)](#delta-lake-layout-main-paths)
+  - [Simulated Time](#simulated-time)
+  - [Kafka (Producers \& Consumers)](#kafka-producers--consumers)
+    - [Producers (simulation + scheduling)](#producers-simulation--scheduling)
+    - [Consumers and “manager” services](#consumers-and-manager-services)
+  - [Spark Apps](#spark-apps)
+    - [Spark jobs (by role)](#spark-jobs-by-role)
+  - [Kafka Connect](#kafka-connect)
+  - [PostgreSQL Schemas](#postgresql-schemas)
+  - [Streamlit Dashboard](#streamlit-dashboard)
+    - [Data sources](#data-sources)
+    - [Run](#run)
+    - [Results (dashboard)](#results-dashboard)
+      - [Store Live + Alerts](#store-live--alerts)
+      - [Supplier Plan (Plan Created)](#supplier-plan-plan-created)
+      - [Supplier Plan (Restock Delivered)](#supplier-plan-restock-delivered)
+      - [ML Model (Training Ready)](#ml-model-training-ready)
+      - [ML Model (Predicted Quantity)](#ml-model-predicted-quantity)
+      - [Alerts Table (Raw Live)](#alerts-table-raw-live)
+  - [ML / Demand Forecasting](#ml--demand-forecasting)
+    - [Feature set](#feature-set)
+    - [Main outputs](#main-outputs)
+    - [Run](#run-1)
+  - [Performance](#performance)
+    - [Resource footprint](#resource-footprint)
+    - [Tuning knobs (simulation and Spark)](#tuning-knobs-simulation-and-spark)
+    - [Disk usage (Delta + checkpoints)](#disk-usage-delta--checkpoints)
+  - [Lessons learned](#lessons-learned)
+    - [Main challenges](#main-challenges)
+    - [What worked well](#what-worked-well)
+    - [What did not work](#what-did-not-work)
+  - [Limitations and future work](#limitations-and-future-work)
+    - [Limitations](#limitations)
+    - [What would break first (and why)](#what-would-break-first-and-why)
+    - [Future work](#future-work)
 
 ---
 
@@ -337,6 +348,25 @@ To regenerate everything:
 ```bash
 python3 data/create_db.py
 ```
+
+### Data exploration
+
+Since, for privacy reasons, it was not possible to access real supermarket databases, we manually generated the inventory datasets, historical data of 1 year of sales, and the sensor simulators. Specifically:
+
+- **Store inventory table**: 1,142 rows, max stock avg 48.13, current stock avg 38.85, visibility range 0.05–0.20 (`data/store_inventory_final.parquet`).
+- **Warehouse inventory table**: 1,142 rows, warehouse capacity avg 306.23 units (`data/warehouse_inventory_final.parquet`).
+- **Batch-level tables**: 1,830 store batches and 2,250 warehouse batches (includes expiry dates) (`data/store_batches.parquet`, `data/warehouse_batches.parquet`).
+- **Weekly discounts table**: 9,360 rows with `discount_pct` range 0.0501–0.35 (`data/all_discounts.parquet`).
+- **Total simulated sales**: 2,808,135 units across 2025 (`data/sim_out/synthetic_1y_panel.csv`).
+
+Event sources simulated:
+
+- **Shelf sensors**: pick-up, put-back, weight change events.
+- **Foot traffic sensors**: customer entry, exit, and session duration.
+- **POS transactions**: sales events linked to customers and products.
+- **Warehouse events**: inbound and outbound stock movements.
+
+Although synthetic, the data generation process preserves realistic temporal patterns and inter-dependencies between events. The simulation logic and datasets broadly follow the information provided to us through a conversation with the Conad of Scandiano regarding the operation and organization of the store.
 
 ### Kafka topics
 
@@ -597,28 +627,40 @@ The `delta/` directory (tables + `_checkpoints/`) can grow quickly during stream
 
 ---
 
-## Troubleshooting
+## Lessons learned
 
-- **Startup order / bootstrap dependencies**
-  - If a Spark job has `BOOTSTRAP_FROM_PG=1`, ensure Postgres is up before starting it (otherwise the JDBC read will fail). Re-run the job with `docker compose up -d <service>` once Postgres is ready.
-- **One-shot init containers**
-  - `kafka-init`, `connect-init`, `spark-init-delta`, and `training-service` are designed to exit after completing their work. Re-run them explicitly when needed (e.g., `docker compose run --rm connect-init`).
-- **Kafka Connect connectors not created**
-  - Check `docker compose logs -f kafka-connect connect-init`, then re-run `docker compose run --rm connect-init`.
-- **Spark job fails at startup**
-  - Inspect logs with `docker compose logs -f <spark-service-name>`.
-  - If the failure happens during dependency resolution (`--packages`), verify network access during image build/run.
-  - If the failure happens due to replay volume, switch `STARTING_OFFSETS` to `latest` or lower `MAX_OFFSETS_PER_TRIGGER`.
-- **Postgres does not load snapshot CSVs**
-  - Verify that `data/db_csv/*.csv` exist and that the `./data/db_csv:/import/csv/db:ro` volume is mounted.
-  - If you regenerated CSVs after the first Postgres initialization, recreate the Postgres volume (data is persisted in `postgres-data`).
-- **Dashboard shows empty Delta tables**
-  - Delta reads require the `deltalake` dependency; if it is missing, the dashboard will silently fall back to “no Delta data”.
-  - Confirm the Delta paths exist under `delta/` and match the env vars used by `dashboard/app.py` (see the Dashboard section above).
-- **Reset to a clean state (destructive)**
-  - `docker compose down -v` removes named volumes (`kafka-data`, `redis-data`, `postgres-data`) and starts the stack from scratch on next `up`.
-  - Delta state is bind-mounted from `./delta` (tables + `_checkpoints/`) and is **not** removed by `down -v`. To fully reset streaming state (and avoid “leaks” of old alerts/state), remove these folders:
-    - `delta/_checkpoints/`, `delta/raw/`, `delta/cleansed/`, `delta/ops/`, `delta/staging/`
-  - If you only want to clear what the dashboard shows (it reads from Postgres `ops.alerts`), you can truncate without wiping volumes:
-    - `docker exec -it postgres psql -U bdt_user -d smart_shelf -c "TRUNCATE ops.alerts;"`
-    - (optional) `docker exec -it postgres psql -U bdt_user -d smart_shelf -c "TRUNCATE ops.wh_supplier_plan;"`
+### Main challenges
+
+One of the main challenges was designing Kafka topics that guarantee full traceability through append-only logs while still enabling fast access to state via compaction. Ensuring correctness in stateful streaming also required careful attention, particularly in the management of stable keys and rigorous checkpointing. However, due to the very nature of the simulation-based architecture, it is not feasible to avoid resetting checkpoints every time the project is started. Doing so would also require checkpointing the simulated time, an option that was not implemented. In addition, reliably orchestrating a large number of containers proved to be complex, especially when handling service dependencies such as database initialization, connector startup, and the execution of Spark jobs.
+
+### What worked well
+
+Using a simulated time source made demos and tests far more predictable, allowing expiry rules, reorder cycles, and cutoffs to be reproduced reliably. The clear separation between raw and derived data sped up debugging and made analytical queries easier to write and reason about.
+
+### What did not work
+
+Stateful processing was particularly sensitive to key drift and inconsistent checkpoints, where even small mistakes could cascade into incorrect state. Due to the need to generate simulated data, the program cannot be supported on machines with very limited CPU and RAM. Container startup was fragile without explicit dependency sequencing and better operational runbooks.
+
+## Limitations and future work
+
+### Limitations
+
+- Data is synthetic/simulated; real deployments need integration with real sensor systems and stronger data quality guarantees.
+- Single-node Docker setup (single Kafka broker, local Delta filesystem) does not represent production scaling.
+- Stateful Spark jobs may become bottlenecked by state size, shuffle-heavy joins, and checkpoint I/O as event rate count increases.
+- Checkpoints need to be deleted after every new run.
+- CPU and RAM usage are very high.
+
+### What would break first (and why)
+
+- Kafka throughput/partitions (insufficient parallelism), Spark micro-batch latency, and Delta checkpoint growth/storage bandwidth.
+- PostgreSQL write amplification if too many derived tables are sunk at high frequency.
+- Containers go down not for errors but for OOM issues that need to be handled.
+
+### Future work
+
+- Move Delta tables to object storage to separate compute from storage and handle growth reliably.
+- Use a schema registry and compatibility rules so producers can change event formats without silently breaking downstream consumers.
+- Always compare XGBoost against a simple baseline (like a moving average) to prove the model actually adds value.
+- Efficient recovery of the program from checkpoints if it is shut down during processing.
+- Optimise the usage of CPU and RAM.
