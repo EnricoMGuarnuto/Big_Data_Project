@@ -1,6 +1,6 @@
 # create_db – Dataset Generator (Prompt-driven)
 
-This folder contains the **dataset generator** used in the Big Data Technologies project.
+This folder contains the **dataset generators** used in the Big Data Technologies project.
 
 The generator produces a **synthetic supermarket retail dataset** (inventory + batches) in **Parquet** format, starting from a product hierarchy (categories/subcategories) and applying realistic rules for:
 - store shelf capacity and current stock
@@ -27,6 +27,11 @@ Running `create_db.py` generates **four interconnected datasets** under `data/`:
   Batch-level stock in the warehouse, stored in **full batches only** for non-perishables.
 
 > Join key across all datasets: **`shelf_id`**.
+
+Additional generators in this folder:
+
+- `create_discounts.py`: creates weekly discount schedules and saves `data/all_discounts.parquet`.
+- `create_simulation_data.py`: generates 1 year of synthetic sales/events and writes outputs under `data/sim_out/`.
 
 
 ## Output structure

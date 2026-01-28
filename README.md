@@ -340,6 +340,8 @@ The main (generated) files are in `data/`:
 - `data/store_batches.parquet`
 - `data/warehouse_batches.parquet`
 - `data/all_discounts.parquet`
+- `data/create_discounts.py`
+- `data/create_simulation_data.py`
 
 For DB bootstrap, CSVs are also created in `data/db_csv/` (used by scripts in `postgresql/`).
 
