@@ -99,7 +99,7 @@ End-to-end (simulated) system to **monitor stock and batches** for a supermarket
 │   ├── warehouse_batches.parquet
 │   ├── all_discounts.parquet
 │   ├── sim_out/                       # Generated simulation outputs                 
-├── delta/                             # Local Delta Lake (raw/cleansed/ops/analytics + checkpoint)
+├── delta/                             # Local Delta Lake (raw/cleansed/curated/ops/analytics + staging + _checkpoints)
 ├── dashboard/                         # Streamlit dashboard (map, alerts, state, ML)
 │   ├── app.py
 │   ├── store_layout.yaml
@@ -392,10 +392,13 @@ Created by `kafka-components/kafka-init/init.py`.
 
 ### Delta Lake layout (main paths)
 
-- `delta/raw/`: `foot_traffic`, `shelf_events`, `wh_events`
-- `delta/cleansed/`: `shelf_state`, `shelf_batch_state`, `wh_state`, `wh_batch_state`
+- `delta/raw/`: `shelf_events`, `pos_transactions`, `foot_traffic`, `wh_events`
+- `delta/cleansed/`: `shelf_state`, `wh_state`, `shelf_batch_state`, `wh_batch_state`
+- `delta/curated/`: `product_total_state`, `features_store`, `predictions`
 - `delta/ops/`: `alerts`, `shelf_restock_plan`, `wh_supplier_plan`, `wh_supplier_orders`, `wh_supplier_receipts`
 - `delta/analytics/`: `daily_discounts`
+- `delta/staging/`: `shelf_refill_pending`
+- `delta/_checkpoints/`: Spark Structured Streaming checkpoints
 
 ---
 
