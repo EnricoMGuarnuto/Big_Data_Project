@@ -111,6 +111,7 @@ End-to-end (simulated) system to **monitor stock and batches** for a supermarket
 │   ├── kafka-producer-foot_traffic/   
 │   ├── kafka-producer-shelf/          
 │   ├── kafka-producer-pos/            
+│   ├── redis-kafka-bridge/            
 │   ├── shelf-daily-features/          
 │   ├── daily-discount-manager/        
 │   ├── removal-scheduler/             
@@ -164,9 +165,9 @@ cd Big_Data_Project
 
 Once the repository is cloned, it is required to run the two main files that create the simulation data:
 ```bash
-python create_db.py
-python create_discounts.py
-python create_simulation_data.py
+python data/create_db.py
+python data/create_discounts.py
+python data/create_simulation_data.py
 ```
 
 Start the Stack:
@@ -253,6 +254,8 @@ Note on workload and data realism: this project is computationally heavy because
 
 ![Data Flow](images/dataflow.png)
 
+Current implemented ingestion path for simulated store events: `Data generators -> Redis Streams -> redis-kafka-bridge -> Kafka -> Spark`.
+
 ---
 
 ## Tech Stack
@@ -285,8 +288,8 @@ Note on workload and data realism: this project is computationally heavy because
   The Kafka image used here still relies on ZooKeeper for broker coordination, so we run it as part of the stack.
 - **Kafka Connect + JDBC Connector — Data integration layer**
   This is the “bridge” between Postgres and Kafka. It sources reference/config tables into Kafka and sinks compacted state back into Postgres without custom ingestion code.
-- **Redis Streams — In-memory buffer before Kafka**
-  Redis Streams acts as a small buffer in front of Kafka. It absorbs bursts from the simulated producers and reduces tight coupling to Kafka availability.
+- **Redis Streams + Redis-Kafka bridge — Buffer and backpressure layer**
+  Simulated producers write only to Redis Streams. A dedicated `redis-kafka-bridge` service reads Redis via consumer groups and forwards to Kafka, acknowledging Redis messages only after Kafka publish success.
 - **kafka-python — Kafka client for Python**
   Used by the simulated producers and some utility jobs to publish/consume Kafka messages from Python.
 - **confluent-kafka — Kafka client for high-throughput services**
@@ -420,9 +423,10 @@ Kafka is the central event bus. Different components publish events, while other
 ### Producers (simulation + scheduling)
 
 - `kafka-components/kafka-init/`: creates the topics used by the pipeline (append-only events and compacted state/metadata).
-- `kafka-components/kafka-producer-foot_traffic/`: simulates customer entries/exits and publishes `foot_traffic` events.
-- `kafka-components/kafka-producer-shelf/`: simulates shelf sensor activity (pickup/putback/weight change) and publishes `shelf_events`.
-- `kafka-components/kafka-producer-pos/`: simulates carts/checkouts and publishes `pos_transactions` (it also listens to shelf/foot traffic to keep the simulation coherent).
+- `kafka-components/kafka-producer-foot_traffic/`: simulates customer entries/exits and buffers `foot_traffic` events on Redis Streams.
+- `kafka-components/kafka-producer-shelf/`: simulates shelf sensor activity (pickup/putback/weight change) and buffers `shelf_events` on Redis Streams.
+- `kafka-components/kafka-producer-pos/`: simulates carts/checkouts and buffers `pos_transactions` on Redis Streams (it also listens to shelf/foot traffic to keep the simulation coherent).
+- `kafka-components/redis-kafka-bridge/`: forwards buffered Redis events to Kafka topics (`foot_traffic`, `foot_traffic_realistic`, `shelf_events`, `pos_transactions`).
 
 ### Consumers and “manager” services
 
@@ -576,10 +580,10 @@ Raw alerts table with the latest alerts as they stream through the pipeline.
 
 The ML pipeline consists of:
 
-1. **Daily feature engineering** – service `kafka-components/shelf-daily-features` that populates `analytics.shelf_daily_features`, the table of data used for training the model (made of one year of synthetic data and uppend-only daily data)
+1. **Daily feature engineering** – service `kafka-components/shelf-daily-features` that populates `analytics.shelf_daily_features` and appends the same daily snapshot to `delta/curated/features_store`.
 2. **ML views** – `analytics.v_ml_features` and `analytics.v_ml_train` (defined in `postgresql/05_views.sql`).
 3. **Training** – `ml-model/training-service` service (XGBoost + time-series CV), writes model artifacts to `models/` and registers metadata in `analytics.ml_models`.
-4. **Inference** – `ml-model/inference-service` service that loads the latest model, generates pending supplier plans around cutoff times (Sun/Tue/Thu 12:00 UTC), and logs predictions in `analytics.ml_predictions_log` (Delta mirror + optional Kafka publish).
+4. **Inference** – `ml-model/inference-service` service that loads the latest model, generates pending supplier plans around cutoff times (Sun/Tue/Thu 12:00 UTC), logs predictions in `analytics.ml_predictions_log`, and appends them to `delta/curated/predictions` (with optional Kafka publish for plans).
 
 ### Feature set
 
@@ -597,6 +601,8 @@ The ML pipeline consists of:
 - `analytics.shelf_daily_features`
 - `analytics.ml_models`
 - `analytics.ml_predictions_log`
+- `delta/curated/features_store`
+- `delta/curated/predictions`
 - `ops.wh_supplier_plan` (+ `delta/ops/wh_supplier_plan`)
 - `models/<MODEL_NAME>_<YYYYMMDD_HHMMSS>.json`
 - `models/<MODEL_NAME>_feature_columns.json`
@@ -690,4 +696,3 @@ Stateful processing was particularly sensitive to key drift and inconsistent che
 
 - Conad supermarket (Scandiano (RE), Italy) for providing real-world category/inventory structure used to model the synthetic data.
 - External contributors/maintainers of the open-source libraries used in the stack.
-

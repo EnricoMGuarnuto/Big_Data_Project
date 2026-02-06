@@ -2,7 +2,7 @@
 ## ./shelf_producer
 ### Overview
 Generates realistic shelf interaction events for customers currently in the store, based on **foot-traffic sessions**.  
-It consumes `foot_traffic` (session with entry/exit), schedules actions during the session, and produces:
+It consumes `foot_traffic` (session with entry/exit), schedules actions during the session, and writes:
 - `pickup` / `putback` events
 - matching `weight_change` events (to emulate smart-shelf sensors)
 
@@ -12,8 +12,8 @@ Timestamps are emitted in ISO 8601 using the simulated clock (Redis).
 
 ## Topics
 
-- **Consume**: `KAFKA_TOPIC_FOOT` (default `foot_traffic`)
-- **Produce**: `KAFKA_TOPIC_SHELF` (default `shelf_events`)
+- **Consume (Kafka)**: `KAFKA_TOPIC_FOOT` (default `foot_traffic`)
+- **Write (Redis stream)**: `REDIS_STREAM` (default `shelf_events`)
 
 **Event examples**
 
@@ -64,9 +64,11 @@ Timestamps are emitted in ISO 8601 using the simulated clock (Redis).
 | `REDIS_DB` | `0` | Redis DB |
 | `REDIS_STREAM` | `shelf_events` | Redis stream name |
 | `STORE_PARQUET` | `/data/store_inventory_final.parquet` | Catalog parquet (`shelf_id`, `item_weight`, `item_visibility`) |
+| `STORE_CSV_PATH` | `/data/db_csv/store_inventory_final.csv` | Fallback catalog CSV if parquet is missing |
 | `DISCOUNT_PARQUET_PATH` | `/data/all_discounts.parquet` | Discounts parquet (`shelf_id`, `discount`, `week`) |
 | `SHELF_IDLE_SLEEP` | `0.01` | Idle sleep (seconds) when nothing to emit |
 | `PUTBACK_PROB` | `0.15` | Probability that an action is `putback` instead of `pickup` |
+| `STORE_FILE_RETRY_SECONDS` | `10` | Retry interval when inventory file is missing |
 | `PG_HOST` | `postgres` | Postgres host |
 | `PG_PORT` | `5432` | Postgres port |
 | `PG_DB` | `smart_shelf` | Postgres database |
@@ -75,6 +77,8 @@ Timestamps are emitted in ISO 8601 using the simulated clock (Redis).
 | `DAILY_DISCOUNT_TABLE` | `analytics.daily_discounts` | Daily discounts table |
 
 Mount your datasets under `/data` (read-only).
+
+Events are forwarded from Redis to Kafka by `redis-kafka-bridge`.
 
 ---
 ## ./requirements.txt

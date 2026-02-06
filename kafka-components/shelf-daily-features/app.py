@@ -13,6 +13,10 @@ SUPPLIER_INBOUND_DOW = {1, 4}  # Tue, Fri (0=Mon)
 DEFAULT_WH_REORDER_POINT_QTY = int(os.getenv("DEFAULT_WH_REORDER_POINT_QTY", "10"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "1.0"))
+DELTA_ENABLED = os.getenv("DELTA_ENABLED", "1") == "1"
+DELTA_FEATURES_STORE_PATH = os.getenv("DELTA_FEATURES_STORE_PATH", "/delta/curated/features_store")
+DELTA_WRITE_MAX_RETRIES = int(os.getenv("DELTA_WRITE_MAX_RETRIES", "5"))
+DELTA_WRITE_RETRY_BASE_S = float(os.getenv("DELTA_WRITE_RETRY_BASE_S", "0.8"))
 
 
 def log_info(msg: str) -> None:
@@ -263,6 +267,64 @@ def _write_staging(conn, df: pd.DataFrame) -> None:
             "INSERT INTO analytics.shelf_daily_features_stg (" + ",".join(cols) + ") VALUES %s"
         )
         execute_values(cur, insert_sql, values)
+
+
+def _append_features_to_delta(df: pd.DataFrame) -> None:
+    if not DELTA_ENABLED:
+        return
+    if df is None or df.empty:
+        return
+
+    try:
+        from deltalake import DeltaTable
+        from deltalake.writer import write_deltalake
+    except Exception as e:
+        print(f"[shelf-daily-features] warning: deltalake not available, skip curated write ({e})")
+        return
+
+    out = df.copy()
+    out["feature_date"] = pd.to_datetime(out["feature_date"], errors="coerce").dt.date
+    if "shelf_id" in out.columns:
+        out["shelf_id"] = out["shelf_id"].astype(str).str.strip()
+
+    existing_cols = []
+    if os.path.exists(DELTA_FEATURES_STORE_PATH):
+        try:
+            table = DeltaTable(DELTA_FEATURES_STORE_PATH)
+            existing_cols = [f.name for f in table.schema().fields]
+        except Exception as e:
+            print(f"[shelf-daily-features] warning: cannot read delta schema, using input schema ({e})")
+
+    if existing_cols:
+        if "foot_traffic" in existing_cols and "foot_traffic" not in out.columns:
+            if "people_count" in out.columns:
+                out["foot_traffic"] = pd.to_numeric(out["people_count"], errors="coerce").astype("Int64")
+            else:
+                out["foot_traffic"] = pd.Series([None] * len(out), dtype="Int64")
+
+        for col in existing_cols:
+            if col not in out.columns:
+                out[col] = None
+        out = out[existing_cols]
+
+    last = None
+    for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
+        try:
+            write_deltalake(DELTA_FEATURES_STORE_PATH, out, mode="append")
+            log_info(
+                f"[shelf-daily-features] appended {len(out)} row(s) to {DELTA_FEATURES_STORE_PATH}"
+            )
+            return
+        except Exception as e:
+            last = e
+            sleep_s = DELTA_WRITE_RETRY_BASE_S * attempt
+            print(
+                f"[shelf-daily-features] delta write failed ({attempt}/{DELTA_WRITE_MAX_RETRIES}), "
+                f"retry in {sleep_s}s: {e}"
+            )
+            time.sleep(sleep_s)
+
+    print(f"[shelf-daily-features] warning: final delta write failure: {last}")
 
 
 def run_for_day(run_date_str: str, sim_ts_str: str):
@@ -536,6 +598,8 @@ def run_for_day(run_date_str: str, sim_ts_str: str):
         with conn.cursor() as cur:
             cur.execute(upsert_sql)
             cur.execute(label_sql)
+
+        _append_features_to_delta(out)
 
     finally:
         conn.close()

@@ -12,7 +12,7 @@ from typing import Dict, DefaultDict, Optional, Deque, List, Tuple
 from collections import defaultdict, deque
 
 import pandas as pd
-from kafka import KafkaConsumer, KafkaProducer
+from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable
 from kafka.admin import KafkaAdminClient, NewTopic
 from simulated_time.redis_clock import RedisClock
@@ -60,7 +60,6 @@ DAILY_DISCOUNT_TABLE = os.getenv("DAILY_DISCOUNT_TABLE", "analytics.daily_discou
 PROB_EARLIEST_EXPIRY = float(os.getenv("PROB_EARLIEST_EXPIRY", "0.80"))
 
 # Globals inizializzati in main()
-producer: Optional[KafkaProducer] = None
 rconn: Optional[redis.Redis] = None
 
 # clock
@@ -276,25 +275,6 @@ except Exception as e:
 # ========================
 # IO builders
 # ========================
-def build_producer():
-    last_err = None
-    for attempt in range(1, 7):
-        try:
-            p = KafkaProducer(
-                bootstrap_servers=KAFKA_BROKER,
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                linger_ms=5,
-                acks="all",
-                retries=10,
-            )
-            log.info("[pos] Connected to Kafka.")
-            return p
-        except NoBrokersAvailable as e:
-            last_err = e
-            log.warning(f"[pos] Kafka not available (attempt {attempt}/6). Retry in 3s…")
-            time.sleep(3)
-    raise RuntimeError(f"Impossible to connect to Kafka: {last_err}")
-
 def build_redis() -> redis.Redis:
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     r.ping()
@@ -398,7 +378,7 @@ def _allocate_from_batches(shelf_id: str, qty: int) -> List[Tuple[str, int, date
 # Checkout
 # ========================
 def emit_pos_transaction(customer_id: str, timestamp: datetime):
-    global producer, rconn
+    global rconn
 
     # cart snapshot
     with carts_lock:
@@ -461,13 +441,16 @@ def emit_pos_transaction(customer_id: str, timestamp: datetime):
     # 1) Redis buffer first
     try:
         if rconn is not None:
-            rconn.xadd(REDIS_STREAM, {"data": json.dumps(transaction)}, maxlen=20000, approximate=True)
+            rconn.xadd(
+                REDIS_STREAM,
+                {"data": json.dumps(transaction), "key": customer_id},
+                maxlen=20000,
+                approximate=True,
+            )
     except Exception as e:
         log.warning(f"[pos] Redis XADD failed: {e}")
 
-    # 2) Kafka
-    producer.send(POS_TOPIC, value=transaction)
-    log.info(f"[pos] POS transaction emitted: {transaction}")
+    log.info(f"[pos] POS transaction buffered on Redis: {transaction}")
 
     # cleanup
     with carts_lock:
@@ -575,8 +558,7 @@ def checkout_loop():
 # Main
 # ========================
 def main():
-    global producer, rconn
-    producer = build_producer()
+    global rconn
     rconn = build_redis()
 
     threading.Thread(target=shelf_consumer_loop, daemon=True).start()

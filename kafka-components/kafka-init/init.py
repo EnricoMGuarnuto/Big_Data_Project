@@ -31,6 +31,7 @@ APPEND_ONLY: Dict[str, Dict[str, str]] = {
     "shelf_events": {},
     "pos_transactions": {},
     "foot_traffic": {},
+    "foot_traffic_realistic": {},
     "wh_events": {},
     "alerts": {},
 }

@@ -1,13 +1,13 @@
 # POS Producer
 ## ./pos_producer.py
 ### Overview
-This service consumes **foot traffic sessions** and **shelf events** to build shopping carts in memory and emits **POS transactions** to Kafka when customers exit the store.
+This service consumes **foot traffic sessions** and **shelf events** to build shopping carts in memory and buffers **POS transactions** into Redis Streams when customers exit the store.
 
 - **Consumes**
   - `FOOT_TOPIC` (default: `foot_traffic`): full sessions with `entry_time` and `exit_time`.
   - `SHELF_TOPIC` (default: `shelf_events`): `pickup` / `putback` events per customer and item.
 - **Produces**
-  - `POS_TOPIC` (default: `pos_transactions`): one transaction per checkout, with line items and discounts applied.
+  - `REDIS_STREAM` (default: `pos_transactions`): one transaction per checkout, with line items and discounts applied.
 
 All timestamps are UTC (ISO 8601). The component is thread-based and performs graceful cleanup of per-customer state after checkout.
 
@@ -31,7 +31,7 @@ Expected fields:
 }
 ```
 
-#### POS transactions (produced)
+#### POS transactions (buffered on Redis)
 ```json
 {
   "event_type": "pos_transaction",
@@ -55,7 +55,10 @@ Expected fields:
 | `KAFKA_BROKER` | `kafka:9092` | Kafka bootstrap servers |
 | `FOOT_TOPIC` | `foot_traffic` | Consumed sessions |
 | `SHELF_TOPIC` | `shelf_events` | Consumed shelf events |
-| `POS_TOPIC` | `pos_transactions` | Produced transactions |
+| `REDIS_HOST` | `redis` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_DB` | `0` | Redis DB |
+| `REDIS_STREAM` | `pos_transactions` | Redis stream for buffered transactions |
 | `GROUP_ID_SHELF` | `pos-simulator-shelf` | Consumer group for shelf events |
 | `GROUP_ID_FOOT` | `pos-simulator-foot` | Consumer group for foot traffic |
 | `STORE_PARQUET` | `/data/store_inventory_final.parquet` | Parquet with `shelf_id`, `item_price` |
@@ -64,6 +67,8 @@ Expected fields:
 | `MAX_SESSION_AGE_SEC` | `10800` | Force checkout after this age (seconds) |
 
 Mount your parquet files from the host into `/data` (read-only).
+
+Buffered POS events are forwarded from Redis to Kafka by `redis-kafka-bridge`.
 
 ---
 ## ./requirements.txt

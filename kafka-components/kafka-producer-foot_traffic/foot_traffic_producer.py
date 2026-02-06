@@ -9,17 +9,11 @@ import signal
 import redis
 from typing import List, Optional
 from datetime import datetime, timedelta, date, time as dtime, timezone
-from kafka import KafkaProducer
-from kafka.errors import NoBrokersAvailable
 from simulated_time.redis_clock import RedisClock
 
 # ============================================================
 # Config
 # ============================================================
-KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
-TOPIC = os.getenv("KAFKA_TOPIC", "foot_traffic")
-TOPIC_REALISTIC = os.getenv("KAFKA_TOPIC_REALISTIC", "foot_traffic_realistic")
-
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
@@ -39,9 +33,6 @@ if SEED is not None:
         random.seed(int(SEED))
     except ValueError:
         random.seed(SEED)
-
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", 6))
-RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", 5.0))
 
 time_slots = [
     ("00:00", "06:59"),
@@ -160,29 +151,6 @@ def decide_daily_total(weekday_idx: int) -> int:
     noise_factor = random.uniform(lo, hi)
     return max(1, round(mean_total * noise_factor))
 
-def build_producer():
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            log.info(f"Attempt {attempt}: connecting to Kafka ({KAFKA_BROKER})")
-            producer = KafkaProducer(
-                bootstrap_servers=KAFKA_BROKER,
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                key_serializer=lambda v: v.encode('utf-8') if v else None,
-                acks='all',
-                retries=5,
-                linger_ms=50,
-                compression_type='gzip',
-                max_in_flight_requests_per_connection=1,
-            )
-            log.info("Connected to Kafka.")
-            return producer
-        except NoBrokersAvailable as e:
-            log.warning(f"Kafka not available ({e}), retry in {RETRY_BACKOFF_SECONDS}s...")
-        except Exception as e:
-            log.warning(f"Connection error to Kafka ({type(e).__name__}: {e}), retry in {RETRY_BACKOFF_SECONDS}s...")
-        time.sleep(RETRY_BACKOFF_SECONDS)
-    raise RuntimeError("Impossible to connect to Kafka.")
-
 def build_redis() -> redis.Redis:
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     r.ping()
@@ -247,7 +215,6 @@ class DayPlan:
         return None
 
 def main():
-    producer = build_producer()
     rconn = build_redis()
 
     clock = RedisClock(host=REDIS_HOST, port=REDIS_PORT)
@@ -295,11 +262,9 @@ def main():
             event, cid = build_event(ts)
 
             try:
-                rconn.xadd(REDIS_STREAM, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
+                rconn.xadd(REDIS_STREAM, {"data": json.dumps(event), "key": cid}, maxlen=20000, approximate=True)
             except Exception as e:
                 log.warning(f"Redis XADD failed (foot_traffic): {e}")
-
-            producer.send(TOPIC, key=cid, value=event)
             log.info(f"Simulated: {event}")
 
             entry_event = {
@@ -310,11 +275,14 @@ def main():
             }
 
             try:
-                rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(entry_event)}, maxlen=20000, approximate=True)
+                rconn.xadd(
+                    f"{REDIS_STREAM}:realistic",
+                    {"data": json.dumps(entry_event), "key": cid},
+                    maxlen=20000,
+                    approximate=True,
+                )
             except Exception as e:
                 log.warning(f"Redis XADD failed (entry): {e}")
-
-            producer.send(TOPIC_REALISTIC, key=cid, value=entry_event)
 
             exit_event = {
                 "event_type": "exit",
@@ -328,11 +296,14 @@ def main():
         for exit_time, exit_event, cid in future_exits[:]:
             if exit_time <= now:
                 try:
-                    rconn.xadd(f"{REDIS_STREAM}:realistic", {"data": json.dumps(exit_event)}, maxlen=20000, approximate=True)
+                    rconn.xadd(
+                        f"{REDIS_STREAM}:realistic",
+                        {"data": json.dumps(exit_event), "key": cid},
+                        maxlen=20000,
+                        approximate=True,
+                    )
                 except Exception as e:
                     log.warning(f"Redis XADD failed (exit): {e}")
-
-                producer.send(TOPIC_REALISTIC, key=cid, value=exit_event)
                 future_exits.remove((exit_time, exit_event, cid))
 
 

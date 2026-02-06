@@ -136,18 +136,14 @@ services:
       dockerfile: Dockerfile
     container_name: kafka-producer-foot-traffic
     depends_on:
-    - kafka
     - redis
     env_file:
     - .env
     environment:
-      KAFKA_BROKER: kafka:9092
       REDIS_HOST: redis
       REDIS_PORT: '6379'
       REDIS_DB: '0'
       REDIS_STREAM: foot_traffic
-      SLEEP: '0.125'
-      TIME_SCALE: '4.0'
       PYTHONPATH: /app
     volumes:
     - ./data:/data:ro
@@ -199,6 +195,28 @@ services:
     volumes:
     - ./data:/data:ro
     - ./simulated_time:/app/simulated_time:ro
+    restart: unless-stopped
+
+  redis-kafka-bridge:
+    build:
+      context: ./kafka-components/redis-kafka-bridge
+      dockerfile: Dockerfile
+    container_name: redis-kafka-bridge
+    depends_on:
+    - redis
+    - kafka
+    - kafka-init
+    env_file:
+    - .env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: '6379'
+      REDIS_DB: '0'
+      KAFKA_BROKER: kafka:9092
+      STREAM_TOPIC_MAP: foot_traffic=foot_traffic,foot_traffic:realistic=foot_traffic_realistic,shelf_events=shelf_events,pos_transactions=pos_transactions
+      REDIS_GROUP: redis-kafka-bridge
+      BATCH_COUNT: '128'
+      BLOCK_MS: '5000'
     restart: unless-stopped
   
 
@@ -306,6 +324,8 @@ services:
       environment:
         PGHOST: postgres
         PGPASSWORD: bdt_password
+        DELTA_ENABLED: "1"
+        DELTA_FEATURES_STORE_PATH: /delta/curated/features_store
         PYTHONPATH: /app
       volumes:
         - ./delta:/delta
@@ -651,6 +671,7 @@ services:
       KAFKA_ENABLED: "1"
       KAFKA_BROKER: kafka:9092
       TOPIC_WH_SUPPLIER_PLAN: wh_supplier_plan
+      DELTA_PREDICTIONS_PATH: /delta/curated/predictions
     volumes:
       - ./models:/models
       - ./simulated_time:/app/simulated_time:ro   

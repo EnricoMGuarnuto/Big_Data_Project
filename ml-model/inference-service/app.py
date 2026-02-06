@@ -65,6 +65,10 @@ DELTA_WHSUPPLIER_PLAN_PATH = os.getenv(
     "DELTA_WHSUPPLIER_PLAN_PATH",
     "/delta/ops/wh_supplier_plan",
 )
+DELTA_PREDICTIONS_PATH = os.getenv(
+    "DELTA_PREDICTIONS_PATH",
+    "/delta/curated/predictions",
+)
 DELTA_WRITE_MAX_RETRIES = int(os.getenv("DELTA_WRITE_MAX_RETRIES", "5"))
 DELTA_WRITE_RETRY_BASE_S = float(os.getenv("DELTA_WRITE_RETRY_BASE_S", "0.8"))
 
@@ -434,6 +438,78 @@ def upsert_delta_plans_by_shelf_id(plans_df):
     raise last
 
 
+def append_delta_predictions(pred_rows: list) -> None:
+    if not DELTA_ENABLED:
+        return
+    if not pred_rows:
+        return
+
+    try:
+        import pandas as pd
+        from deltalake import DeltaTable
+        from deltalake.writer import write_deltalake
+    except Exception as e:
+        print(f"[delta] deltalake not available -> skip predictions write. error={e}")
+        return
+
+    pred_df = pd.DataFrame(pred_rows).rename(
+        columns={
+            "mn": "model_name",
+            "fd": "feature_date",
+            "sid": "shelf_id",
+            "pb": "predicted_batches",
+            "sq": "suggested_qty",
+            "mv": "model_version",
+            "ca": "created_at",
+        }
+    )
+    if pred_df.empty:
+        return
+
+    pred_df["feature_date"] = pd.to_datetime(pred_df["feature_date"], errors="coerce").dt.date
+    pred_df["created_at"] = pd.to_datetime(pred_df["created_at"], utc=True, errors="coerce")
+    pred_df["shelf_id"] = pred_df["shelf_id"].astype(str).str.strip()
+    pred_df["predicted_batches"] = pd.to_numeric(pred_df["predicted_batches"], errors="coerce").fillna(0).astype(int)
+    pred_df["suggested_qty"] = pd.to_numeric(pred_df["suggested_qty"], errors="coerce").fillna(0).astype(int)
+
+    existing_cols = []
+    if os.path.exists(DELTA_PREDICTIONS_PATH):
+        try:
+            table = DeltaTable(DELTA_PREDICTIONS_PATH)
+            existing_cols = [f.name for f in table.schema().fields]
+        except Exception as e:
+            print(f"[delta] failed to read prediction schema, using input schema. error={e}")
+
+    if existing_cols:
+        # Backward compatibility with older minimal schema.
+        if "prediction_ts" in existing_cols and "prediction_ts" not in pred_df.columns:
+            pred_df["prediction_ts"] = pred_df["created_at"]
+        if "horizon_d" in existing_cols and "horizon_d" not in pred_df.columns:
+            pred_df["horizon_d"] = 1
+        if "predicted_qty" in existing_cols and "predicted_qty" not in pred_df.columns:
+            pred_df["predicted_qty"] = pred_df["suggested_qty"].astype(float)
+        if "model_ver" in existing_cols and "model_ver" not in pred_df.columns:
+            pred_df["model_ver"] = pred_df["model_version"]
+
+        for col in existing_cols:
+            if col not in pred_df.columns:
+                pred_df[col] = None
+        pred_df = pred_df[existing_cols]
+
+    last = None
+    for attempt in range(1, DELTA_WRITE_MAX_RETRIES + 1):
+        try:
+            write_deltalake(DELTA_PREDICTIONS_PATH, pred_df, mode="append")
+            log_info(f"[delta] Appended {len(pred_df)} predictions to {DELTA_PREDICTIONS_PATH}")
+            return
+        except Exception as e:
+            last = e
+            sleep_s = DELTA_WRITE_RETRY_BASE_S * attempt
+            print(f"[delta] predictions write failed ({attempt}/{DELTA_WRITE_MAX_RETRIES}) -> sleep {sleep_s}s: {e}")
+            time.sleep(sleep_s)
+    raise last
+
+
 # -----------------------------
 # MAIN (single cutoff run)
 # -----------------------------
@@ -590,6 +666,7 @@ def run_cutoff_once(engine, sim_now: datetime, training_cols: Optional[list]) ->
         insert_prediction_logs(conn, prediction_log_rows)
 
     # Publish/update plans outside the transaction (side effects).
+    append_delta_predictions(prediction_log_rows)
     publish_kafka_plans(plan_rows)
 
     delta_df = pd.DataFrame(plan_rows)

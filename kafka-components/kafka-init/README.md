@@ -13,7 +13,7 @@ for retention and compaction. It runs once at startup as part of the
 
 ## Topics created
 Append-only:
-- `shelf_events`, `pos_transactions`, `foot_traffic`, `wh_events`, `alerts`
+- `shelf_events`, `pos_transactions`, `foot_traffic`, `foot_traffic_realistic`, `wh_events`, `alerts`
 
 Compacted (state + metadata):
 - `shelf_state`, `wh_state`, `shelf_batch_state`, `wh_batch_state`

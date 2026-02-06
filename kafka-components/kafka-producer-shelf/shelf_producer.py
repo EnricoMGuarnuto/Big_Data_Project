@@ -7,8 +7,7 @@ import redis
 import logging
 import psycopg2
 import pandas as pd
-from kafka import KafkaProducer, KafkaConsumer
-from kafka.errors import NoBrokersAvailable
+from kafka import KafkaConsumer
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
@@ -33,9 +32,11 @@ REDIS_DB   = int(os.getenv("REDIS_DB", "0"))
 REDIS_STREAM = os.getenv("REDIS_STREAM", "shelf_events")
 
 STORE_PARQUET = os.getenv("STORE_PARQUET", "/data/store_inventory_final.parquet")
+STORE_CSV_PATH = os.getenv("STORE_CSV_PATH", "/data/db_csv/store_inventory_final.csv")
 DISCOUNT_PARQUET_PATH = os.getenv("DISCOUNT_PARQUET_PATH", "/data/all_discounts.parquet")
 SLEEP_SEC = float(os.getenv("SHELF_IDLE_SLEEP", "0.01"))
 PUTBACK_PROB = float(os.getenv("PUTBACK_PROB", 0.15))
+STORE_FILE_RETRY_SECONDS = float(os.getenv("STORE_FILE_RETRY_SECONDS", "10"))
 
 PG_HOST = os.getenv("PG_HOST", "postgres")
 PG_PORT = int(os.getenv("PG_PORT", "5432"))
@@ -102,32 +103,56 @@ def load_daily_discounts():
         log.warning(f"[shelf] Error loading daily discounts: {e}")
         return {}
 
+
+def load_store_inventory() -> pd.DataFrame:
+    required = {"shelf_id", "item_weight", "item_visibility"}
+
+    while True:
+        try:
+            if os.path.exists(STORE_PARQUET):
+                df = pd.read_parquet(STORE_PARQUET)
+                src = STORE_PARQUET
+            elif os.path.exists(STORE_CSV_PATH):
+                df = pd.read_csv(STORE_CSV_PATH)
+                src = STORE_CSV_PATH
+            else:
+                raise FileNotFoundError(
+                    f"Neither STORE_PARQUET ({STORE_PARQUET}) nor STORE_CSV_PATH ({STORE_CSV_PATH}) exists"
+                )
+
+            missing = required - set(df.columns)
+            if missing:
+                raise ValueError(f"{src} missing required columns: {missing}")
+
+            log.info(f"[shelf] Loaded inventory rows={len(df)} from {src}")
+            return df
+        except Exception as e:
+            log.error(f"[shelf] Cannot load inventory dataset: {e}")
+            log.error(
+                "[shelf] Waiting for inventory file. "
+                f"Expected parquet={STORE_PARQUET} or csv={STORE_CSV_PATH}. "
+                f"Retry in {STORE_FILE_RETRY_SECONDS}s."
+            )
+            time.sleep(STORE_FILE_RETRY_SECONDS)
+
 # ========================
 # Kafka / Redis
 # ========================
-def build_producer():
-    for _ in range(6):
-        try:
-            return KafkaProducer(
-                bootstrap_servers=KAFKA_BROKER,
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                acks="all", retries=10,
-            )
-        except NoBrokersAvailable:
-            time.sleep(3)
-    raise RuntimeError("Kafka not reachable")
-
 def build_redis():
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     r.ping()
     return r
 
-def emit(rconn, producer, event):
+def emit(rconn, event):
     try:
-        rconn.xadd(REDIS_STREAM, {"data": json.dumps(event)}, maxlen=20000, approximate=True)
+        rconn.xadd(
+            REDIS_STREAM,
+            {"data": json.dumps(event), "key": event.get("customer_id", "")},
+            maxlen=20000,
+            approximate=True,
+        )
     except Exception as e:
         log.warning(f"[shelf] Redis XADD failed: {e}")
-    producer.send(TOPIC_SHELF, value=event)
 
 # ========================
 # Background threads
@@ -166,7 +191,7 @@ def reap_inactive():
 # Main Loop
 # ========================
 def main():
-    df = pd.read_parquet(STORE_PARQUET)
+    df = load_store_inventory()
     weekly = load_discounts_from_parquet(DISCOUNT_PARQUET_PATH)
     daily = load_daily_discounts()
 
@@ -180,7 +205,6 @@ def main():
     pick_weights = df["pick_score"].tolist()
 
     rng = random.Random()
-    producer = build_producer()
     rconn = build_redis()
 
     threading.Thread(target=foot_traffic_listener, daemon=True).start()
@@ -225,7 +249,7 @@ def main():
                         "weight": weight,
                         "timestamp": current_time.isoformat(),
                     }
-                    emit(rconn, producer, event)
+                    emit(rconn, event)
 
                     weight_evt = {
                         "event_type": "weight_change",
@@ -234,7 +258,7 @@ def main():
                         "delta_weight": (-1 if action == "pickup" else 1) * weight * qty,
                         "timestamp": current_time.isoformat(),
                     }
-                    emit(rconn, producer, weight_evt)
+                    emit(rconn, weight_evt)
 
                     log.info(f"[shelf] {action.upper()} {cid} item={item_id} qty={qty}")
                     executed = True

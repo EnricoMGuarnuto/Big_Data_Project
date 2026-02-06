@@ -5,7 +5,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     pandas \
     psycopg2-binary \
-    redis
+    redis \
+    deltalake \
+    pyarrow
 
 COPY app.py .
 
